@@ -1,0 +1,28 @@
+---
+# One extra-vars list through the REAL hosting_definition lookup: the same file is read
+# when the CLI carries exactly one @file, and every other shape of command-line config is refused.
+- name: Reset
+  ansible.builtin.set_fact:
+    _x_ok: false
+    _x_msg: ""
+
+- name: Read it
+  block:
+    - name: "{{ case.id }} — lookup"
+      ansible.builtin.set_fact:
+        _x_val: "{{ lookup('richard_lynch.services.hosting_definition', extra_vars=case.extra, root=render_root, prefix='apps/hosting/') }}"
+    - name: Note that it was read
+      ansible.builtin.set_fact:
+        _x_ok: true
+  rescue:
+    - name: Capture why it was refused
+      ansible.builtin.set_fact:
+        _x_msg: "{{ ansible_failed_result.msg | default('') }}"
+
+- name: "{{ case.id }} — decided correctly, for the stated reason"
+  ansible.builtin.assert:
+    that:
+      - _x_ok | bool == case.expect_ok | bool
+      - case.expect_ok | bool or (case.expect in _x_msg)
+    fail_msg: "case {{ case.id }}: read={{ _x_ok }} expected_ok={{ case.expect_ok }} message={{ _x_msg[:400] }}"
+    quiet: true

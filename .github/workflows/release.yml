@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# release — thin caller of the shared release path (ansible-devkit's reusable-release.yml). On a
+# merge to main that bumps galaxy.yml's version, it builds the collection, publishes it to Galaxy,
+# and creates the v<version> tag and GitHub release from the matching CHANGELOG section.
+name: release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    uses: Richard-Lynch/ansible-devkit/.github/workflows/reusable-release.yml@v0.2.3
+    with:
+      kind: collection
+    # The publish job's `release`-environment secrets (release App key, Galaxy API key) reach a
+    # reusable workflow only when the caller passes secrets through.
+    secrets: inherit
+    permissions:
+      contents: read

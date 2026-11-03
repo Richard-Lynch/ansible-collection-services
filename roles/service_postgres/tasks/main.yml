@@ -1,0 +1,148 @@
+---
+- name: Store vars
+  ansible.builtin.set_fact:
+    postgres_files: "{{ role_path }}/files"
+    postgres_config_dir: "/opt/{{ postgres_container_name }}"
+
+- name: Assert the superuser password was provided (never ship the placeholder)
+  ansible.builtin.assert:
+    that:
+      - postgres_password != "CHANGE_ME_VIA_1PASSWORD"
+      - postgres_password | length > 0
+    fail_msg: "postgres_password must be supplied by the caller — refusing the default placeholder."
+    quiet: true
+
+- name: Deploy config
+  ansible.builtin.include_role:
+    name: richard_lynch.common.deployment_config
+    # deployment_config renders every .j2 in the source dir with a template task that has no
+    # no_log, and some of them carry credentials: --diff would print them (DIFFLEAK-01).
+    apply:
+      no_log: true
+  vars:
+    deployment_config_source: "{{ postgres_files }}"
+    deployment_config_destination: "{{ postgres_config_dir }}"
+
+# The env files carry the superuser and exporter credentials, so they are rendered here rather than
+# by deployment_config (which renders every .j2 under files/ at one shared mode): no_log, and their
+# own mode, postgres_env_file_mode.
+- name: Render the credential env files
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "{{ postgres_config_dir }}/{{ item }}"
+    owner: root
+    group: root
+    mode: "{{ postgres_env_file_mode }}"
+  loop: [postgres.env, postgres-exporter.env, pgadmin.env]
+  register: _postgres_env
+  no_log: true
+
+- name: Ensure the database network exists
+  community.docker.docker_network:
+    name: "{{ postgres_network }}"
+    attachable: true
+    state: present
+
+- name: Deploy Docker Stack
+  community.docker.docker_compose_v2:
+    project_src: "{{ postgres_config_dir }}"
+    state: present
+    # WARNING: always does not seem to work, freaks out about the networks
+    recreate: auto
+
+- name: Restart docker stack
+  community.docker.docker_compose_v2:
+    project_src: "{{ postgres_config_dir }}"
+    state: restarted
+  when: deployment_config_changed or _postgres_env is changed
+
+# --- per-service databases + owner roles (e.g. grafana) -------------------------------------------
+- name: Wait for Postgres to accept connections
+  ansible.builtin.command: >
+    docker exec {{ postgres_container_name }} pg_isready -U {{ postgres_user }}
+  register: _pg_ready
+  retries: 15
+  delay: 3
+  until: _pg_ready.rc == 0
+  changed_when: false
+
+# Role + DB creation. Injection-safe WITHOUT extra deps: values are passed to psql as VARIABLES
+# (-v name=value) and quoted server-side — `:'x'` produces a properly-escaped string LITERAL, and a
+# DO block uses format('%I', …) to quote the IDENTIFIER. Nothing is concatenated into SQL. psql reads
+# the SQL from STDIN; the role password is a psql variable on the docker exec argv, so the task that
+# carries it is no_log.
+- name: Ensure each service role exists
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - "-i"
+      - "{{ postgres_container_name }}"
+      - psql
+      - "-U"
+      - "{{ postgres_user }}"
+      - "-d"
+      - "{{ postgres_db }}"
+      - "-tA"
+      - "-v"
+      - "ON_ERROR_STOP=1"
+      - "-v"
+      - "owner={{ item.owner }}"
+      - "-v"
+      - "ownerpw={{ item.password }}"
+    # At the TOP level psql substitutes `:'x'` as escaped LITERALS (so no injection). We build the
+    # CREATE ROLE statement with format() (%I quotes the identifier, %L the password) and run it with
+    # \gexec — only when the role is absent. (`:'x'` does NOT expand inside a DO $$…$$ block, hence
+    # this top-level form.)
+    stdin: |
+      SELECT format('CREATE ROLE %I LOGIN PASSWORD %L', :'owner', :'ownerpw')
+      WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = :'owner')
+      \gexec
+  loop: "{{ postgres_databases }}"
+  loop_control:
+    label: "role {{ item.owner }}"
+  register: _role
+  # The argv carries the role's password.
+  no_log: true
+  changed_when: "'CREATE ROLE' in (_role.stdout | default(''))"
+
+- name: Check which service databases already exist
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - "-i"
+      - "{{ postgres_container_name }}"
+      - psql
+      - "-U"
+      - "{{ postgres_user }}"
+      - "-d"
+      - "{{ postgres_db }}"
+      - "-tA"
+      - "-v"
+      - "dbname={{ item.name }}"
+    stdin: "SELECT 1 FROM pg_database WHERE datname = :'dbname';"
+  loop: "{{ postgres_databases }}"
+  loop_control:
+    label: "check {{ item.name }}"
+  register: _db_exists
+  changed_when: false
+
+# createdb takes the db name + owner as CLI args (not a SQL string), so it isn't SQL-injectable.
+- name: Create each missing service database (owned by its role)
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - "{{ postgres_container_name }}"
+      - createdb
+      - "-U"
+      - "{{ postgres_user }}"
+      - "-O"
+      - "{{ item.item.owner }}"
+      - "{{ item.item.name }}"
+  loop: "{{ _db_exists.results }}"
+  loop_control:
+    label: "db {{ item.item.name }}"
+  when: item.stdout | trim != "1"
+  changed_when: true

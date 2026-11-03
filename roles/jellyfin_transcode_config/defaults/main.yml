@@ -1,0 +1,63 @@
+---
+# AUTO-GENERATED defaults file — DO NOT EDIT.
+#
+# Source of truth: roles/jellyfin_transcode_config/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate jellyfin_transcode_config
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+# Entrypoint:      main
+
+# false (default) reports the diff and changes nothing. true writes the
+# settings and restarts Jellyfin.
+jtc_apply__default: false
+
+# Jellyfin's HardwareAccelerationType. 'vaapi' for Intel on Linux; 'none'
+# disables hardware transcode. QSV also exists but dispatches through the
+# same iHD driver on Linux, so vaapi is the direct path.
+jtc_accel_type__default: vaapi
+
+# Enable hardware ENCODING as well as decoding.
+jtc_hw_encoding__default: true
+
+# Allow HEVC output. Worth enabling on a card with HEVC encode, since it
+# roughly halves bitrate versus H.264 at equal quality — but H.264 remains
+# the safer default for maximum client compatibility, so Jellyfin still picks
+# per-client.
+jtc_allow_hevc__default: true
+
+# Allow AV1 output. Default false: even on a GPU with AV1 encode, client
+# support for AV1 playback is still patchy, and an unplayable stream is worse
+# than a larger one. Enable deliberately.
+jtc_allow_av1__default: false
+
+# Pause transcoding once far enough ahead of the player, rather than
+# transcoding the whole file as fast as the disk allows.
+jtc_throttling__default: true
+
+# How far ahead, in seconds of playback, before throttling kicks in.
+# Jellyfin's own default; changing it trades disk churn against the risk of
+# a stall on a slow client.
+jtc_throttle_delay_seconds__default: 180
+
+# How many seconds of already-played segments to keep on disk behind the
+# player. Lower means less disk held per live session.
+jtc_segment_keep_seconds__default: 720
+
+# Enable HDR->SDR tone mapping: HDR delivered to an SDR client without it is
+# the washed-out-picture complaint, and HDR HEVC 10-bit content is what
+# hardware transcode is most often enabled for.
+jtc_tonemapping__default: true
+
+# Intel VPP tone mapping. Faster than the OpenCL path but lower quality and
+# historically buggy on newer Arc; left off unless measured to be better.
+jtc_vpp_tonemapping__default: false
+
+# Restart Jellyfin after writing. REQUIRED for the change to take effect —
+# Jellyfin caches encoding.xml at startup and rewrites it from memory when any
+# setting changes in the UI, which would silently revert this role's edits.
+jtc_restart__default: true
+
+# Container name to restart.
+jtc_container__default: jellyfin

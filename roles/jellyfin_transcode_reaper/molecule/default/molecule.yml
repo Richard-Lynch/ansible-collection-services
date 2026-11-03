@@ -1,0 +1,16 @@
+---
+# Offline: render the reaper script and units from the role's own templates and assert on them,
+# and prove the argspec refuses a call without jtr_transcode_dir. Installing the timer needs root
+# and systemd, so the install itself is proven on a real host by the role's own gate.
+dependency: { name: galaxy }
+driver: { name: default }
+platforms: [{ name: localhost }]
+provisioner:
+  name: ansible
+  inventory: { host_vars: { localhost: { ansible_connection: local } } }
+  # Molecule runs from the scenario directory, so include_role of this very role needs the roles
+  # directory on the path.
+  env:
+    ANSIBLE_ROLES_PATH: "${MOLECULE_PROJECT_DIRECTORY}/../"
+  playbooks: { converge: converge.yml, verify: verify.yml }
+verifier: { name: ansible }

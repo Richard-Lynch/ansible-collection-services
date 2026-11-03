@@ -1,0 +1,12 @@
+---
+galaxy_info:
+  namespace: richard_lynch
+  author: Richard Lynch
+  description: >-
+    Set Jellyfin's hardware-transcode settings in encoding.xml (acceleration type, render device,
+    codecs, throttling, tone mapping): a per-setting diff by default, a backed-up write and a
+    container restart only when applied.
+  license: GPL-3.0-or-later
+  min_ansible_version: "2.19"
+  galaxy_tags: [jellyfin, media, transcode, docker]
+dependencies: []

@@ -1,0 +1,25 @@
+---
+# GENERATED from roles/jellyfin_transcode_config/meta/argument_specs.py — DO NOT EDIT.
+# Regenerate with: venv/bin/python tools/argspec/cli.py x generate jellyfin_transcode_config
+#
+# These are the constraints Ansible's role-argspec validator CANNOT enforce. It handles
+# type/required/choices/no_log, but has no numeric-range, length or pattern checking, so
+# without this file those declarations would be decorative.
+#
+# Include from the role's entrypoints:  - ansible.builtin.include_tasks: _argspec_guards.yml
+
+- name: "GUARD (generated) — jtc_segment_keep_seconds must be >= 1"
+  ansible.builtin.assert:
+    that:
+      - "jtc_segment_keep_seconds | int >= 1"
+    fail_msg: "jtc_segment_keep_seconds violates a constraint declared in meta/argument_specs.py: must be >= 1. Got: {{ jtc_segment_keep_seconds | default('(unset)') }}"
+    quiet: true
+  when: jtc_segment_keep_seconds is defined
+
+- name: "GUARD (generated) — jtc_throttle_delay_seconds must be >= 1"
+  ansible.builtin.assert:
+    that:
+      - "jtc_throttle_delay_seconds | int >= 1"
+    fail_msg: "jtc_throttle_delay_seconds violates a constraint declared in meta/argument_specs.py: must be >= 1. Got: {{ jtc_throttle_delay_seconds | default('(unset)') }}"
+    quiet: true
+  when: jtc_throttle_delay_seconds is defined

@@ -1,0 +1,29 @@
+---
+# One definition file through the REAL hosting_definition lookup.
+- name: Reset
+  ansible.builtin.set_fact:
+    _d_ok: false
+    _d_msg: ""
+    _d_val: {}
+
+- name: Read it
+  block:
+    - name: "{{ case.id }} — lookup"
+      ansible.builtin.set_fact:
+        _d_val: "{{ lookup('richard_lynch.services.hosting_definition', path=case.path, root=render_root, prefix='apps/hosting/') }}"
+    - name: Note that it was read
+      ansible.builtin.set_fact:
+        _d_ok: true
+  rescue:
+    - name: Capture why it was refused
+      ansible.builtin.set_fact:
+        _d_msg: "{{ ansible_failed_result.msg | default('') }}"
+
+- name: "{{ case.id }} — decided correctly, for the stated reason"
+  ansible.builtin.assert:
+    that:
+      - _d_ok | bool == case.expect_ok | bool
+      - case.expect_ok | bool or (case.expect in _d_msg)
+      - (not (case.expect_ok | bool)) or (_d_val.name == 'okapp')
+    fail_msg: "case {{ case.id }}: read={{ _d_ok }} expected_ok={{ case.expect_ok }} message={{ _d_msg[:400] }}"
+    quiet: true

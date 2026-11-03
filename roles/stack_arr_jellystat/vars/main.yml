@@ -1,0 +1,2 @@
+---
+stack_arr_jellystat__files: "{{ role_path }}/files"

@@ -1,0 +1,77 @@
+---
+# AUTO-GENERATED defaults resolver — DO NOT EDIT.
+#
+# Source of truth: roles/service_hosting/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate service_hosting
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+
+# Binds every declared option to its generated default, so a caller-supplied value
+# wins and an unsupplied one falls back rather than evaluating Undefined.
+#
+# Include this FIRST from every entrypoint:
+#   - ansible.builtin.include_tasks: _resolve_defaults.yml
+#
+# Role-specific setup logic belongs in tasks/setup_vars.yml, NOT here — this file is
+# overwritten on every generation.
+#
+# TWO BRANCHES, because `set_fact` persists for the whole play. A role invoked twice in
+# one play would otherwise see its OWN leftover facts on the second call, so a later
+# caller that omitted an option silently inherited the earlier caller's value instead of
+# the declared default. On a repeat call this ignores the role's own facts and rebinds
+# the defaults; an include-level `vars:` shadows the fact, so a value the caller DID
+# supply this time still wins. Roles called once per play only ever run the first branch.
+
+- name: Resolve declared options over their generated defaults
+  ansible.builtin.set_fact:
+    hosting_root: "{{ hosting_root | default(hosting_root__default) if hosting_root__default is defined else hosting_root | default(omit) }}"
+    hosting_traefik_image: "{{ hosting_traefik_image | default(hosting_traefik_image__default) if hosting_traefik_image__default is defined else hosting_traefik_image | default(omit) }}"
+    hosting_socket_proxy_image: "{{ hosting_socket_proxy_image | default(hosting_socket_proxy_image__default) if hosting_socket_proxy_image__default is defined else hosting_socket_proxy_image | default(omit) }}"
+    hosting_log_level: "{{ hosting_log_level | default(hosting_log_level__default) if hosting_log_level__default is defined else hosting_log_level | default(omit) }}"
+    hosting_traefik_memory: "{{ hosting_traefik_memory | default(hosting_traefik_memory__default) if hosting_traefik_memory__default is defined else hosting_traefik_memory | default(omit) }}"
+    hosting_blocked_egress_cidrs: "{{ hosting_blocked_egress_cidrs | default(hosting_blocked_egress_cidrs__default) if hosting_blocked_egress_cidrs__default is defined else hosting_blocked_egress_cidrs | default(omit) }}"
+    hosting_reaper_interval: "{{ hosting_reaper_interval | default(hosting_reaper_interval__default) if hosting_reaper_interval__default is defined else hosting_reaper_interval | default(omit) }}"
+    hosting_reaped_root: "{{ hosting_reaped_root | default(hosting_reaped_root__default) if hosting_reaped_root__default is defined else hosting_reaped_root | default(omit) }}"
+    hosting_textfile_dir: "{{ hosting_textfile_dir | default(hosting_textfile_dir__default) if hosting_textfile_dir__default is defined else hosting_textfile_dir | default(omit) }}"
+    hosting_registries: "{{ hosting_registries | default(hosting_registries__default) if hosting_registries__default is defined else hosting_registries | default(omit) }}"
+    hosting_merge_ref: "{{ hosting_merge_ref | default(hosting_merge_ref__default) if hosting_merge_ref__default is defined else hosting_merge_ref | default(omit) }}"
+    hosting_requested_limit: "{{ hosting_requested_limit | default(hosting_requested_limit__default) if hosting_requested_limit__default is defined else hosting_requested_limit | default(omit) }}"
+    hosting_requested_target: "{{ hosting_requested_target | default(hosting_requested_target__default) if hosting_requested_target__default is defined else hosting_requested_target | default(omit) }}"
+    hosting_deploy_apply: "{{ hosting_deploy_apply | default(hosting_deploy_apply__default) if hosting_deploy_apply__default is defined else hosting_deploy_apply | default(omit) }}"
+    hosting_default_mem_limit: "{{ hosting_default_mem_limit | default(hosting_default_mem_limit__default) if hosting_default_mem_limit__default is defined else hosting_default_mem_limit | default(omit) }}"
+    hosting_max_mem_limit: "{{ hosting_max_mem_limit | default(hosting_max_mem_limit__default) if hosting_max_mem_limit__default is defined else hosting_max_mem_limit | default(omit) }}"
+    hosting_max_cpus: "{{ hosting_max_cpus | default(hosting_max_cpus__default) if hosting_max_cpus__default is defined else hosting_max_cpus | default(omit) }}"
+    hosting_default_cpus: "{{ hosting_default_cpus | default(hosting_default_cpus__default) if hosting_default_cpus__default is defined else hosting_default_cpus | default(omit) }}"
+    hosting_readback_timeout_s: "{{ hosting_readback_timeout_s | default(hosting_readback_timeout_s__default) if hosting_readback_timeout_s__default is defined else hosting_readback_timeout_s | default(omit) }}"
+    hosting_remove_confirm: "{{ hosting_remove_confirm | default(hosting_remove_confirm__default) if hosting_remove_confirm__default is defined else hosting_remove_confirm | default(omit) }}"
+  when: not (_service_hosting__argspec_resolved | default(false))
+
+- name: Rebind the defaults on a repeat call, ignoring this role's own leftover facts
+  ansible.builtin.set_fact:
+    hosting_root: "{{ hosting_root__default if hosting_root__default is defined else hosting_root | default(omit) }}"
+    hosting_traefik_image: "{{ hosting_traefik_image__default if hosting_traefik_image__default is defined else hosting_traefik_image | default(omit) }}"
+    hosting_socket_proxy_image: "{{ hosting_socket_proxy_image__default if hosting_socket_proxy_image__default is defined else hosting_socket_proxy_image | default(omit) }}"
+    hosting_log_level: "{{ hosting_log_level__default if hosting_log_level__default is defined else hosting_log_level | default(omit) }}"
+    hosting_traefik_memory: "{{ hosting_traefik_memory__default if hosting_traefik_memory__default is defined else hosting_traefik_memory | default(omit) }}"
+    hosting_blocked_egress_cidrs: "{{ hosting_blocked_egress_cidrs__default if hosting_blocked_egress_cidrs__default is defined else hosting_blocked_egress_cidrs | default(omit) }}"
+    hosting_reaper_interval: "{{ hosting_reaper_interval__default if hosting_reaper_interval__default is defined else hosting_reaper_interval | default(omit) }}"
+    hosting_reaped_root: "{{ hosting_reaped_root__default if hosting_reaped_root__default is defined else hosting_reaped_root | default(omit) }}"
+    hosting_textfile_dir: "{{ hosting_textfile_dir__default if hosting_textfile_dir__default is defined else hosting_textfile_dir | default(omit) }}"
+    hosting_registries: "{{ hosting_registries__default if hosting_registries__default is defined else hosting_registries | default(omit) }}"
+    hosting_merge_ref: "{{ hosting_merge_ref__default if hosting_merge_ref__default is defined else hosting_merge_ref | default(omit) }}"
+    hosting_requested_limit: "{{ hosting_requested_limit__default if hosting_requested_limit__default is defined else hosting_requested_limit | default(omit) }}"
+    hosting_requested_target: "{{ hosting_requested_target__default if hosting_requested_target__default is defined else hosting_requested_target | default(omit) }}"
+    hosting_deploy_apply: "{{ hosting_deploy_apply__default if hosting_deploy_apply__default is defined else hosting_deploy_apply | default(omit) }}"
+    hosting_default_mem_limit: "{{ hosting_default_mem_limit__default if hosting_default_mem_limit__default is defined else hosting_default_mem_limit | default(omit) }}"
+    hosting_max_mem_limit: "{{ hosting_max_mem_limit__default if hosting_max_mem_limit__default is defined else hosting_max_mem_limit | default(omit) }}"
+    hosting_max_cpus: "{{ hosting_max_cpus__default if hosting_max_cpus__default is defined else hosting_max_cpus | default(omit) }}"
+    hosting_default_cpus: "{{ hosting_default_cpus__default if hosting_default_cpus__default is defined else hosting_default_cpus | default(omit) }}"
+    hosting_readback_timeout_s: "{{ hosting_readback_timeout_s__default if hosting_readback_timeout_s__default is defined else hosting_readback_timeout_s | default(omit) }}"
+    hosting_remove_confirm: "{{ hosting_remove_confirm__default if hosting_remove_confirm__default is defined else hosting_remove_confirm | default(omit) }}"
+  when: _service_hosting__argspec_resolved | default(false)
+
+- name: Record that this role has resolved its options in this play
+  ansible.builtin.set_fact:
+    _service_hosting__argspec_resolved: true

@@ -1,0 +1,117 @@
+---
+# service_hosting (remove_app) — remove ONE app from a reaping tier (DEV), now, and prove it gone.
+#
+# Runs the same /usr/local/sbin/hosting-reaper --remove the TTL timer uses, so an explicit removal
+# and a timed one are one implementation. A PROD app is refused: PROD changes arrive by a merged PR,
+# and this entrypoint has no merge check. Named volumes are kept (the reaper never deletes data).
+#
+# Read-backs, from the daemon and from Traefik rather than the script's exit code: no container of
+# the project remains, the app directory is gone from the tier root, and Traefik answers 404 for the
+# app's Host (the router left with the container).
+
+- name: Load this entrypoint's generated defaults
+  ansible.builtin.include_vars:
+    file: "{{ role_path }}/defaults/remove_app.yml"
+
+- name: Resolve declared options over their generated defaults
+  ansible.builtin.include_tasks: _resolve_defaults.yml
+
+- name: Apply the generated argspec guards
+  ansible.builtin.include_tasks: _argspec_guards.yml
+
+- name: Work out what would be removed
+  ansible.builtin.set_fact:
+    _hosting_tier_name: "{{ hosting_app.tier | default('') }}"
+    _hosting_rm_name: "{{ hosting_app.name | default('') }}"
+
+- name: HARD GATE — a named app on a declared REAPING tier
+  ansible.builtin.assert:
+    that:
+      - _hosting_tier_name in hosting_tiers
+      - hosting_tiers[_hosting_tier_name].reap | default(false) | bool
+      - _hosting_rm_name is match('^[a-z][a-z0-9-]{1,28}[a-z0-9]$')
+    fail_msg: >-
+      REFUSED. remove_app takes an app on a reaping tier
+      ({{ hosting_tiers | dict2items | selectattr('value.reap', 'defined') | selectattr('value.reap') | map(attribute='key') | list }});
+      got name '{{ _hosting_rm_name }}' on tier '{{ _hosting_tier_name }}'. A PROD app is removed by a
+      merged PR that deletes its definition, not by this entrypoint.
+    quiet: true
+
+- name: Derive the app's directory, project and hostname
+  ansible.builtin.set_fact:
+    _hosting_dir: "{{ hosting_tiers[_hosting_tier_name].root }}/{{ _hosting_rm_name }}"
+    _hosting_project: "hosting-{{ _hosting_tier_name }}-{{ _hosting_rm_name }}"
+    _hosting_fqdn: "{{ _hosting_rm_name }}.{{ hosting_tiers[_hosting_tier_name].suffix }}"
+
+- name: Is the app deployed?
+  ansible.builtin.stat:
+    path: "{{ _hosting_dir }}/hosting.json"
+  register: _hosting_rm_record
+
+- name: Report the plan
+  ansible.builtin.debug:
+    msg:
+      - "{{ 'REMOVE' if hosting_remove_confirm | bool else 'PREVIEW (hosting_remove_confirm=true to act)' }}"
+      - >-
+        {{ _hosting_project }} ({{ _hosting_fqdn }}):
+        {{ 'deployed, would be removed' if _hosting_rm_record.stat.exists else 'NOT deployed, nothing to remove' }}
+
+- name: Remove
+  when:
+    - hosting_remove_confirm | bool
+    - _hosting_rm_record.stat.exists
+  block:
+    - name: Remove the app through the reaper (compose down, prove gone, move the directory aside)
+      ansible.builtin.command:
+        argv: [/usr/local/sbin/hosting-reaper, --remove, "{{ _hosting_tier_name }}", "{{ _hosting_rm_name }}"]
+      register: _hosting_rm
+      changed_when: _hosting_rm.rc == 0
+      failed_when: false
+
+    - name: HARD GATE — the reaper reported the removal
+      ansible.builtin.assert:
+        that:
+          - _hosting_rm.rc == 0
+        fail_msg: "hosting-reaper --remove failed (rc={{ _hosting_rm.rc }}): {{ _hosting_rm.stdout_lines + _hosting_rm.stderr_lines }}"
+        success_msg: "{{ _hosting_rm.stdout_lines | last | default('') }}"
+        quiet: false
+
+- name: Read back (always, so a preview also shows the live state)
+  when: hosting_remove_confirm | bool
+  block:
+    - name: Ask the daemon for any container of the project
+      ansible.builtin.command:
+        argv: [docker, ps, -aq, --filter, "label=com.docker.compose.project={{ _hosting_project }}"]
+      register: _hosting_rm_left
+      changed_when: false
+
+    - name: Is the directory still under the tier root?
+      ansible.builtin.stat:
+        path: "{{ _hosting_dir }}"
+      register: _hosting_rm_dir
+
+    - name: Ask Traefik for the app's Host
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ hosting_tiers[_hosting_tier_name].entrypoint_port }}/"
+        headers:
+          Host: "{{ _hosting_fqdn }}"
+        status_code: [200, 301, 302, 403, 404, 502, 503]
+      register: _hosting_rm_route
+      until: _hosting_rm_route.status | default(0) == 404
+      retries: 10
+      delay: 2
+      changed_when: false
+      failed_when: false
+
+    - name: HARD GATE — no container, no directory, and Traefik no longer routes the Host
+      ansible.builtin.assert:
+        that:
+          - _hosting_rm_left.stdout_lines | length == 0
+          - not _hosting_rm_dir.stat.exists
+          - _hosting_rm_route.status | default(0) == 404
+        fail_msg: >-
+          {{ _hosting_project }} is not fully removed: containers={{ _hosting_rm_left.stdout_lines }},
+          directory present={{ _hosting_rm_dir.stat.exists }}, Traefik answered
+          {{ _hosting_rm_route.status | default('nothing') }} for Host {{ _hosting_fqdn }} (want 404).
+        success_msg: "{{ _hosting_project }} removed: no container, no directory, Traefik 404 for {{ _hosting_fqdn }}."
+        quiet: false

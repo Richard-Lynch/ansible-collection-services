@@ -1,0 +1,18 @@
+---
+dependency: { name: galaxy }
+driver: { name: default }
+platforms: [{ name: localhost }]
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: "${MOLECULE_PROJECT_DIRECTORY}/../"
+    ANSIBLE_COLLECTIONS_PATH: "${MOLECULE_PROJECT_DIRECTORY}/../../collections.galaxy:${MOLECULE_PROJECT_DIRECTORY}/../../../../.."
+  inventory: { host_vars: { localhost: { ansible_connection: local } } }
+  playbooks: { prepare: prepare.yml, converge: converge.yml, verify: verify.yml, cleanup: cleanup.yml }
+verifier: { name: ansible }
+scenario:
+  # The stub Slack (tests/stub_slack.py) holds the workspace for the whole sequence, so the
+  # idempotence step is a REAL second reconcile against the state the converge left.
+  # destroy/create are no-ops for this driver but RESET molecule's "already prepared" flag: without
+  # them a run after a failed one skips prepare, starts no stub, and fails for that reason alone.
+  test_sequence: [destroy, syntax, create, cleanup, prepare, converge, idempotence, verify, cleanup, destroy]

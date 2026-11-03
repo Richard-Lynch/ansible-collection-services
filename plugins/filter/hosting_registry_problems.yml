@@ -1,0 +1,26 @@
+# Copyright: (c) 2026, Richard Lynch
+# GNU General Public License v3.0+ (see https://www.gnu.org/licenses/gpl-3.0.txt)
+---
+DOCUMENTATION:
+  name: hosting_registry_problems
+  short_description: Every reason a list of registry logins cannot be used and proven
+  author: Richard Lynch (@Richard-Lynch)
+  description:
+    - Checks what an argument spec cannot. A host Docker would read as something else, a duplicate
+      host (the second login replaces the first), or a probe image that is not on that registry or
+      not pinned is refused. The probe pull is what proves the login works.
+  options:
+    _input:
+      description: Registry entries, each C({host, username, item, vault, probe_image}).
+      type: list
+      elements: dict
+      required: true
+EXAMPLES: |
+  - name: Refuse an unusable registry list
+    ansible.builtin.assert:
+      that: (registries | richard_lynch.services.hosting_registry_problems) == []
+RETURN:
+  _value:
+    description: One message per problem; empty when the list is usable.
+    type: list
+    elements: str

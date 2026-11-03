@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# disclose — thin caller of the shared disclosure gate (ansible-devkit's reusable-disclose.yml).
+# The job id `disclose` makes the required status check `disclose / gate`. Fails closed when the
+# DISCLOSE_PATTERNS or DISCLOSE_ALLOW secret is absent (a fork PR never receives it).
+name: disclose
+
+on:
+  pull_request:
+    # `edited` re-runs the gate when a PR is retargeted to another base branch.
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+jobs:
+  disclose:
+    uses: Richard-Lynch/ansible-devkit/.github/workflows/reusable-disclose.yml@v0.2.3
+    secrets:
+      DISCLOSE_PATTERNS: ${{ secrets.DISCLOSE_PATTERNS }}
+      DISCLOSE_ALLOW: ${{ secrets.DISCLOSE_ALLOW }}

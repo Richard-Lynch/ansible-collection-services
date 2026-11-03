@@ -1,0 +1,17 @@
+---
+# AUTO-GENERATED defaults file — DO NOT EDIT.
+#
+# Source of truth: roles/stack_arr_jellystat/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate stack_arr_jellystat
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+# Entrypoint:      main
+
+# Pinned by digest (upstream publishes no semver image tag).
+jellystat_image__default: cyfershepard/jellystat@sha256:683358900cff8d299fa93add731b2976d7c9bc49f9593f40f5351498fd488767
+jellystat_db_image__default: postgres:15.2
+jellystat_network__default: traefik
+jellystat_config_dir__default: /opt/jellystat
+jellystat_postgres_user__default: postgres

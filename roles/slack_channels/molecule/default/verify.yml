@@ -1,0 +1,150 @@
+---
+- name: Verify - the workspace the converge left, and the refusals
+  hosts: localhost
+  gather_facts: false
+  vars_files: [vars.yml]
+  tasks:
+    - name: Read the stub workspace
+      ansible.builtin.uri:
+        url: "{{ stub_url }}/_state"
+        return_content: true
+      register: ws_raw
+
+    - name: Parse it
+      ansible.builtin.set_fact:
+        chans: "{{ (ws_raw.content | from_json).channels }}"
+
+    - name: The converge renamed, created, joined and invited, and removed nobody
+      vars:
+        general: "{{ chans | selectattr('name', 'equalto', 'general') | first }}"
+        alerts: "{{ chans | selectattr('name', 'equalto', 'alerts') | first }}"
+        builds: "{{ chans | selectattr('name', 'equalto', 'builds') | first }}"
+        backlog: "{{ chans | selectattr('name', 'equalto', 'backlog') | first }}"
+      ansible.builtin.assert:
+        that:
+          - general.id == 'C001'
+          - "'lobby' not in (chans | map(attribute='name'))"
+          - general.purpose == 'Main conversation'
+          - alerts.creator == 'UBOT0001'
+          - "alerts.members | sort == ['UBOT0001', 'UOWNER01']"
+          - alerts.purpose == 'Service alerts'
+          - alerts.topic == 'Feed only. @helper in &lt;a thread&gt; to ask'
+          - general.messages | length == 1
+          - general.pins == [general.messages[0].ts]
+          - general.messages[0].text is search('guide:general$')
+          - alerts.pins | length == 1
+          - alerts.bookmarks | map(attribute='link') | list == ['https://grafana.example']
+          - "'UBOT0001' in builds.members"
+          - "'UEXTRA01' in backlog.members"
+        quiet: true
+
+    - name: MUST NOT ACT - report-only plans a new channel and creates nothing
+      ansible.builtin.include_role:
+        name: slack_channels
+      vars:
+        slack_channels_token: "{{ stub_token }}"
+        slack_channels_api_url: "{{ stub_url }}"
+        slack_channels: [{name: engineering, members: [UOWNER01]}]
+        slack_channels_apply: false
+
+    - name: The report saw the work and did none of it
+      ansible.builtin.assert:
+        that:
+          - _slack_channels.plan | map(attribute='op') | list == ['create', 'invite']
+          - _slack_channels.scopes | sort == stub_state.scopes | sort
+          - _slack_channels.results is not defined
+        quiet: true
+
+    - name: MUST FAIL - a bot renaming a channel a human made (Slack answers not_authorized)
+      block:
+        - name: Rename lobby-config
+          ansible.builtin.include_role:
+            name: slack_channels
+          vars:
+            slack_channels_token: "{{ stub_token }}"
+            slack_channels_api_url: "{{ stub_url }}"
+            slack_channels: [{name: general-config, rename_from: lobby-config}]
+            slack_channels_apply: true
+        - name: Not reached
+          ansible.builtin.set_fact:
+            rename_case: passed
+      rescue:
+        - name: Record the exact error
+          ansible.builtin.set_fact:
+            rename_case: "{{ (_slack_channels.results | rejectattr('ok') | first).slack_error }}"
+
+    - name: MUST FAIL - an archived target is refused before anything is done
+      block:
+        - name: Declare the archived channel beside a new one
+          ansible.builtin.include_role:
+            name: slack_channels
+          vars:
+            slack_channels_token: "{{ stub_token }}"
+            slack_channels_api_url: "{{ stub_url }}"
+            slack_channels: [{name: diary}, {name: engineering}]
+            slack_channels_apply: true
+        - name: Not reached
+          ansible.builtin.set_fact:
+            archived_case: passed
+      rescue:
+        - name: Record
+          ansible.builtin.set_fact:
+            archived_case: refused
+
+    - name: MUST FAIL - a channel name written with its hash
+      block:
+        - name: Declare '#engineering'
+          ansible.builtin.include_role:
+            name: slack_channels
+          vars:
+            slack_channels_token: "{{ stub_token }}"
+            slack_channels_api_url: "{{ stub_url }}"
+            slack_channels: [{name: "#engineering"}]
+        - name: Not reached
+          ansible.builtin.set_fact:
+            hash_case: passed
+      rescue:
+        - name: Record
+          ansible.builtin.set_fact:
+            hash_case: refused
+
+    - name: Re-read the workspace
+      ansible.builtin.uri:
+        url: "{{ stub_url }}/_state"
+        return_content: true
+      register: ws_after
+
+    - name: All three failed, for the stated reason, and none of them changed the workspace
+      vars:
+        names_after: "{{ (ws_after.content | from_json).channels | map(attribute='name') | list }}"
+      ansible.builtin.assert:
+        that:
+          - rename_case == 'not_authorized'
+          - archived_case == 'refused'
+          - hash_case == 'refused'
+          - "'lobby-config' in names_after"
+          - "'engineering' not in names_after"
+        quiet: true
+
+    - name: The same rename WITH the admin's user token succeeds, keeping the channel id
+      ansible.builtin.include_role:
+        name: slack_channels
+      vars:
+        slack_channels_token: "{{ stub_token }}"
+        slack_channels_admin_token: "{{ stub_admin_token }}"
+        slack_channels_api_url: "{{ stub_url }}"
+        slack_channels: [{name: general-config, rename_from: lobby-config}]
+        slack_channels_apply: true
+
+    - name: Read the workspace once more
+      ansible.builtin.uri:
+        url: "{{ stub_url }}/_state"
+        return_content: true
+      register: ws_final
+
+    - name: C002 is now general-config, and the report named the admin
+      ansible.builtin.assert:
+        that:
+          - (ws_final.content | from_json).channels | selectattr('id', 'equalto', 'C002') | map(attribute='name') | first == 'general-config'
+          - _slack_channels.admin_user_id == 'UOWNER01'
+        quiet: true

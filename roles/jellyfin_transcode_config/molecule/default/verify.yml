@@ -1,0 +1,102 @@
+---
+- name: Verify — the dry run wrote nothing, and each refusal fires for its stated reason
+  hosts: localhost
+  gather_facts: true
+  vars:
+    fixture_dir: /tmp/molecule-jellyfin-transcode-config
+  tasks:
+    - name: Read the fixture back
+      ansible.builtin.slurp: { src: "{{ fixture_dir }}/encoding.xml" }
+      register: _xml
+
+    - name: The dry run left encoding.xml as it was, and made no backup
+      ansible.builtin.find:
+        { paths: "{{ fixture_dir }}", patterns: "encoding.xml.bak-*" }
+      register: _baks
+
+    - name: Assert nothing was written
+      ansible.builtin.assert:
+        that:
+          - "'<HardwareAccelerationType>none</HardwareAccelerationType>' in (_xml.content | b64decode)"
+          - "'<VaapiDevice>/dev/dri/renderD128</VaapiDevice>' in (_xml.content | b64decode)"
+          - _baks.matched == 0
+        fail_msg: "A dry run modified {{ fixture_dir }}/encoding.xml or left a backup."
+        quiet: true
+
+    # Order matters: the argspec refusal must run before any call that resolves the options, or
+    # the resolved jtc_config_path fact would satisfy the argspec on the later calls.
+    - name: "no-config-path — refused"
+      block:
+        - name: "no-config-path — run the role"
+          ansible.builtin.include_role:
+            name: jellyfin_transcode_config
+          vars:
+            jtc_device: /dev/dri/renderD129
+
+        - name: "no-config-path — it must not have been accepted"
+          ansible.builtin.set_fact:
+            _accepted_no_config_path: true
+      rescue:
+        - name: "no-config-path — capture why"
+          ansible.builtin.set_fact:
+            _why_no_config_path: "{{ ansible_failed_result.msg | default('') }}"
+
+    - name: "no-config-path — refused for the stated reason"
+      ansible.builtin.assert:
+        that:
+          - not (_accepted_no_config_path | default(false))
+          - "'jtc_config_path' in (_why_no_config_path | default(''))"
+        fail_msg: "no-config-path: expected a refusal naming 'jtc_config_path', got: {{ _why_no_config_path | default('ACCEPTED') }}"
+        quiet: true
+
+    - name: "config-missing — refused"
+      block:
+        - name: "config-missing — run the role"
+          ansible.builtin.include_role:
+            name: jellyfin_transcode_config
+          vars:
+            jtc_device: /dev/dri/renderD129
+            jtc_config_path: /nonexistent/encoding.xml
+        - name: "config-missing — it must not have been accepted"
+          ansible.builtin.set_fact:
+            _accepted_config_missing: true
+      rescue:
+        - name: "config-missing — capture why"
+          ansible.builtin.set_fact:
+            _why_config_missing: "{{ ansible_failed_result.msg | default('') }}"
+
+    - name: "config-missing — refused for the stated reason"
+      ansible.builtin.assert:
+        that:
+          - not (_accepted_config_missing | default(false))
+          - "'does not exist' in (_why_config_missing | default(''))"
+        fail_msg: "config-missing: expected a refusal naming 'does not exist', got: {{ _why_config_missing | default('ACCEPTED') }}"
+        quiet: true
+
+    - name: "segment-keep-zero — refused"
+      block:
+        - name: "segment-keep-zero — run the role"
+          ansible.builtin.include_role:
+            name: jellyfin_transcode_config
+          vars:
+            jtc_device: /dev/dri/renderD129
+            jtc_config_path: "{{ fixture_dir }}/encoding.xml"
+            jtc_segment_keep_seconds: 0
+        - name: "segment-keep-zero — it must not have been accepted"
+          ansible.builtin.set_fact:
+            _accepted_segment_keep_zero: true
+      rescue:
+        - name: "segment-keep-zero — capture why"
+          ansible.builtin.set_fact:
+            _why_segment_keep_zero: "{{ ansible_failed_result.msg | default('') }}"
+
+    - name: "segment-keep-zero — refused for the stated reason"
+      ansible.builtin.assert:
+        that:
+          - not (_accepted_segment_keep_zero | default(false))
+          - "'jtc_segment_keep_seconds violates a constraint' in (_why_segment_keep_zero | default(''))"
+        fail_msg: "segment-keep-zero: expected a refusal naming 'jtc_segment_keep_seconds violates a constraint', got: {{ _why_segment_keep_zero | default('ACCEPTED') }}"
+        quiet: true
+
+    - name: Clean up
+      ansible.builtin.file: { path: "{{ fixture_dir }}", state: absent }

@@ -1,0 +1,29 @@
+# Managed by service_hosting. Traefik static configuration for the {{ item.key }} tier.
+# One Traefik per tier: it has ONE entrypoint, is attached only to this tier's docker network, and
+# selects only containers labelled for this tier. A container of another tier is neither reachable
+# from here nor routed by it.
+global:
+  checkNewVersion: false
+  sendAnonymousUsage: false
+
+log:
+  level: {{ hosting_log_level }}
+accessLog:
+  format: json
+
+entryPoints:
+  {{ item.key }}:
+    address: ":{{ item.value.entrypoint_port }}"
+  ping:
+    address: ":8082"
+
+ping:
+  entryPoint: ping
+
+providers:
+  docker:
+    # Through the read-only proxy, never the real socket.
+    endpoint: "tcp://socket-proxy:2375"
+    exposedByDefault: false
+    # Only containers the deploy play labelled, and only for THIS tier.
+    constraints: "Label(`hosting.managed`, `true`) && Label(`hosting.tier`, `{{ item.key }}`)"

@@ -1,0 +1,4 @@
+---
+# Fixed, non-overridable role facts (as distinct from defaults/main.yml's __default vars, which
+# callers can override).
+stack_arr_service__files: "{{ role_path }}/files"

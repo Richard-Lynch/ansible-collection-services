@@ -1,0 +1,70 @@
+# Managed by service_hosting -- do not edit. The platform; apps are separate compose projects.
+name: hosting
+services:
+  socket-proxy:
+    image: {{ hosting_socket_proxy_image }}
+    restart: unless-stopped
+    environment:
+      # Read-only, and only what Traefik's docker provider calls: container list/inspect + events.
+      CONTAINERS: "1"
+      EVENTS: "1"
+      POST: "0"
+      INFO: "0"
+      IMAGES: "0"
+      NETWORKS: "0"
+      VOLUMES: "0"
+      EXEC: "0"
+      SERVICES: "0"
+      TASKS: "0"
+      SWARM: "0"
+      SECRETS: "0"
+      CONFIGS: "0"
+      PLUGINS: "0"
+      AUTH: "0"
+      BUILD: "0"
+      COMMIT: "0"
+      DISTRIBUTION: "0"
+      NODES: "0"
+      SYSTEM: "0"
+      SESSION: "0"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks: [hosting_proxy]
+    mem_limit: 64m
+    security_opt: ["no-new-privileges:true"]
+
+{% for tier, cfg in hosting_tiers.items() %}
+{#  ONE Traefik PER TIER. A single Traefik on both tier networks would let a DEV container request
+    the shared Traefik with a PROD Host and be routed to the PROD app with no Access in the path.
+    This instance is attached to its own tier network and the proxy hop only, publishes only its
+    own entrypoint, and selects only containers labelled for its tier. #}
+  traefik-{{ tier }}:
+    image: {{ hosting_traefik_image }}
+    restart: unless-stopped
+    depends_on: [socket-proxy]
+    command: ["--configFile=/etc/traefik/traefik-{{ tier }}.yml"]
+    ports:
+      - "{{ cfg.entrypoint_port }}:{{ cfg.entrypoint_port }}"
+    volumes:
+      # The DIRECTORY, not the file: an atomic rewrite makes a new inode a file bind would not see.
+      - {{ hosting_root }}/traefik:/etc/traefik:ro
+    networks:
+      hosting_proxy: {}
+      {{ cfg.network }}: {}
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping", "--configFile=/etc/traefik/traefik-{{ tier }}.yml"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    mem_limit: {{ hosting_traefik_memory }}
+    security_opt: ["no-new-privileges:true"]
+
+{% endfor %}
+networks:
+  hosting_proxy:
+    external: true
+{% for tier, cfg in hosting_tiers.items() %}
+  {{ cfg.network }}:
+    external: true
+{% endfor %}

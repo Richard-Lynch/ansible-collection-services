@@ -1,0 +1,74 @@
+---
+# AUTO-GENERATED argument spec — DO NOT EDIT.
+#
+# Source of truth: roles/jellyfin_transcode_reaper/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate jellyfin_transcode_reaper
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+argument_specs:
+  main:
+    short_description: Install a systemd timer that reaps orphaned Jellyfin transcode segments
+    description:
+      - Jellyfin deletes a session's transcode segments when that session ends CLEANLY. A
+      - client that simply vanishes — closed laptop, killed app, dropped wifi — leaves
+      - them behind, and nothing ever comes back for them.
+      - ''
+      - Left alone they fill the disk the transcode directory lives on, and every service
+      - sharing that disk then fails (a database returning disk I/O errors, an API
+      - returning 500) while its container still reports healthy.
+      - ''
+      - RUNS ON THE HOST, NOT FROM THE CONTROL NODE. A cleanup that only happens when
+      - someone remembers to run Ansible is not a cleanup — the host has to look after
+      - itself between runs. Ansible installs the timer; systemd runs it.
+      - ''
+      - This is the half that handles ABANDONED sessions. Jellyfin's own throttling (see
+      - jellyfin_transcode_config) bounds how much a LIVE session writes. Neither
+      - 'alone is enough: throttling does nothing about orphans, and reaping does nothing'
+      - about one session transcoding a whole film at disk speed.
+    version_added: '1.0'
+    author: Collection maintainers
+    options:
+      jtr_transcode_dir:
+        description:
+          - Jellyfin's TranscodingTempPath as seen from the HOST — the left side of
+          - the container's config bind mount, not the /config/... path inside it.
+          - "No default: where the config volume lives is the installation's choice."
+        type: str
+        required: true
+      jtr_older_than_min:
+        description:
+          - 'Only reap segments older than this many minutes. 6h by default: long'
+          - enough that a paused-but-live session is never touched, short enough to
+          - be useful. Floored at 60 — a shorter window risks deleting segments from
+          - a session that is merely paused, and the reaper cannot tell the
+          - difference.
+        type: int
+        required: false
+        default: 360
+      jtr_on_calendar:
+        description:
+          - systemd OnCalendar expression. Daily at 04:00 by default — outside
+          - plausible viewing hours, so the 'skip while transcoding' guard rarely has
+          - to fire. The timer is Persistent, so a run missed while the host was off
+          - happens at next boot.
+        type: str
+        required: false
+        default: '*-*-* 04:00:00'
+      jtr_script_path:
+        description:
+          - Where the reaper script is installed.
+        type: str
+        required: false
+        default: /usr/local/sbin/jellyfin-reap-transcodes
+      jtr_state:
+        description:
+          - "'absent' removes the timer, unit and script. The cleanup is a host-level"
+          - capability, so retiring it should not mean leaving orphaned units behind.
+        type: str
+        required: false
+        default: present
+        choices:
+          - present
+          - absent

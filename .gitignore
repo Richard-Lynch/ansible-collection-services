@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+# ansible-test output and built artifacts
+tests/output/
+dist/
+*.tar.gz
+# a private pattern file or gate report must never be committed here
+.disclosure/
+# scratch worktrees
+.claude/worktrees/
+# collections installed for molecule (ansible-galaxy collection install -p collections.galaxy)
+collections.galaxy/

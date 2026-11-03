@@ -1,0 +1,42 @@
+---
+# Runs on the target host, so it connects to the port where the role published it: the bind address,
+# or loopback when the port is on every interface.
+- name: Work out the address to verify against
+  ansible.builtin.set_fact:
+    _postgres_verify_host: >-
+      {{ postgres_verify_host | default((postgres_bind_address | default('', true)
+         if (postgres_bind_address | default('', true)) not in ['', '0.0.0.0'] else '127.0.0.1'), true) }}
+
+- name: Wait for Postgres to be reachable on port {{ postgres_host_port }}
+  ansible.builtin.wait_for:
+    host: "{{ _postgres_verify_host }}"
+    port: "{{ postgres_host_port }}"
+    timeout: 30
+
+# community.postgresql's modules need a PostgreSQL client library on the host that runs them.
+- name: Ensure pip is available for the PostgreSQL client library
+  ansible.builtin.include_role:
+    name: richard_lynch.common.setup_pip
+
+- name: Install the PostgreSQL client library (psycopg2-binary) for community.postgresql
+  ansible.builtin.pip:
+    name:
+      # The binary wheel: building psycopg2 from source needs libpq headers and a compiler.
+      - psycopg2-binary
+    state: present
+
+- name: Check Postgres is responding to queries
+  community.postgresql.postgresql_info:
+    login_host: "{{ _postgres_verify_host }}"
+    login_port: "{{ postgres_host_port }}"
+    login_user: "{{ postgres_user }}"
+    login_password: "{{ postgres_password }}"
+  register: postgres_status
+
+- name: Assert that the Postgres connection is successful
+  ansible.builtin.assert:
+    that:
+      - "'databases' in postgres_status"
+      - "postgres_db in postgres_status.databases"
+    fail_msg: "Postgres is running but database '{{ postgres_db }}' was not found"
+    success_msg: "Postgres is running and database '{{ postgres_db }}' exists"

@@ -1,0 +1,53 @@
+---
+- name: Verify — the rendered reaper, and the refusal of a call without a transcode directory
+  hosts: localhost
+  gather_facts: false
+  vars:
+    render_dir: /tmp/molecule-jellyfin-transcode-reaper
+  tasks:
+    - name: Read the rendered files
+      ansible.builtin.slurp: { src: "{{ render_dir }}/{{ item }}" }
+      loop: [reap.sh, reap.service, reap.timer]
+      register: _r
+
+    - name: The script is scoped to the caller's directory, quoted, and to segment files only
+      vars:
+        _sh: "{{ _r.results[0].content | b64decode }}"
+        _svc: "{{ _r.results[1].content | b64decode }}"
+        _tmr: "{{ _r.results[2].content | b64decode }}"
+      ansible.builtin.assert:
+        that:
+          - '"DIR=''/srv/media server/cache/transcodes''" in _sh'
+          - "'AGE_MIN=360' in _sh"
+          - "'-maxdepth 1' in _sh"
+          - '"-name ''*.ts'' -o -name ''*.m3u8''" in _sh'
+          - "'pgrep -c -x ffmpeg' in _sh"
+          - "'ExecStart=/usr/local/sbin/jellyfin-reap-transcodes' in _svc"
+          - "'OnCalendar=*-*-* 04:00:00' in _tmr"
+        fail_msg: "The rendered reaper is not what the role promises."
+        quiet: true
+
+    - name: A call without jtr_transcode_dir is refused by the argspec
+      block:
+        - name: Run the role with no transcode directory
+          ansible.builtin.include_role:
+            name: jellyfin_transcode_reaper
+
+        - name: It must not have been accepted
+          ansible.builtin.set_fact:
+            _accepted: true
+      rescue:
+        - name: Capture why
+          ansible.builtin.set_fact:
+            _why: "{{ ansible_failed_result.msg | default('') }}"
+
+    - name: Refused, naming the missing option
+      ansible.builtin.assert:
+        that:
+          - not (_accepted | default(false))
+          - "'jtr_transcode_dir' in (_why | default(''))"
+        fail_msg: "expected a refusal naming jtr_transcode_dir, got: {{ _why | default('ACCEPTED') }}"
+        quiet: true
+
+    - name: Clean up
+      ansible.builtin.file: { path: "{{ render_dir }}", state: absent }

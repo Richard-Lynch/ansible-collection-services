@@ -1,0 +1,44 @@
+---
+# Resolve caller-supplied vars over the generated defaults (defaults/main.yml is GENERATED from
+# meta/argument_specs.py — see tools/argspec/cli.py — and holds `*__default` vars, not the plain
+# names the template uses).
+- name: Assert the mandatory per-service vars were supplied
+  ansible.builtin.assert:
+    that:
+      - arr_service_name is defined
+      - arr_service is defined
+      - arr_service.image is defined
+      - arr_service.image | length > 0
+    fail_msg: >-
+      stack_arr_service requires arr_service_name and arr_service.image — this role deploys ONE
+      named service per invocation (call it in a loop for several).
+    quiet: true
+
+- name: Assert the exportarr sidecar's API key was actually supplied (never ship an empty secret)
+  ansible.builtin.assert:
+    that:
+      - arr_service.exportarr.api_key | default('') | length > 0
+    fail_msg: >-
+      arr_service.exportarr is defined but exportarr.api_key is empty — resolve it in the calling
+      play before invoking this role (see README "Secrets").
+    quiet: true
+  when: arr_service.exportarr is defined
+
+- name: Store vars
+  ansible.builtin.set_fact:
+    arr_network: "{{ arr_network | default(arr_network__default) }}"
+    arr_exportarr_bind_address: "{{ arr_exportarr_bind_address | default(arr_exportarr_bind_address__default) }}"
+    arr_config_base_dir: "{{ arr_config_base_dir | default(arr_config_base_dir__default) }}"
+    arr_common_puid: "{{ arr_common_puid | default(arr_common_puid__default) }}"
+    arr_common_pgid: "{{ arr_common_pgid | default(arr_common_pgid__default) }}"
+    arr_common_umask: "{{ arr_common_umask | default(arr_common_umask__default) }}"
+    arr_common_tz: "{{ arr_common_tz | default(arr_common_tz__default) }}"
+
+- name: Store service config dir
+  # Deploy to the EXISTING on-host directory when its name differs from arr_service_name
+  # (compose_path_override). Deploying to arr_service_name's path instead would silently create a
+  # SECOND, never-reconciled directory next to the one in use. The override never appears in any
+  # role-facing identifier (container_name, exportarr name, etc. use arr_service_name) — only in
+  # this one on-disk destination path.
+  ansible.builtin.set_fact:
+    stack_arr_service__config_dir: "{{ arr_config_base_dir }}/{{ arr_service.compose_path_override | default(arr_service_name) }}"

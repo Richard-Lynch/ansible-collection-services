@@ -1,0 +1,64 @@
+---
+# AUTO-GENERATED argument spec — DO NOT EDIT.
+#
+# Source of truth: roles/stack_arr_jellystat/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate stack_arr_jellystat
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+argument_specs:
+  main:
+    short_description: Write jellystat + jellystat-db compose (compose layer only)
+    description:
+      - 'Writes <jellystat_config_dir>/docker-compose.yml: the jellystat app container'
+      - plus its own jellystat-db PostgreSQL dependency. Kept out of stack_arr_service because it
+      - is a real two-container dependency (depends_on + shm_size + two DB credentials
+      - shared between them), not a single linuxserver-shaped app.
+      - Compose layer only — never touches ./data/postgres-data or ./data/backup-data
+      - contents, and never starts/stops/recreates a container as a side effect.
+    version_added: '1.0'
+    author: Collection maintainers
+    options:
+      jellystat_image:
+        description:
+          - Pinned by digest (upstream publishes no semver image tag).
+        type: str
+        required: false
+        default: cyfershepard/jellystat@sha256:683358900cff8d299fa93add731b2976d7c9bc49f9593f40f5351498fd488767
+      jellystat_db_image:
+        type: str
+        required: false
+        default: postgres:15.2
+      jellystat_network:
+        type: str
+        required: false
+        default: traefik
+      jellystat_config_dir:
+        type: str
+        required: false
+        default: /opt/jellystat
+      jellystat_postgres_user:
+        type: str
+        required: false
+        default: postgres
+      jellystat_postgres_password:
+        description:
+          - Already-RESOLVED value (plain string). Resolve it in the calling play, never
+          - inside this role (same as stack_arr_service's exportarr.api_key), which keeps
+          - molecule offline-testable.
+        type: str
+        required: true
+      jellystat_jwt_secret:
+        description:
+          - Already-RESOLVED value (plain string) — see jellystat_postgres_password.
+        type: str
+        required: true
+      jellystat_traefik_hosts:
+        description:
+          - Hostnames the Traefik router matches (one Host() clause each). List each
+          - 'name once, and only names that resolve to this Traefik instance: a Host()'
+          - for a name nothing resolves is a rule that can never match.
+        type: list
+        required: true
+        elements: str

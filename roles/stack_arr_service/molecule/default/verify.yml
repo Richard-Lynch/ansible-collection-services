@@ -1,0 +1,89 @@
+---
+- name: Verify rendered arr-service compose files
+  hosts: localhost
+  gather_facts: false
+  vars:
+    render_dir: /tmp/molecule-stack-arr-service
+  tasks:
+    - name: Read rendered files
+      ansible.builtin.slurp: { src: "{{ render_dir }}/{{ item }}/docker-compose.yml" }
+      loop: [sonarr, jellyfin, downloads]
+      register: _files
+
+    - name: Decode
+      ansible.builtin.set_fact:
+        sonarr_compose: "{{ _files.results[0].content | b64decode }}"
+        jellyfin_compose: "{{ _files.results[1].content | b64decode }}"
+        qbt_compose: "{{ _files.results[2].content | b64decode }}"
+
+    - name: sonarr — pinned image, common env, traefik labels, exportarr sidecar pinned to v2.3.0
+      ansible.builtin.assert:
+        that:
+          - "'image: lscr.io/linuxserver/sonarr:4.0.15.2941-ls289' in sonarr_compose"
+          - "'sonarr:latest' not in sonarr_compose"
+          - "'PUID: 1000' in sonarr_compose"
+          - "'PGID: 1000' in sonarr_compose"
+          - "'TZ: Etc/UTC' in sonarr_compose"
+          - "'traefik.enable: true' in sonarr_compose"
+          - "'Host(`sonarr.media.example.com`) || Host(`sonarr.example.com`)' in sonarr_compose"
+          - "'exportarr-sonarr:' in sonarr_compose"
+          - "'image: ghcr.io/onedr0p/exportarr:v2.3.0' in sonarr_compose"
+          - "'exportarr:latest' not in sonarr_compose"
+          - "'- 127.0.0.1:9707:9707' in sonarr_compose"
+          - "'external: true' in sonarr_compose"
+        fail_msg: "sonarr compose missing an expected invariant."
+
+    - name: sonarr — the exportarr API key was rendered (proves the value flows through)
+      ansible.builtin.assert:
+        that:
+          - "'API_KEY: \"TEST_KEY_NOT_REAL\"' in sonarr_compose"
+        fail_msg: "exportarr API key did not render into the compose environment."
+
+    - name: jellyfin — the GPU driver bind mounts render correctly
+      # Each detail of these two mounts is asserted because each one is load-bearing:
+      #   - mounted OVER the image's own driver path, because jellyfin-ffmpeg's libva IGNORES
+      #     LIBVA_DRIVERS_PATH and only searches compiled-in paths
+      #   - gmmlib onto the LINKER path, not merely beside the driver, or dlopen fails
+      #   - both READ-ONLY, so a container can never corrupt the built artifacts
+      ansible.builtin.assert:
+        that:
+          - "'/opt/vaapi-driver/iHD_drv_video.so:/usr/lib/jellyfin-ffmpeg/lib/dri/iHD_drv_video.so:ro' in jellyfin_compose"
+          - "'/opt/vaapi-driver/libigdgmm.so.12:/usr/lib/x86_64-linux-gnu/libigdgmm.so.12:ro' in jellyfin_compose"
+        fail_msg: "jellyfin compose is missing or malforming the GPU driver bind mounts."
+
+    - name: jellyfin — devices, group_add, extra env, dual entrypoints
+      ansible.builtin.assert:
+        that:
+          - "'devices:' in jellyfin_compose"
+          - "'/dev/dri:/dev/dri' in jellyfin_compose"
+          - "'group_add:' in jellyfin_compose"
+          - "'\"2001\"' in jellyfin_compose"
+          - "'GIDLIST: 2001,2003' in jellyfin_compose"
+          - "'websecure,websecure_alt' in jellyfin_compose"
+          - "'exportarr' not in jellyfin_compose"
+        fail_msg: "jellyfin compose missing device passthrough / group_add / extra env / dual entrypoints."
+
+    - name: qbittorrent — network_mode + raw sibling containers (gluetun) present verbatim
+      ansible.builtin.assert:
+        that:
+          - "'network_mode: \"service:gluetun\"' in qbt_compose"
+          - "'gluetun:' in qbt_compose"
+          - "'VPN_SERVICE_PROVIDER: custom' in qbt_compose"
+          - "'WIREGUARD_PRIVATE_KEY: TEST_WG_KEY_NOT_REAL' in qbt_compose"
+          - "'cap_add:' in qbt_compose"
+          - "'NET_ADMIN' in qbt_compose"
+        fail_msg: "qbittorrent compose missing network_mode or the raw gluetun sibling container."
+
+    - name: No file contains an un-rendered Jinja delimiter (would mean a broken template)
+      vars:
+        jinja_open: "{{ '{' ~ '{' }}"
+      ansible.builtin.assert:
+        that:
+          - jinja_open not in sonarr_compose
+          - jinja_open not in jellyfin_compose
+          - jinja_open not in qbt_compose
+        fail_msg: "Rendered compose still contains a literal Jinja expression — template bug."
+        success_msg: "All representative arr-service composes render cleanly."
+
+    - name: Clean up render dir
+      ansible.builtin.file: { path: "{{ render_dir }}", state: absent }

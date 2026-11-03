@@ -1,0 +1,125 @@
+---
+# Install (or remove) the on-host Jellyfin transcode reaper. See meta/argument_specs.py for why.
+
+- name: Resolve declared options over their generated defaults
+  ansible.builtin.include_tasks: _resolve_defaults.yml
+
+- name: Enforce the constraints Ansible's argspec validator cannot
+  ansible.builtin.include_tasks: _argspec_guards.yml
+
+- name: Remove the reaper
+  when: jtr_state == 'absent'
+  block:
+    - name: Stop and disable the timer
+      ansible.builtin.systemd_service:
+        name: jellyfin-reap-transcodes.timer
+        state: stopped
+        enabled: false
+      failed_when: false
+
+    - name: Remove the unit files and script
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/systemd/system/jellyfin-reap-transcodes.timer
+        - /etc/systemd/system/jellyfin-reap-transcodes.service
+        - "{{ jtr_script_path }}"
+      notify: Reload systemd for the reaper
+
+- name: Install the reaper
+  when: jtr_state == 'present'
+  block:
+    - name: Confirm the transcode directory exists
+      # Refusing beats installing a timer that will fail every night against a path that is not
+      # there. The script tolerates a missing directory at run time (Jellyfin recreates it), but a
+      # wrong path at INSTALL time is a configuration error worth catching now.
+      ansible.builtin.stat:
+        path: "{{ jtr_transcode_dir }}"
+      register: _jtr_dir
+
+    - name: HARD GATE — the transcode directory must be real
+      ansible.builtin.assert:
+        that:
+          - _jtr_dir.stat.exists
+          - _jtr_dir.stat.isdir
+        fail_msg: >-
+          {{ jtr_transcode_dir }} is not a directory on {{ inventory_hostname }}. This must be
+          Jellyfin's TranscodingTempPath as seen from the HOST, not the /config/... path inside the
+          container.
+
+    - name: Install the reaper script
+      ansible.builtin.template:
+        src: reap.sh.j2
+        dest: "{{ jtr_script_path }}"
+        mode: "0755"
+        owner: root
+        group: root
+      notify: Reload systemd for the reaper
+
+    - name: Install the service unit
+      ansible.builtin.template:
+        src: reap.service.j2
+        dest: /etc/systemd/system/jellyfin-reap-transcodes.service
+        mode: "0644"
+      notify: Reload systemd for the reaper
+
+    - name: Install the timer unit
+      ansible.builtin.template:
+        src: reap.timer.j2
+        dest: /etc/systemd/system/jellyfin-reap-transcodes.timer
+        mode: "0644"
+      notify: Reload systemd for the reaper
+
+    - name: Apply the unit changes now rather than at play end
+      # The enable+start below needs systemd to have re-read the units, and a handler would not run
+      # until the play ends. A `systemctl enable` against a unit systemd has not seen yet fails.
+      ansible.builtin.meta: flush_handlers
+
+    - name: Enable and start the timer
+      # The TIMER, explicitly — not the service. `systemctl enable jellyfin-reap-transcodes` would
+      # resolve to the .service and arm nothing (`systemctl stop` has the same trap).
+      ansible.builtin.systemd_service:
+        name: jellyfin-reap-transcodes.timer
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: Ask systemd when it will next run
+      # A read-back. `systemctl enable` succeeding says the symlink was made, not that the timer is
+      # armed with a future trigger — a bad OnCalendar leaves an enabled timer that never fires.
+      ansible.builtin.command:
+        argv: [systemctl, list-timers, --all, --no-pager, jellyfin-reap-transcodes.timer]
+      register: _jtr_timers
+      changed_when: false
+
+    - name: HARD GATE — the timer must be armed with a real next run
+      ansible.builtin.assert:
+        that:
+          - "'jellyfin-reap-transcodes.timer' in _jtr_timers.stdout"
+          - "'n/a' not in (_jtr_timers.stdout_lines[1] | default(''))"
+        fail_msg: >-
+          The timer is installed but has no next run — check that OnCalendar
+          '{{ jtr_on_calendar }}' is a valid systemd expression.
+          systemctl said: {{ _jtr_timers.stdout_lines | default([]) }}
+        success_msg: "Reaper timer armed: {{ _jtr_timers.stdout_lines[1] | default('') | trim }}"
+
+    - name: Prove the script itself works, without waiting for the timer
+      # Runs the real script once. It is safe by construction: it skips while ffmpeg is running and
+      # only touches segments older than the cutoff. An installed timer whose script is broken is
+      # a thing that looks scheduled and does nothing.
+      ansible.builtin.command:
+        argv: [systemctl, start, jellyfin-reap-transcodes.service]
+      changed_when: true
+
+    - name: Read what that run did
+      ansible.builtin.command:
+        argv: [journalctl, -u, jellyfin-reap-transcodes.service, -n, "5", --no-pager, -o, cat]
+      register: _jtr_log
+      changed_when: false
+
+    - name: Report
+      ansible.builtin.debug:
+        msg:
+          - "timer   : {{ _jtr_timers.stdout_lines[1] | default('') | trim }}"
+          - "test run: {{ _jtr_log.stdout_lines | default(['(no output)']) }}"

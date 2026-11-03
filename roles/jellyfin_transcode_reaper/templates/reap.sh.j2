@@ -1,0 +1,34 @@
+#!/bin/bash
+# ANSIBLE MANAGED — roles/jellyfin_transcode_reaper. Do not edit here.
+# Reap orphaned Jellyfin transcode segments; run by jellyfin-reap-transcodes.timer.
+{#
+  Runs ON THE HOST from a systemd timer, with no control node involved: a cleanup that only happens
+  when someone runs Ansible is not a cleanup.
+
+  Jellyfin deletes a session's segments when that session ends CLEANLY. A client that vanishes —
+  closed laptop, killed app, dropped wifi — leaves them behind, and left alone they fill the disk
+  the transcode directory lives on.
+#}
+set -euo pipefail
+
+DIR={{ jtr_transcode_dir | quote }}
+AGE_MIN={{ jtr_older_than_min }}
+
+[ -d "$DIR" ] || { echo "no transcode dir at $DIR; nothing to do"; exit 0; }
+
+{# NEVER reap while something is genuinely transcoding — a live session's segments are still being
+   read. `pgrep -x ffmpeg` matches the BINARY as argv[0]: a bare `pgrep -f ffmpeg` also matches the
+   Jellyfin server itself, whose command line carries --ffmpeg=/usr/lib/jellyfin-ffmpeg/ffmpeg, so
+   the guard would be permanently true and never let the reaper run. #}
+if [ "$(pgrep -c -x ffmpeg || true)" != "0" ]; then
+  echo "ffmpeg is transcoding; skipping this run"
+  exit 0
+fi
+
+before=$(du -sb "$DIR" | cut -f1)
+{# Scoped hard: only segment files, only directly in the transcode dir, only older than the cutoff.
+   Never the directory itself, never cache/images (real cached artwork). #}
+count=$(find "$DIR" -maxdepth 1 -type f \( -name '*.ts' -o -name '*.m3u8' \) -mmin "+${AGE_MIN}" -print -delete | wc -l)
+after=$(du -sb "$DIR" | cut -f1)
+
+echo "reaped ${count} file(s); $(( (before - after) / 1024 / 1024 ))MiB freed; cache now $(( after / 1024 / 1024 ))MiB"

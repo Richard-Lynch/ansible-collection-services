@@ -1,0 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# actionlint configuration, read by the actionlint job of ansible-devkit's reusable-ci.yml. Each
+# ignore names one message and why it is wrong; the thin callers need none.

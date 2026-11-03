@@ -1,0 +1,202 @@
+---
+# AUTO-GENERATED argument spec — DO NOT EDIT.
+#
+# Source of truth: roles/stack_arr_service/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate stack_arr_service
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+argument_specs:
+  main:
+    short_description: Write one arr-stack service's docker-compose.yml (compose layer only)
+    description:
+      - Writes <arr_config_base_dir>/<service>/docker-compose.yml for one service, without
+      - ever starting, restarting or recreating the container as a side effect. Covers
+      - services that share the linuxserver-image / PUID-PGID-TZ / config+media bind
+      - mount / Traefik-label shape (Sonarr, Radarr, Prowlarr, SABnzbd, each optionally
+      - with an exportarr sidecar; Jellyfin, Jellyseerr, qBittorrent with a VPN sibling
+      - passed through arr_service.raw_extra_services, and the like).
+      - An app with its own database (Jellystat) is stack_arr_jellystat's job.
+    version_added: '1.0'
+    author: Collection maintainers
+    options:
+      arr_service_name:
+        description:
+          - Service key — the <arr_config_base_dir>/<name> directory and the default
+          - container_name. Keep it the service's proper name even when its existing
+          - on-host directory is named differently; arr_service.compose_path_override
+          - names that directory.
+        type: str
+        required: true
+      arr_service:
+        description:
+          - Per-service definition. See README for the full field list.
+        type: dict
+        required: true
+        options:
+          image:
+            description:
+              - Fully pinned image reference (tag or digest). Never 'latest'.
+            type: str
+            required: true
+          container_name:
+            description:
+              - Defaults to arr_service_name if omitted.
+            type: str
+            required: false
+          compose_path_override:
+            description:
+              - Existing on-host directory name, ONLY when it differs from
+              - arr_service_name (for example a directory created with a typo). The
+              - compose file is written there, so the role reconciles the directory
+              - in use instead of creating a second one beside it. Container and
+              - sidecar names still use arr_service_name.
+            type: str
+            required: false
+          command:
+            type: list
+            required: false
+            elements: str
+          config_volume:
+            description:
+              - Host path + container path + optional mode for the config bind mount.
+            type: dict
+            required: false
+            options:
+              host_path:
+                type: str
+                required: false
+                default: ./config
+              container_path:
+                type: str
+                required: false
+                default: /config
+              mode:
+                type: str
+                required: false
+          extra_volumes:
+            description:
+              - Additional raw `host:container[:mode]` bind mounts (media data, docker.sock, etc).
+            type: list
+            required: false
+            elements: str
+          environment:
+            description:
+              - Extra/overriding environment beyond the common PUID/PGID/UMASK/TZ set.
+            type: dict
+            required: false
+          devices:
+            type: list
+            required: false
+            elements: str
+          group_add:
+            type: list
+            required: false
+            elements: str
+          network_mode:
+            description:
+              - e.g. 'service:gluetun' for qbittorrent. Mutually exclusive with joining arr_network in compose.
+            type: str
+            required: false
+          traefik:
+            description:
+              - Traefik label inputs.
+            type: dict
+            required: false
+            options:
+              router_name:
+                type: str
+                required: false
+              service_port:
+                type: int
+                required: false
+              hosts:
+                type: list
+                required: false
+                elements: str
+              entrypoints:
+                type: str
+                required: false
+                default: websecure
+              extra_labels:
+                type: dict
+                required: false
+          exportarr:
+            description:
+              - Optional exportarr sidecar (sonarr/radarr/prowlarr/sabnzbd).
+            type: dict
+            required: false
+            options:
+              image:
+                type: str
+                required: true
+              arg:
+                description:
+                  - e.g. 'sonarr'.
+                type: str
+                required: true
+              port:
+                type: int
+                required: true
+              target_url:
+                type: str
+                required: true
+              api_key:
+                description:
+                  - Already-RESOLVED API key value. Resolve it in the CALLING PLAY (for
+                  - example richard_lynch.common.onepassword_cached) and pass the plain
+                  - value down; this role never calls a secret lookup itself, which keeps
+                  - it testable offline in molecule.
+                type: str
+                required: true
+              api_key_env_var:
+                type: str
+                required: false
+                default: API_KEY
+          raw_extra_services:
+            description:
+              - Additional raw compose service blocks merged in verbatim (name + full
+              - service dict) for one-off siblings that don't fit the linuxserver mold
+              - — e.g. a VPN client container a torrent client shares the network of.
+              - Rendered as-is via to_nice_yaml.
+            type: list
+            required: false
+            elements: dict
+      arr_network:
+        description:
+          - Shared external docker network name the services join.
+        type: str
+        required: false
+        default: traefik
+      arr_exportarr_bind_address:
+        description:
+          - Host address the exportarr sidecar's metrics port is published on. exportarr
+          - serves its metrics without authentication, so the default keeps it on loopback;
+          - set the address a remote scraper reaches, or an empty string for every
+          - interface (a Docker-published port is not filtered by the host firewall).
+        type: str
+        required: false
+        default: 127.0.0.1
+      arr_config_base_dir:
+        description:
+          - Parent directory; the role writes /opt/<arr_service_name>/docker-compose.yml.
+        type: str
+        required: false
+        default: /opt
+      arr_common_puid:
+        type: int
+        required: false
+        default: 1000
+      arr_common_pgid:
+        type: int
+        required: false
+        default: 1000
+      arr_common_umask:
+        type: str
+        required: false
+        default: '002'
+      arr_common_tz:
+        type: str
+        required: false
+        default: Etc/UTC

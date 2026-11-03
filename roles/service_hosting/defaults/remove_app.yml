@@ -1,0 +1,13 @@
+---
+# AUTO-GENERATED defaults file — DO NOT EDIT.
+#
+# Source of truth: roles/service_hosting/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate service_hosting
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+# Entrypoint:      remove_app
+
+# False previews the removal; true removes the app.
+hosting_remove_confirm__default: false

@@ -1,0 +1,31 @@
+---
+# Run the role with the case's target/file/field/item and require it to FAIL with _case.expect in the message. A case
+# that passes, or fails for a different reason, fails the converge.
+- name: "Expected failure: {{ _case.name }}"
+  block:
+    - name: "Run slack_message ({{ _case.name }})"
+      ansible.builtin.include_role:
+        name: slack_message
+      vars:
+        slack_message_target: "{{ _case.target }}"
+        slack_message_text: x
+        slack_message_file: "{{ _case.file | default('') }}"
+        slack_message_token_field: "{{ _case.field | default('credential') }}"
+        slack_message_token_item: "{{ _case.item | default('stub-item') }}"
+        slack_message_api_url: "{{ _api }}"
+        slack_message_op_vault: stub-vault
+        slack_message_share_wait_s: 6
+
+    - name: "The case did not fail ({{ _case.name }})"
+      ansible.builtin.set_fact:
+        _outcomes: "{{ _outcomes | default({}) | combine({_case.name: 'PASSED (should have failed)'}) }}"
+  rescue:
+    - name: "Record why it failed ({{ _case.name }})"
+      ansible.builtin.set_fact:
+        _outcomes: "{{ _outcomes | default({}) | combine({_case.name: ansible_failed_result.msg | default('') | string}) }}"
+
+- name: "The failure names the reason ({{ _case.name }})"
+  ansible.builtin.assert:
+    that:
+      - _case.expect in _outcomes[_case.name]
+    fail_msg: "{{ _case.name }}: expected a failure mentioning '{{ _case.expect }}', got: {{ _outcomes[_case.name] }}"

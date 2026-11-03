@@ -1,0 +1,26 @@
+---
+# AUTO-GENERATED defaults file — DO NOT EDIT.
+#
+# Source of truth: roles/slack_message/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate slack_message
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+# Entrypoint:      main
+
+# Controller path of a file to upload. Empty sends a text-only message.
+slack_message_file__default: ''
+
+# Title shown for the file. Empty uses the file's basename.
+slack_message_title__default: ''
+
+# Field of that item holding the token.
+slack_message_token_field__default: credential
+
+# Base URL of the Slack Web API. Only a test points it anywhere else.
+slack_message_api_url__default: https://slack.com/api
+
+# How long to wait for an uploaded file to show as shared in the target
+# conversation (Slack shares it asynchronously after completeUploadExternal).
+slack_message_share_wait_s__default: 30

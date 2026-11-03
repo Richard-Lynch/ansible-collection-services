@@ -1,0 +1,35 @@
+---
+# stack_arr_service — writes ONE service's <arr_config_base_dir>/<name>/docker-compose.yml.
+# Compose-layer only: never touches the contents of the bind-mounted config volume, and never
+# starts/stops/recreates the container itself — that is an explicit, separately gated step owned
+# by the calling play, never an implicit side effect of running this role.
+
+- name: Resolve declared options over their generated defaults
+  # GENERATED from meta/argument_specs.py — binds every declared option to its default, so a
+  # default can never be declared-but-dead (the variable evaluating Undefined at run time).
+  ansible.builtin.include_tasks: _resolve_defaults.yml
+
+- name: Setup vars
+  ansible.builtin.include_tasks: setup_vars.yml
+
+- name: Ensure the service directory exists
+  ansible.builtin.file:
+    path: "{{ stack_arr_service__config_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Render docker-compose.yml (may contain a resolved secret — never logged)
+  # no_log is UNCONDITIONAL, not just when arr_service.exportarr is defined: arr_service.environment /
+  # arr_service.extra_volumes / arr_service.raw_extra_services are generic passthroughs any caller
+  # could put a secret in (a VPN sibling's private key, for example), and `--diff` prints the whole
+  # rendered file. Conditioning no_log on any one known field would leak the next one.
+  ansible.builtin.template:
+    src: "{{ stack_arr_service__files }}/docker-compose.yml.j2"
+    dest: "{{ stack_arr_service__config_dir }}/docker-compose.yml"
+    mode: "0600"
+  register: stack_arr_service__render
+  no_log: true
+
+- name: Report whether the compose file changed
+  ansible.builtin.set_fact:
+    stack_arr_service_changed: "{{ stack_arr_service__render is changed }}"

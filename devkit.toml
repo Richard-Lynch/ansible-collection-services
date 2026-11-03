@@ -1,0 +1,47 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# devkit.toml — this collection's data for `devkit check all` (ansible-devkit). A key a check
+# REQUIRES has no default there: an empty list is the explicit way to say "none here".
+
+[checks]
+# Gates `devkit check all` leaves out, each with its reason; printed as SKIPPED in the summary.
+skip = [
+  { name = "ha-restart-validated", reason = "this collection contains no Home Assistant plays or modules" },
+  { name = "traps-are-checked", reason = "this collection has no trap rulebook; the rules live in ansible-devkit" },
+  { name = "docs-drift", reason = "this collection has no rulebook of its own; the rules live in ansible-devkit" },
+  { name = "ci-covers-hook-tests", reason = "unit tests are collected by ansible-test units, which runs every file under tests/unit" },
+]
+
+[paths]
+vendored = ["tests/output/"]
+ansible_roots = ["roles"]
+
+[silent_guards]
+audit_doc = "docs/RULES.md in ansible-devkit"
+# Where molecule finds this collection's dependencies (galaxy.yml declares them):
+#   ansible-galaxy collection install <dependency> -p collections.galaxy
+# The directory is gitignored and never built into the tarball.
+vendored_collections_dir = "collections.galaxy"
+own_collections = "richard_lynch.services"
+
+[regex_anchors]
+paths = ["plugins", "tests"]
+exclude_prefixes = [".venv/", "venv/", "tests/output/", ".claude/worktrees/"]
+
+[agent_tree]
+tree_roots = []
+concat_roots = []
+config_dir_aliases = {}
+
+[ha_restart]
+supervisor_modules = []
+
+[molecule]
+selector = "ci/affected-scenarios.sh"
+
+[trap_hits]
+log_dir = "var/trap-hits"
+
+[boundary]
+engine_roots = ["roles", "plugins"]
+patterns = []

@@ -1,0 +1,26 @@
+---
+# stack_arr_jellystat — writes <jellystat_config_dir>/docker-compose.yml (jellystat + jellystat-db).
+# Compose-layer only: never touches ./data/postgres-data or ./data/backup-data contents, and never
+# starts/stops/recreates a container as a side effect — that is an explicit, separately
+# flag-guarded step owned by the calling play.
+
+- name: Setup vars
+  ansible.builtin.include_tasks: setup_vars.yml
+
+- name: Ensure the service directory exists
+  ansible.builtin.file:
+    path: "{{ jellystat_config_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Render docker-compose.yml (contains resolved secrets — never logged)
+  ansible.builtin.template:
+    src: "{{ stack_arr_jellystat__files }}/docker-compose.yml.j2"
+    dest: "{{ jellystat_config_dir }}/docker-compose.yml"
+    mode: "0600"
+  register: stack_arr_jellystat__render
+  no_log: true
+
+- name: Report whether the compose file changed
+  ansible.builtin.set_fact:
+    stack_arr_jellystat_changed: "{{ stack_arr_jellystat__render is changed }}"

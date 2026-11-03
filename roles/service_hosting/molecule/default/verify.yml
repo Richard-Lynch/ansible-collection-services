@@ -1,0 +1,164 @@
+---
+# Asserts against the artifacts converge.yml produced, parsed as real YAML (never against a copy of
+# the role's own filter logic -- MOLMIRROR-01).
+- name: Verify — platform templates and the generated app compose
+  hosts: localhost
+  gather_facts: false
+  vars:
+    render_root: /tmp/molecule-service-hosting
+  tasks:
+    - name: Slurp the rendered files
+      ansible.builtin.slurp:
+        src: "{{ render_root }}/{{ item }}"
+      register: _files
+      loop: [compose.yml, traefik-dev.yml, traefik-prod.yml, hello.compose.yml, hosting-firewall.sh]
+
+    - name: Parse them
+      ansible.builtin.set_fact:
+        _platform: "{{ (_files.results[0].content | b64decode) | from_yaml }}"
+        _static_dev: "{{ (_files.results[1].content | b64decode) | from_yaml }}"
+        _static_prod: "{{ (_files.results[2].content | b64decode) | from_yaml }}"
+        _app: "{{ (_files.results[3].content | b64decode) | from_yaml }}"
+        _fw: "{{ _files.results[4].content | b64decode }}"
+
+    - name: Each tier's static config has ITS OWN entrypoint only, plus the internal ping
+      ansible.builtin.assert:
+        that:
+          - _static_dev.entryPoints | list | sort == ['dev', 'ping']
+          - _static_prod.entryPoints | list | sort == ['ping', 'prod']
+          - _static_dev.entryPoints.dev.address == ':8080'
+          - _static_prod.entryPoints.prod.address == ':8081'
+          - _static_dev.providers.docker.exposedByDefault == false
+          - _static_dev.providers.docker.endpoint.startswith('tcp://socket-proxy')
+          # selects its own tier's containers and nothing else
+          - "'hosting.managed' in _static_dev.providers.docker.constraints"
+          - "'hosting.tier`, `dev' in _static_dev.providers.docker.constraints"
+          - "'hosting.tier`, `prod' in _static_prod.providers.docker.constraints"
+          - "'`dev`' not in _static_prod.providers.docker.constraints"
+        quiet: true
+
+    - name: ONE Traefik per tier, each on its own network only, each publishing only its own port
+      ansible.builtin.assert:
+        that:
+          - _platform.services['traefik-dev'].ports == ['8080:8080']
+          - _platform.services['traefik-prod'].ports == ['8081:8081']
+          - _platform.services['traefik-dev'].networks | list | sort == ['hosting_dev', 'hosting_proxy']
+          - _platform.services['traefik-prod'].networks | list | sort == ['hosting_prod', 'hosting_proxy']
+          - _platform.services.traefik is not defined
+          - _platform.services['traefik-dev'].command == ['--configFile=/etc/traefik/traefik-dev.yml']
+          - _platform.services['socket-proxy'].volumes | select('search', 'docker.sock') | list | length == 1
+          - _platform.services['traefik-dev'].volumes | select('search', 'docker.sock') | list | length == 0
+          - _platform.services['traefik-prod'].volumes | select('search', 'docker.sock') | list | length == 0
+          - _platform.services['socket-proxy'].environment.POST == '0'
+          - _platform.services['socket-proxy'].environment.CONTAINERS == '1'
+          # a directory bind, not a file bind: an atomic rewrite would otherwise be invisible
+          - _platform.services['traefik-dev'].volumes | select('search', ':/etc/traefik:ro') | list | length == 1
+        quiet: true
+
+    - name: The firewall script names the ports, the sources, the egress block and the DNS exception
+      ansible.builtin.assert:
+        that:
+          - "'-s 192.0.2.3 -p tcp -m conntrack --ctorigdstport 8080 -j RETURN' in _fw"
+          - "'-s 192.0.2.2 -p tcp -m conntrack --ctorigdstport 8081 -j RETURN' in _fw"
+          - "'--ctorigdstport 8080 -m conntrack --ctstate DNAT -j DROP' in _fw"
+          - "'--ctorigdstport 8081 -m conntrack --ctstate DNAT -j DROP' in _fw"
+          - "'-d 192.0.2.0/24 -j DROP' in _fw"
+          - "'-d 198.51.100.0/24 -j DROP' in _fw"
+          - "'-d 192.0.2.2 -p udp --dport 53 -j RETURN' in _fw"
+          - "'-i hst-a-hello -s 203.0.113.2 -d 198.51.100.9/32 -p tcp --dport 7443 -j RETURN' in _fw"
+          # the grant is on the app's own bridge only, never the wildcards every container shares
+          - _fw.splitlines() | select('search', '198.51.100.9/32') | list | length == 1
+          - "'-I DOCKER-USER 1 -j HOSTING-FW' in _fw"
+          # the exceptions come BEFORE the blocks, or they could never match
+          - _fw.index('-d 192.0.2.2 -p udp --dport 53') < _fw.index('-d 192.0.2.0/24 -j DROP')
+          - _fw.index('-d 198.51.100.9/32') < _fw.index('-d 192.0.2.0/24 -j DROP')
+        quiet: true
+
+    - name: The granted app's default network is on its own bridge and subnet, the service pinned
+      ansible.builtin.assert:
+        that:
+          - _app.networks.default.name == 'hosting-dev-hello_egress'
+          - _app.networks.default.driver_opts['com.docker.network.bridge.name'] == 'hst-a-hello'
+          - "_app.networks.default.ipam.config == [{'subnet': '203.0.113.0/28', 'ip_range': '203.0.113.8/29'}]"
+          # the granted service is pinned; the routed service keeps its tier network
+          - _app.services.web.networks.default.ipv4_address == '203.0.113.2'
+          - "'hosting_dev' in _app.services.web.networks"
+        fail_msg: "{{ _app.networks | to_json }}"
+        quiet: true
+
+    - name: Build the compose for an app WITHOUT a grant, and for the granted name on the OTHER tier
+      ansible.builtin.set_fact:
+        _other: >-
+          {{ {'name': 'other', 'tier': 'dev', 'port': 80, 'service': 'web',
+              'compose': {'services': {'web': {'image': 'nginx:1.27-alpine'}}}}
+             | richard_lynch.services.hosting_compose('dev', _tiers, _defaults) }}
+        _hello_prod: >-
+          {{ {'name': 'hello', 'tier': 'prod', 'port': 80, 'service': 'web',
+              'compose': {'services': {'web': {'image': 'nginx:1.27-alpine'}}}}
+             | richard_lynch.services.hosting_compose('prod', _tiers, _defaults) }}
+      vars:
+        _tiers:
+          dev: {suffix: dev.example.test, entrypoint_port: 8080, network: hosting_dev, bridge: hst-dev, root: /srv/apps/dev}
+          prod: {suffix: apps.example.test, entrypoint_port: 8081, network: hosting_prod, bridge: hst-prod, root: /srv/apps/prod}
+        _defaults:
+          image_allowlist: ["nginx:"]
+          egress_grants: [{app: hello, service: web, tier: dev, subnet: 203.0.113.0/28, address: 203.0.113.2, cidr: 198.51.100.9/32, ports: [7443]}]
+
+    - name: Neither holds the grant's bridge (the grant is for hello on dev and nothing else)
+      ansible.builtin.assert:
+        that:
+          - (_other.networks.default | default({})).driver_opts is not defined
+          - (_hello_prod.networks.default | default({})).driver_opts is not defined
+        fail_msg: "other={{ _other.networks | to_json }} hello-on-prod={{ _hello_prod.networks | to_json }}"
+        quiet: true
+
+    - name: Each incomplete or unsafe grant is refused, never widened to the whole guest
+      ansible.builtin.set_fact:
+        _refused: "{{ [item.grant] | richard_lynch.services.hosting_egress_rules({'prod': {}}) }}"
+      register: _bad_grants
+      ignore_errors: true
+      loop:
+        - {id: no-app, grant: {cidr: 198.51.100.9/32, ports: [7443]}, expect: "lacks app"}
+        - {id: no-address, grant: {app: c, service: api, subnet: 203.0.113.0/28, cidr: 198.51.100.9/32, ports: [7443]}, expect: "lacks address"}
+        - {id: gateway-address, grant: {app: c, service: api, subnet: 203.0.113.0/28, address: 203.0.113.1, cidr: 198.51.100.9/32, ports: [7443]}, expect: "past the gateway"}
+        - {id: address-in-dynamic-range, grant: {app: c, service: api, subnet: 203.0.113.0/28, address: 203.0.113.10, cidr: 198.51.100.9/32, ports: [7443]}, expect: "lower half"}
+        - {id: subnet-too-small, grant: {app: c, service: api, subnet: 203.0.113.0/30, address: 203.0.113.2, cidr: 198.51.100.9/32, ports: [7443]}, expect: "smaller than a /29"}
+      loop_control: {label: "{{ item.id }}"}
+
+    - name: Every refusal happened, and says why
+      ansible.builtin.assert:
+        that:
+          - item is failed
+          - item.item.expect in (item.msg | default(''))
+        fail_msg: "{{ item.item.id }}: {{ item.msg | default('NOT refused') }}"
+        quiet: true
+      loop: "{{ _bad_grants.results }}"
+      loop_control: {label: "{{ item.item.id }}"}
+
+    - name: A near-miss that must PASS (a full, safe grant) is accepted
+      ansible.builtin.assert:
+        that:
+          - _ok | length == 2
+          - _ok | map(attribute='source') | unique | list == ['203.0.113.7']
+          - _ok | map(attribute='ip_range') | unique | list == ['203.0.113.8/29']
+        quiet: true
+      vars:
+        _ok: "{{ [{'app': 'c', 'service': 'api', 'subnet': '203.0.113.0/28', 'address': '203.0.113.7', 'cidr': '198.51.100.9/32', 'ports': [7443, 7444]}] | richard_lynch.services.hosting_egress_rules({'prod': {}}) }}"
+
+    - name: The app compose carries the PLATFORM's labels, limits and tier network
+      ansible.builtin.assert:
+        that:
+          - _app.name == 'hosting-dev-hello'
+          - _app.services.web.labels['traefik.http.routers.dev-hello.rule'] == 'Host(`hello.dev.example.test`)'
+          - _app.services.web.labels['traefik.http.routers.dev-hello.entrypoints'] == 'dev'
+          - _app.services.web.labels['traefik.http.services.dev-hello.loadbalancer.server.port'] == '80'
+          - _app.services.web.labels['hosting.managed'] == 'true'
+          - _app.services.web.labels['traefik.docker.network'] == 'hosting_dev'
+          - _app.services.web.mem_limit == '512m'
+          - _app.services.web.security_opt == ['no-new-privileges:true']
+          - "'hosting_dev' in _app.services.web.networks"
+          - _app.networks.hosting_dev.external == true
+          # the app is NOT on the prod network or any host-level mode
+          - "'hosting_prod' not in (_app.services.web.networks)"
+          - _app.services.web.network_mode is not defined
+        quiet: true

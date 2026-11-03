@@ -1,0 +1,327 @@
+---
+# service_hosting (deploy_app) — validate ONE app definition and converge it onto its tier.
+#
+# The gate is a filter (filter_plugins/hosting.py) so it can be tested with fixtures that must be
+# refused AND near-misses that must pass. This entrypoint refuses with EVERY reason at once, then
+# builds the compose from the app's definition with the platform's own labels, networks and limits
+# injected (never taken from the app), writes it under <tier root>/<name>/, brings it up, and reads
+# the app back THROUGH TRAEFIK on the guest — the daemon's answer, not compose's exit code.
+
+- name: Load this entrypoint's generated defaults
+  ansible.builtin.include_vars:
+    file: "{{ role_path }}/defaults/deploy_app.yml"
+
+- name: Resolve declared options over their generated defaults
+  ansible.builtin.include_tasks: _resolve_defaults.yml
+
+- name: Apply the generated argspec guards
+  ansible.builtin.include_tasks: _argspec_guards.yml
+
+- name: Compute the gate result
+  ansible.builtin.set_fact:
+    _hosting_tier_name: "{{ hosting_app.tier | default('') }}"
+    _hosting_violations: >-
+      {{ hosting_app | richard_lynch.services.hosting_violations(hosting_app.tier | default(''), hosting_tiers, hosting_image_allowlist,
+           {'max_mem': hosting_max_mem_limit, 'max_cpus': hosting_max_cpus | float}) }}
+
+- name: HARD GATE — the app definition must be acceptable
+  ansible.builtin.assert:
+    that:
+      - _hosting_violations | length == 0
+    fail_msg: >-
+      REFUSED. {{ hosting_app.name | default('(unnamed)') }} on tier '{{ _hosting_tier_name }}'
+      breaks the hosting rules ({{ _hosting_violations | length }}):
+      {% for v in _hosting_violations %}
+      [{{ loop.index }}] {{ v }}
+      {% endfor %}
+    success_msg: "{{ hosting_app.name }} passes the hosting gate for tier {{ _hosting_tier_name }}."
+    quiet: false
+
+- name: Build the compose that would be written
+  ansible.builtin.set_fact:
+    _hosting_compose: >-
+      {{ hosting_app | richard_lynch.services.hosting_compose(_hosting_tier_name, hosting_tiers,
+           {'image_allowlist': hosting_image_allowlist,
+            'mem_limit': hosting_default_mem_limit, 'cpus': hosting_default_cpus | float,
+            'max_mem': hosting_max_mem_limit, 'max_cpus': hosting_max_cpus | float,
+            'egress_grants': hosting_egress_allow}) }}
+    _hosting_dir: "{{ hosting_tiers[_hosting_tier_name].root }}/{{ hosting_app.name }}"
+    _hosting_fqdn: "{{ hosting_app.name }}.{{ hosting_tiers[_hosting_tier_name].suffix }}"
+    # Platform secrets (PROD only; the gate refused them on any tier without `secrets: true`).
+    _hosting_secret_files: "{{ hosting_app | richard_lynch.services.hosting_secret_files(_hosting_tier_name, hosting_tiers) }}"
+
+- name: HARD GATE — the app directory is inside its tier's root, and only that tier's
+  # Belt and braces after the name regex: the destination of every write below is derived from the
+  # name, so assert it still sits directly under the tier root. This is what stops the DEV play
+  # writing under /srv/apps/prod.
+  ansible.builtin.assert:
+    that:
+      - _hosting_dir | dirname == hosting_tiers[_hosting_tier_name].root
+      - "'..' not in _hosting_dir"
+      - hosting_tiers.values() | map(attribute='root') | select('equalto', _hosting_dir | dirname) | list | length == 1
+    fail_msg: "{{ _hosting_dir }} is not directly under the {{ _hosting_tier_name }} tier root."
+    quiet: true
+
+- name: Report the plan
+  ansible.builtin.debug:
+    msg:
+      - "{{ 'APPLY' if hosting_deploy_apply | bool else 'PREVIEW (hosting_deploy_apply=true to act)' }}"
+      - "{{ hosting_app.name }} -> https://{{ _hosting_fqdn }} (tier {{ _hosting_tier_name }}, routed service {{ hosting_app.service }}:{{ hosting_app.port }})"
+      - "written to {{ _hosting_dir }}/compose.yml"
+      - "platform secrets: {{ _hosting_secret_files | map(attribute='key') | list or 'none' }} (1Password item names only; values never printed)"
+
+- name: HARD GATE — an app with platform secrets needs the vault they are read from
+  # Asserted here, before anything is written, rather than required in the shared spec: an app
+  # with no secrets never reads it.
+  ansible.builtin.assert:
+    that:
+      - hosting_secrets_vault is defined
+      - hosting_secrets_vault is string
+      - hosting_secrets_vault | length > 0
+    fail_msg: >-
+      {{ hosting_app.name }} declares platform secrets
+      ({{ _hosting_secret_files | map(attribute='key') | list }}) but hosting_secrets_vault is
+      unset; set it to the 1Password vault those items live in.
+    quiet: true
+  when: _hosting_secret_files | length > 0
+
+- name: Apply
+  when: hosting_deploy_apply | bool
+  block:
+    - name: Ensure the app directory exists
+      # No data/ directory: host bind mounts are refused by the gate, so an app's state
+      # lives in a named volume under Docker's own root.
+      ansible.builtin.file:
+        path: "{{ _hosting_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Deliver the platform secrets (PROD only)
+      when: _hosting_secret_files | length > 0
+      block:
+        - name: The secrets directory is the platform's, mode 0700
+          ansible.builtin.file:
+            path: "{{ _hosting_dir }}/secrets"
+            state: directory
+            mode: "0700"
+            owner: root
+            group: root
+
+        - name: Resolve each secret from 1Password on the controller
+          # One lookup per DISTINCT item/field, cached by onepassword_cached; headless under the SA.
+          ansible.builtin.set_fact:
+            _hosting_secret_values: >-
+              {{ _hosting_secret_values | default({}) | combine({item.key:
+                   lookup('richard_lynch.common.onepassword_cached', item.item, field=item.field,
+                          vault=hosting_secrets_vault)}) }}
+          loop: "{{ _hosting_secret_files }}"
+          loop_control:
+            label: "{{ item.key }} <- {{ item.item }}"
+          no_log: true
+
+        - name: HARD GATE — every secret resolved to a non-empty value
+          # An empty read is the classic wrong-FIELD symptom (password vs credential); writing it
+          # would start the app with an empty credential that 401s like a permissions problem.
+          ansible.builtin.assert:
+            that:
+              - _hosting_secret_files | map(attribute='key') | map('extract', _hosting_secret_values) | select('equalto', '') | list | length == 0
+            fail_msg: >-
+              A platform secret for {{ hosting_app.name }} read back EMPTY from 1Password. Check each
+              item's FIELD name ({{ _hosting_secret_files | map(attribute='item') | list }}).
+            quiet: true
+          no_log: true
+
+        - name: Write each secret file (0400, owned by the container user that reads it)
+          ansible.builtin.copy:
+            content: "{{ _hosting_secret_values[item.key] }}"
+            dest: "{{ item.path }}"
+            mode: "0400"
+            owner: "{{ item.uid }}"
+            group: "{{ item.uid }}"
+          loop: "{{ _hosting_secret_files }}"
+          loop_control:
+            label: "{{ item.key }}"
+          register: _hosting_secret_writes
+          no_log: true
+
+    - name: Write the candidate compose (NOT the one Docker runs yet)
+      ansible.builtin.template:
+        src: app-compose.yml.j2
+        dest: "{{ _hosting_dir }}/compose.candidate.yml"
+        mode: "0644"
+
+    - name: Resolve the candidate the way Docker will (variables interpolated)
+      # The first gate read the YAML as written. docker compose interpolates ${VAR:-default}
+      # BEFORE it mounts anything, so the second gate judges THIS output.
+      ansible.builtin.command:
+        argv:
+          - docker
+          - compose
+          - --project-directory
+          - "{{ _hosting_dir }}"
+          - -f
+          - "{{ _hosting_dir }}/compose.candidate.yml"
+          - config
+          - --format
+          - json
+      register: _hosting_resolved_raw
+      changed_when: false
+      failed_when: false
+
+    - name: HARD GATE — compose could resolve the candidate at all
+      ansible.builtin.assert:
+        that:
+          - _hosting_resolved_raw.rc == 0
+          - _hosting_resolved_raw.stdout | length > 0
+        fail_msg: "docker compose config refused the candidate (rc={{ _hosting_resolved_raw.rc }}): {{ (_hosting_resolved_raw.stderr | default(''))[:400] }}"
+        quiet: true
+
+    - name: Judge the resolved model
+      ansible.builtin.set_fact:
+        _hosting_resolved_violations: >-
+          {{ (_hosting_resolved_raw.stdout | from_json)
+             | richard_lynch.services.hosting_resolved_violations(_hosting_dir, {'max_mem': hosting_max_mem_limit, 'max_cpus': hosting_max_cpus | float},
+                                           _hosting_secret_files) }}
+
+    - name: HARD GATE — what Docker will run is acceptable, not only what the YAML said
+      ansible.builtin.assert:
+        that:
+          - _hosting_resolved_violations | length == 0
+        fail_msg: >-
+          REFUSED after interpolation. {{ hosting_app.name }} resolves to a model that breaks the
+          hosting rules ({{ _hosting_resolved_violations | length }}):
+          {% for v in _hosting_resolved_violations %}
+          [{{ loop.index }}] {{ v }}
+          {% endfor %}
+        quiet: true
+
+    - name: Promote the candidate to the compose Docker runs
+      ansible.builtin.copy:
+        src: "{{ _hosting_dir }}/compose.candidate.yml"
+        dest: "{{ _hosting_dir }}/compose.yml"
+        remote_src: true
+        mode: "0644"
+
+    - name: Write the app's record
+      # What the report play reads. expires is advisory (no reaper is deployed yet) but recorded now
+      # so the reaper does not need a migration.
+      ansible.builtin.copy:
+        content: "{{ _hosting_record | to_nice_json }}\n"
+        dest: "{{ _hosting_dir }}/hosting.json"
+        mode: "0644"
+      vars:
+        _hosting_record:
+          name: "{{ hosting_app.name }}"
+          tier: "{{ _hosting_tier_name }}"
+          fqdn: "{{ _hosting_fqdn }}"
+          port: "{{ hosting_app.port }}"
+          service: "{{ hosting_app.service }}"
+          ttl_hours: "{{ hosting_app.ttl_hours | default(0) }}"
+          definition_sha256: "{{ hosting_app | to_json(sort_keys=True) | hash('sha256') }}"
+
+    # A container whose network was renamed or removed under it (the app's default network moving
+    # to its egress network, hst-a-<app>) is NOT recreated by compose when its own service config
+    # is unchanged: compose restarts it, Docker cannot find the old network, and it exits.
+    # In a two-service app where only one service's networks change, that one is recreated and the
+    # other is restarted against the removed <project>_default network and exits 128. So: read
+    # every container of the project, and recreate when any names a network this compose does not
+    # create or attach.
+    - name: Read which network each of the app's existing containers was created on
+      ansible.builtin.shell:
+        executable: /bin/bash
+        cmd: |
+          set -u -o pipefail
+          for id in $(docker ps -aq --filter label=com.docker.compose.project={{ _hosting_compose.name | quote }}); do
+            docker inspect --format '{{ "{{" }}.Name{{ "}}" }} {{ "{{" }}.HostConfig.NetworkMode{{ "}}" }}' "$id"
+          done
+      register: _hosting_netmodes
+      changed_when: false
+      check_mode: false
+
+    - name: Decide whether the app's containers must be recreated onto its networks
+      ansible.builtin.set_fact:
+        _hosting_stale_containers: >-
+          {{ _hosting_netmodes.stdout_lines | map('split', ' ')
+             | rejectattr('1', 'in', _expected_networks) | map('first') | list }}
+      vars:
+        # The networks this compose project creates or attaches: each declared one by its explicit
+        # name, else <project>_<key>; and the implicit default when it is not declared.
+        _expected_networks: "{{ _hosting_expected_networks_json | from_json }}"
+        _hosting_expected_networks_json: >-
+          {% set out = [] %}
+          {% set nets = _hosting_compose.networks | default({}) %}
+          {% for k, v in nets.items() %}
+          {%   set _ = out.append((v or {}).name | default(_hosting_compose.name ~ '_' ~ k, true)) %}
+          {% endfor %}
+          {% if 'default' not in nets %}{% set _ = out.append(_hosting_compose.name ~ '_default') %}{% endif %}
+          {{ out | to_json }}
+
+    - name: Bring the app up
+      community.docker.docker_compose_v2:
+        project_src: "{{ _hosting_dir }}"
+        project_name: "{{ _hosting_compose.name }}"
+        state: present
+        pull: missing
+        remove_orphans: true
+        # A file-mounted secret is read at start and compose cannot see its CONTENT change, so a
+        # rotated secret would leave the app on the old value: recreate when any secret file changed.
+        # Also when a container still names a network the compose no longer has (above).
+        recreate: >-
+          {{ 'always' if (_hosting_secret_writes.changed | default(false))
+                         or (_hosting_stale_containers | length > 0) else 'auto' }}
+      register: _hosting_app_up
+
+    - name: Read the routed container back from the daemon
+      no_log: true  # INSPECTENV-01: the result carries every Env VALUE
+      community.docker.docker_container_info:
+        name: "{{ _hosting_compose.name }}-{{ hosting_app.service }}-1"
+      register: _hosting_container
+      until: _hosting_container.container.State.Running | default(false)
+      retries: 12
+      delay: 5
+      changed_when: false
+
+    - name: HARD GATE — the routed container is running, on the tier network and not any other
+      ansible.builtin.assert:
+        that:
+          - _hosting_container.container.State.Running | default(false)
+          - hosting_tiers[_hosting_tier_name].network in (_hosting_container.container.NetworkSettings.Networks | default({}) | list)
+          - _other_tier_networks | select('in', _hosting_container.container.NetworkSettings.Networks | default({}) | list) | list | length == 0
+        fail_msg: >-
+          {{ hosting_app.name }} is not running on exactly its own tier network
+          ({{ hosting_tiers[_hosting_tier_name].network }}); it is on
+          {{ _hosting_container.container.NetworkSettings.Networks | default({}) | list }}.
+        quiet: true
+      vars:
+        _other_tier_networks: >-
+          {{ hosting_tiers | dict2items | rejectattr('key', 'equalto', _hosting_tier_name)
+             | map(attribute='value.network') | list }}
+
+    - name: Read the app back through Traefik on the guest
+      # Routed by the Host header exactly as cloudflared will send it. Retried because the docker
+      # provider takes a moment to see a new container; the assert after it is what turns an
+      # exhausted retry into a failure (UNTIL-01).
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ hosting_tiers[_hosting_tier_name].entrypoint_port }}{{ hosting_app.health_path | default('/') }}"
+        headers:
+          Host: "{{ _hosting_fqdn }}"
+        status_code: "{{ hosting_app.expect_status | default(200) }}"
+        return_content: false
+      register: _hosting_readback
+      until: _hosting_readback.status | default(0) == (hosting_app.expect_status | default(200) | int)
+      retries: "{{ (hosting_readback_timeout_s | int / 3) | round(0, 'ceil') | int }}"
+      delay: 3
+      changed_when: false
+      failed_when: false
+
+    - name: HARD GATE — Traefik routes the Host to the app
+      ansible.builtin.assert:
+        that:
+          - _hosting_readback.status | default(0) == (hosting_app.expect_status | default(200) | int)
+        fail_msg: >-
+          http://127.0.0.1:{{ hosting_tiers[_hosting_tier_name].entrypoint_port }} with
+          Host: {{ _hosting_fqdn }} answered {{ _hosting_readback.status | default('nothing') }},
+          expected {{ hosting_app.expect_status | default(200) }}, after {{ hosting_readback_timeout_s }}s.
+          The container is running, so look at the router: a 404 here is Traefik not matching the
+          Host rule (label/provider constraint), a 502 is the wrong container port.
+        quiet: true

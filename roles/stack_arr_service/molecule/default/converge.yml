@@ -1,0 +1,126 @@
+---
+# Render (not include_role — avoids roles_path resolution issues when molecule runs from inside the
+# role dir) three representative services directly from the role's own compose template.
+- name: Converge — render compose for representative services (no docker, no remote host)
+  hosts: localhost
+  gather_facts: false
+  vars:
+    render_dir: /tmp/molecule-stack-arr-service
+    compose_template: "{{ playbook_dir }}/../../files/docker-compose.yml.j2"
+    arr_network: traefik
+    arr_exportarr_bind_address: "127.0.0.1"
+    arr_common_puid: 1000
+    arr_common_pgid: 1000
+    arr_common_umask: "002"
+    arr_common_tz: Etc/UTC
+  tasks:
+    - name: Make render dirs
+      ansible.builtin.file: { path: "{{ render_dir }}/{{ item }}", state: directory, mode: "0755" }
+      loop: [sonarr, jellyfin, downloads]
+
+    # --- sonarr: the common mold, WITH an exportarr sidecar ------------------------------------
+    - name: Render sonarr (linuxserver + exportarr sidecar)
+      ansible.builtin.template:
+        src: "{{ compose_template }}"
+        dest: "{{ render_dir }}/sonarr/docker-compose.yml"
+        mode: "0600"
+      vars:
+        arr_service_name: sonarr
+        arr_service:
+          image: "lscr.io/linuxserver/sonarr:4.0.15.2941-ls289"
+          config_volume:
+            host_path: "./config"
+            container_path: "/config"
+          extra_volumes:
+            - "/data:/data"
+          traefik:
+            hosts:
+              - "sonarr.media.example.com"
+              - "sonarr.example.com"
+            service_port: 8989
+          exportarr:
+            image: "ghcr.io/onedr0p/exportarr:v2.3.0"
+            arg: "sonarr"
+            port: 9707
+            target_url: "http://sonarr:8989"
+            api_key: "TEST_KEY_NOT_REAL"
+
+    # --- jellyfin: devices/group_add/extra environment, no exportarr, dual entrypoints ---------
+    - name: Render jellyfin (devices + group_add + extra env)
+      ansible.builtin.template:
+        src: "{{ compose_template }}"
+        dest: "{{ render_dir }}/jellyfin/docker-compose.yml"
+        mode: "0600"
+      vars:
+        arr_service_name: jellyfin
+        arr_service:
+          image: "lscr.io/linuxserver/jellyfin:10.10.7ubu2404-ls72"
+          config_volume:
+            host_path: "./config"
+            container_path: "/config"
+            mode: "rw"
+          extra_volumes:
+            - "/data/media:/data/media:rw"
+            # Bind mounts of a separately built VA-API driver, as a media server needs when its
+            # image's driver is too old for the GPU. Included so the rendered compose is asserted to
+            # carry them read-only and mounted OVER the image's own driver paths — the arrangement
+            # that works, since jellyfin-ffmpeg's libva ignores LIBVA_DRIVERS_PATH.
+            - "/opt/vaapi-driver/iHD_drv_video.so:/usr/lib/jellyfin-ffmpeg/lib/dri/iHD_drv_video.so:ro"
+            - "/opt/vaapi-driver/libigdgmm.so.12:/usr/lib/x86_64-linux-gnu/libigdgmm.so.12:ro"
+          devices:
+            - "/dev/dri:/dev/dri"
+          group_add:
+            - "2001"
+            - "2002"
+          environment:
+            GIDLIST: "2001,2003"
+          traefik:
+            hosts:
+              - "jellyfin.media.example.com"
+              - "jellyfin.example.com"
+            service_port: 8096
+            entrypoints: "websecure,websecure_alt"
+
+    # --- qbittorrent: network_mode + raw_extra_services (a VPN sibling) -------------------------
+    # Rendered to a dir NAMED using the same expression as tasks/setup_vars.yml
+    # (compose_path_override | default(arr_service_name)) — deliberately NOT render_dir/qbittorrent:
+    # the fixture's override names a directory other than arr_service_name, and writing to
+    # arr_service_name's path instead would create a second, never-reconciled directory beside it.
+    - name: Render qbittorrent (network_mode + raw sibling containers, overridden destination dir)
+      ansible.builtin.template:
+        src: "{{ compose_template }}"
+        dest: "{{ render_dir }}/downloads/docker-compose.yml"
+        mode: "0600"
+      vars:
+        arr_service_name: qbittorrent
+        arr_service:
+          image: "lscr.io/linuxserver/qbittorrent:5.1.2-r1-ls408"
+          compose_path_override: "downloads"
+          network_mode: "service:gluetun"
+          config_volume:
+            host_path: "./config"
+            container_path: "/config"
+          extra_volumes:
+            - "/data/torrents:/data/torrents"
+          environment:
+            WEBUI_PORT: 8081
+            TORRENTING_PORT: 6881
+          traefik:
+            hosts:
+              - "torrent.media.example.com"
+              - "torrent.example.com"
+            service_port: 8081
+          raw_extra_services:
+            - name: gluetun
+              definition:
+                image: "qmcgaw/gluetun@sha256:183c74263a07f4c931979140ac99ff4fbc44dcb1ca5b055856ef580b0fafdf1c"
+                container_name: gluetun
+                restart: unless-stopped
+                cap_add: ["NET_ADMIN"]
+                devices: ["/dev/net/tun:/dev/net/tun"]
+                networks: ["traefik"]
+                environment:
+                  TZ: Etc/UTC
+                  VPN_SERVICE_PROVIDER: custom
+                  VPN_TYPE: wireguard
+                  WIREGUARD_PRIVATE_KEY: "TEST_WG_KEY_NOT_REAL"

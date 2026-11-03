@@ -1,0 +1,12 @@
+---
+galaxy_info:
+  namespace: richard_lynch
+  author: Richard Lynch
+  description: >-
+    A two-tier (DEV/PROD) Docker Compose app-hosting platform: Traefik with the docker provider
+    behind a read-only socket proxy, one entrypoint and one docker network per tier, a host
+    firewall, a TTL reaper, and gated deploy, remove, merge and target entrypoints.
+  license: GPL-3.0-or-later
+  min_ansible_version: "2.19"
+  galaxy_tags: [hosting, traefik, docker, compose]
+dependencies: []

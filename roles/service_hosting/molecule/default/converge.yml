@@ -1,0 +1,554 @@
+---
+# Render-and-gate scenario. A real converge needs a Docker daemon (not available on a hosted
+# runner), so coverage is honestly PARTIAL: it proves (1) the platform templates render parseable
+# artifacts, (2) the deploy_app gate REFUSES each fixture that must be refused, naming the reason,
+# (3) it ACCEPTS each near-miss that must pass, and (4) the compose it would write carries the
+# platform's labels/limits and none of the app's own routing claims.
+#
+# Both directions matter: a gate that refuses everything and a gate that
+# accepts everything are indistinguishable from a single fixture. The refusals run the REAL
+# deploy_app entrypoint in preview mode (hosting_deploy_apply false), not a copy of its logic.
+- name: Converge — render the platform and exercise the deploy gate
+  hosts: localhost
+  gather_facts: false
+  vars:
+    render_root: /tmp/molecule-service-hosting
+    hosting_tiers:
+      dev:
+        suffix: dev.example.test
+        entrypoint_port: 8080
+        network: hosting_dev
+        bridge: hst-dev
+        root: /srv/apps/dev
+        reap: true
+      prod:
+        suffix: apps.example.test
+        entrypoint_port: 8081
+        network: hosting_prod
+        bridge: hst-prod
+        root: /srv/apps/prod
+        secrets: true
+    hosting_image_allowlist: ["nginx:", "traefik/whoami:", "ghcr.io/example/", "docker.io/library/nginx:"]
+    hosting_ingress_sources: ["192.0.2.3", "192.0.2.2"]
+    hosting_blocked_egress_cidrs: ["192.0.2.0/24", "198.51.100.0/24"]
+    # A grant to ONE container (the base app's web service, hello on dev): the firewall must match
+    # its own bridge AND its pinned address, and the compose must put it there.
+    hosting_egress_allow:
+      - { app: hello, service: web, tier: dev, subnet: 203.0.113.0/28, address: 203.0.113.2, cidr: 198.51.100.9/32, ports: [7443] }
+    _hosting_dns_servers: ["192.0.2.2"]
+    # The vault every fixture with platform secrets reads from (a fixture's `vault` overrides it).
+    _molecule_secrets_vault: Example-Vault
+    _base_app:
+      name: hello
+      tier: dev
+      port: 80
+      service: web
+      compose:
+        services:
+          web:
+            image: "nginx:1.27-alpine"
+
+    # ---- fixtures that MUST be refused: [id, mutation of services.web / app, expected fragment]
+    _must_refuse:
+      - { id: privileged, svc: { privileged: true }, expect: "privileged" }
+      - { id: host-network, svc: { network_mode: host }, expect: "network_mode" }
+      - { id: socket-short, svc: { volumes: ["/var/run/docker.sock:/var/run/docker.sock"] }, expect: "Docker socket" }
+      - { id: socket-long, svc: { volumes: [{ type: bind, source: /var/run/docker.sock, target: /s }] }, expect: "Docker socket" }
+      - { id: host-etc, svc: { volumes: ["/etc:/host-etc:ro"] }, expect: "host bind mount" }
+      - { id: traversal, svc: { volumes: ["./data/../../prod/other:/x"] }, expect: "host bind mount" }
+      # A bind under the app's own data/ is refused too, because the app can write a
+      # symlink there (data/x -> /) and a later mount of it follows the link.
+      - { id: relative-data-bind, svc: { volumes: ["./data/html:/usr/share/nginx/html:ro"] }, expect: "host bind mount" }
+      - { id: absolute-own-data-bind, svc: { volumes: ["/srv/apps/dev/hello/data/x:/x"] }, expect: "host bind mount" }
+      - { id: long-bind-own-data, svc: { volumes: [{ type: bind, source: ./data, target: /x }] }, expect: "host bind mount" }
+      # compose interpolates ${VAR:-default} BEFORE it mounts. A gate that read only the text would
+      # pass this chain with zero violations, and docker compose config resolves it to a bind of /.
+      - id: interpolated-root-bind
+        svc: { volumes: ["./data/${X:-..}/${Y:-..}/${Z:-..}/${W:-..}/${V:-..}/${U:-..}/${T:-..}/${S:-..}:/h"] }
+        expect: "contains '$'"
+      - { id: interpolated-socket, svc: { volumes: ["/var/run/docker${E:-.}sock:/s"] }, expect: "contains '$'" }
+      - { id: interpolated-image, svc: { image: "nginx:${TAG:-latest}" }, expect: "contains '$'" }
+      - { id: interpolated-long-bind, svc: { volumes: [{ type: bind, source: "${R:-/}", target: /h }] }, expect: "contains '$'" }
+      # The limit is a ceiling, not only a default.
+      - { id: mem-too-big, svc: { mem_limit: 64g }, expect: "above the platform maximum" }
+      - { id: cpus-too-big, svc: { cpus: 8 }, expect: "above the platform maximum" }
+      - { id: mem-unreadable, svc: { mem_limit: lots }, expect: "unreadable" }
+      - { id: deploy-limit-too-big, svc: { deploy: { resources: { limits: { memory: 32g } } } }, expect: "above the platform maximum" }
+      - { id: deploy-reservations, svc: { deploy: { resources: { reservations: { devices: [{ driver: nvidia }] } } } }, expect: "reservations" }
+      - { id: oom-score, svc: { oom_score_adj: -1000 }, expect: "oom_score_adj" }
+      - { id: oom-kill-disable, svc: { oom_kill_disable: true }, expect: "oom_kill_disable" }
+      - { id: gpus, svc: { gpus: all }, expect: "gpus" }
+      # The allowlist names repositories, not the whole docker.io/library/ namespace.
+      - { id: library-dind, svc: { image: "docker.io/library/docker:27-dind" }, expect: "not on the allowlist" }
+      - { id: published-port, svc: { ports: ["8080:80"] }, expect: "publishes a host port" }
+      - { id: routing-label-list, svc: { labels: ["traefik.http.routers.x.rule=Host(`a.apps.example.test`)"] }, expect: "routing labels" }
+      - { id: routing-label-dict, svc: { labels: { "traefik.enable": "true" } }, expect: "routing labels" }
+      - { id: image-off-allowlist, svc: { image: "evil/miner:1.0" }, expect: "not on the allowlist" }
+      - { id: image-latest, svc: { image: "nginx:latest" }, expect: "floating tag" }
+      - { id: image-untagged, svc: { image: "nginx" }, expect: "not on the allowlist" }
+      - { id: build-context, svc: { build: ".", image: "nginx:1.27-alpine" }, expect: "build" }
+      - { id: cap-add, svc: { cap_add: [SYS_ADMIN] }, expect: "cap_add" }
+      - { id: devices, svc: { devices: ["/dev/kvm"] }, expect: "devices" }
+      - { id: env-file, svc: { env_file: /etc/shadow }, expect: "env_file" }
+      - { id: security-opt, svc: { security_opt: ["apparmor=unconfined"] }, expect: "security_opt" }
+      # Service keys are an allowlist: a key nobody named is refused, including use_api_socket.
+      - { id: use-api-socket, svc: { use_api_socket: true }, expect: "Docker API socket" }
+      - { id: provider, svc: { provider: { type: model } }, expect: "provider" }
+      - { id: unknown-future-key, svc: { brand_new_feature: true }, expect: "not on the platform's allowlist" }
+      - { id: bad-name, app: { name: "Hello_World" }, expect: "must be 3-30 chars" }
+      - { id: reserved-name, app: { name: traefik }, expect: "reserved" }
+      - { id: unknown-tier, app: { tier: staging }, expect: "not declared" }
+      - { id: routed-missing, app: { service: nope }, expect: "routed service" }
+      - { id: top-include, top: { include: ["other.yml"] }, expect: "include" }
+      - { id: volume-bind-driver, top: { volumes: { v: { driver_opts: { type: none, o: bind, device: /etc } } } }, expect: "driver_opts" }
+      - { id: external-network, top: { networks: { n: { external: true } } }, expect: "external" }
+      - { id: platform-network-name, top: { networks: { hosting_prod: {} } }, expect: "platform network" }
+      # TTL (the reaper): an integer in range, and only on a tier that is actually reaped.
+      - { id: ttl-negative, app: { ttl_hours: -1 }, expect: "ttl_hours -1 must be an integer" }
+      - { id: ttl-string, app: { ttl_hours: "2" }, expect: "must be an integer 0-720" }
+      - { id: ttl-too-long, app: { ttl_hours: 721 }, expect: "must be an integer 0-720" }
+      - { id: ttl-on-prod, app: { tier: prod, name: shop, ttl_hours: 2 }, expect: "not reaped" }
+      # Platform secrets: only on a tier declared `secrets: true`, never in the app's compose, and
+      # every field shaped. A DEV definition naming a vault item would let its author read any
+      # credential without review.
+      - { id: secrets-on-dev, app: { secrets: { api_key: { item: service/x, service: web } } }, expect: "secrets are refused on tier 'dev'" }
+      - { id: secrets-in-compose, top: { secrets: { k: { file: /etc/shadow } } }, expect: "secrets can read host files" }
+      - { id: secrets-bad-key, app: { tier: prod, name: shop, secrets: { "Bad-Key": { item: service/x, service: web } } }, expect: "the key must be" }
+      - { id: secrets-unknown-service, app: { tier: prod, name: shop, secrets: { api_key: { item: service/x, service: nope } } }, expect: "not in compose.services" }
+      - { id: secrets-extra-key, app: { tier: prod, name: shop, secrets: { api_key: { item: service/x, service: web, file: /etc/shadow } } }, expect: "unknown keys" }
+      - { id: secrets-bad-uid, app: { tier: prod, name: shop, secrets: { api_key: { item: service/x, service: web, uid: -1 } } }, expect: "uid -1" }
+      - { id: secrets-service-key, app: { tier: prod, name: shop }, svc: { secrets: [api_key] }, expect: "'secrets' is refused" }
+      # A PROD app with secrets and no vault to read them from: refused before anything is written.
+      - id: secrets-no-vault
+        vault: ""
+        app: { tier: prod, name: shop, secrets: { api_key: { item: service/example/api-key, field: password, service: web, uid: 10001 } } }
+        expect: "hosting_secrets_vault is unset"
+
+    # ---- near-misses that MUST pass
+    _must_pass:
+      # Dollar signs in VALUES are fine: the platform escapes them to $$ so compose keeps them literal.
+      - { id: env-dollar, svc: { environment: { PRICE: "5$" } } }
+      - { id: library-nginx, svc: { image: "docker.io/library/nginx:1.27-alpine" } }
+      - { id: mem-at-ceiling, svc: { mem_limit: 1g, cpus: 2 } }
+      - { id: named-volume, svc: { volumes: ["cache:/var/cache/nginx"] } }
+      - { id: tmpfs-long, svc: { volumes: [{ type: tmpfs, target: /tmp }] } }
+      - { id: digest-pinned, svc: { image: "nginx@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" } }
+      - { id: non-routing-label, svc: { labels: ["org.example.owner=me"] } }
+      - { id: expose-not-publish, svc: { expose: ["80"] } }
+      - { id: cap-drop, svc: { cap_drop: [ALL] } }
+      - { id: extension-field, svc: { x-notes: "inert" } }
+      - { id: healthcheck-and-ro, svc: { healthcheck: { test: ["CMD", "true"] }, read_only: true } }
+      - { id: own-limits, svc: { mem_limit: 128m, cpus: 0.5 } }
+      - { id: user-network, top: { networks: { backend: { driver: bridge } } } }
+      - { id: prod-tier-def, app: { tier: prod, name: shop } }
+      - { id: ttl-on-dev, app: { ttl_hours: 2 } }
+      - { id: ttl-zero-on-prod, app: { tier: prod, name: shop, ttl_hours: 0 } }
+      - id: prod-secret
+        app: { tier: prod, name: shop, secrets: { api_key: { item: service/example/api-key, field: password, service: web, uid: 10001 } } }
+    _definition_files:
+      - { path: apps/hosting/okapp/vars.yml, text: !unsafe "hosting_app_def:\n  name: okapp\n  tier: dev\n  port: 80\n" }
+      - { path: apps/hosting/pipe/vars.yml, text: !unsafe "hosting_app_def:\n  name: pipe\n  environment: {X: \"{{ lookup('pipe', 'id') }}\"}\n" }
+      - { path: apps/hosting/stmt/vars.yml, text: !unsafe "hosting_app_def:\n  name: stmt\n  x: \"{% set a = 1 %}\"\n" }
+      - { path: apps/hosting/esc/vars.yml, text: !unsafe "hosting_app_def:\n  name: esc\n  x: \"\\x7b\\x7b 7*7 \\x7d\\x7d\"\n" }
+      - { path: apps/hosting/keyjinja/vars.yml, text: !unsafe "hosting_app_def:\n  name: keyjinja\n  \"{{ k }}\": 1\n" }
+      - { path: apps/hosting/twokeys/vars.yml, text: !unsafe "hosting_app_def: {name: twokeys}\nhosting_tiers: {}\n" }
+      - { path: apps/hosting/oldkey/vars.yml, text: !unsafe "hosting_app:\n  name: oldkey\n" }
+      - { path: apps/hosting/tagged/vars.yml, text: !unsafe "hosting_app_def: !!python/object/apply:os.getcwd []\n" }
+  tasks:
+    - name: Ensure a clean render root
+      ansible.builtin.file: { path: "{{ render_root }}", state: absent }
+
+    - name: Create the render directory
+      ansible.builtin.file: { path: "{{ render_root }}", state: directory, mode: "0755" }
+
+    - name: Render the platform templates
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../templates/{{ item.src }}"
+        dest: "{{ render_root }}/{{ item.dest }}"
+        mode: "0644"
+      vars:
+        hosting_root: /opt/hosting
+        hosting_traefik_image: "traefik:v3.6.25"
+        hosting_socket_proxy_image: "tecnativa/docker-socket-proxy:0.3.0"
+        hosting_log_level: INFO
+        hosting_traefik_memory: 256m
+      loop:
+        - { src: compose.yml.j2, dest: compose.yml }
+        - { src: hosting-firewall.sh.j2, dest: hosting-firewall.sh }
+        - { src: hosting-firewall.service.j2, dest: hosting-firewall.service }
+
+    - name: Render each tier's Traefik static configuration
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../templates/traefik.yml.j2"
+        dest: "{{ render_root }}/traefik-{{ item.key }}.yml"
+        mode: "0644"
+      vars:
+        hosting_log_level: INFO
+      loop: "{{ hosting_tiers | dict2items }}"
+      loop_control: { label: "{{ item.key }}" }
+
+    # ---- the reaper, run for real against a fake tier tree (no Docker needed for these paths) ----
+    - name: Build a fake tier tree with an expired, a fresh and a never-expiring app
+      ansible.builtin.shell:
+        cmd: |
+          set -eu
+          r={{ render_root }}/reaper
+          mkdir -p $r/dev/old $r/dev/fresh $r/dev/forever $r/prod/keep $r/textfile
+          echo '{"name":"old","tier":"dev","ttl_hours":1}' > $r/dev/old/hosting.json
+          echo '{"name":"fresh","tier":"dev","ttl_hours":5}' > $r/dev/fresh/hosting.json
+          echo '{"name":"forever","tier":"dev","ttl_hours":0}' > $r/dev/forever/hosting.json
+          echo '{"name":"keep","tier":"prod","ttl_hours":1}' > $r/prod/keep/hosting.json
+          touch -d '-2 hours' $r/dev/old/hosting.json $r/prod/keep/hosting.json 2>/dev/null \
+            || touch -t "$(date -v-2H +%Y%m%d%H%M.%S)" $r/dev/old/hosting.json $r/prod/keep/hosting.json
+        executable: /bin/bash
+      changed_when: true
+
+    - name: Render the reaper against the fake tree
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../templates/hosting-reaper.py.j2"
+        dest: "{{ render_root }}/hosting-reaper"
+        mode: "0755"
+      vars:
+        _hosting_reaper_tiers:
+          dev: { root: "{{ render_root }}/reaper/dev", reap: true }
+          prod: { root: "{{ render_root }}/reaper/prod", reap: false }
+        hosting_reaped_root: "{{ render_root }}/reaper/.reaped"
+        hosting_textfile_dir: "{{ render_root }}/reaper/textfile"
+
+    - name: Dry-run the reaper
+      ansible.builtin.command:
+        argv: [python3, "{{ render_root }}/hosting-reaper", --dry-run]
+      register: _reaper_dry
+      changed_when: false
+
+    - name: Ask the reaper to remove a PROD app (must be refused without touching Docker)
+      ansible.builtin.command:
+        argv: [python3, "{{ render_root }}/hosting-reaper", --remove, prod, keep]
+      register: _reaper_prod
+      changed_when: false
+      failed_when: false
+
+    - name: The reaper picks exactly the expired DEV app, and refuses PROD
+      ansible.builtin.assert:
+        that:
+          - _reaper_dry.stdout_lines | select('match', '^WOULD REAP ') | list | length == 1
+          - "'WOULD REAP dev/old' in _reaper_dry.stdout"
+          - "'fresh' not in _reaper_dry.stdout"
+          - "'forever' not in _reaper_dry.stdout"
+          - "'keep' not in _reaper_dry.stdout"
+          - _reaper_prod.rc == 3
+          - "'not a reaping tier' in _reaper_prod.stdout"
+        fail_msg: "dry={{ _reaper_dry.stdout_lines }} prod-remove rc={{ _reaper_prod.rc }} {{ _reaper_prod.stdout_lines }}"
+        quiet: true
+
+    # ---- the refusals ---------------------------------------------------------------------
+    - name: Each must-refuse fixture is refused by the real entrypoint, for the right reason
+      ansible.builtin.include_tasks: _one_fixture.yml
+      vars:
+        fixture: "{{ item }}"
+        expect_refusal: true
+      loop: "{{ _must_refuse }}"
+      loop_control: { label: "{{ item.id }}" }
+
+    - name: Each near-miss passes the gate
+      ansible.builtin.include_tasks: _one_fixture.yml
+      vars:
+        fixture: "{{ item }}"
+        expect_refusal: false
+      loop: "{{ _must_pass }}"
+      loop_control: { label: "{{ item.id }}" }
+
+    # ---- the PROD gate (assert_merged) against a REAL git origin ------------------------------
+    # A bare "origin" and a working clone, so `git fetch` and `git show` run for real; a stubbed git
+    # would assert the copy against itself. The merged definition is committed and pushed; each case
+    # then presents a definition to deploy.
+    - name: Build a fake origin with one merged definition
+      ansible.builtin.shell:
+        cmd: |
+          set -e
+          cd "{{ render_root }}"
+          rm -rf origin.git work
+          git init -q --bare origin.git
+          git init -q work
+          cd work
+          git checkout -q -b main
+          mkdir -p apps/hosting/shop
+          cat > apps/hosting/shop/vars.yml <<'YML'
+          hosting_app_def:
+            name: shop
+            tier: prod
+            source: apps/hosting/shop/vars.yml
+            port: 8000
+            service: web
+            compose:
+              services:
+                web: {image: "ghcr.io/example/shop:1.2.3"}
+          YML
+          git add .
+          git -c user.email=t@example.test -c user.name=t commit -q -m merged
+          git remote add origin "{{ render_root }}/origin.git"
+          git push -q origin main
+      changed_when: true
+
+    - name: Each PROD provenance case is decided correctly, for the stated reason
+      ansible.builtin.include_tasks: _one_merged_case.yml
+      vars:
+        case: "{{ item }}"
+        _merged: &merged
+          name: shop
+          tier: prod
+          source: apps/hosting/shop/vars.yml
+          port: 8000
+          service: web
+          compose: { services: { web: { image: "ghcr.io/example/shop:1.2.3" } } }
+      loop:
+        - { id: identical-to-merged, app: *merged, expect_ok: true }
+        - { id: edited-after-merge, app: "{{ _merged | combine({'port': 9999}) }}", expect_ok: false, expect: "differs from the merged one" }
+        - { id: privileged-added-locally, app: "{{ _merged | combine({'compose': {'services': {'web': {'image': 'ghcr.io/example/shop:1.2.3', 'privileged': true}}}}) }}", expect_ok: false, expect: "differs from the merged one" }
+        - { id: never-merged, app: "{{ _merged | combine({'name': 'other', 'source': 'apps/hosting/other/vars.yml'}) }}", expect_ok: false, expect: "is not on origin/main" }
+        - { id: source-points-elsewhere, app: "{{ _merged | combine({'source': 'apps/hosting/shop/other.yml'}) }}", expect_ok: false, expect: "must carry" }
+        - { id: no-source, app: "{{ _merged | dict2items | rejectattr('key', 'equalto', 'source') | items2dict }}", expect_ok: false, expect: "must carry" }
+      loop_control: { label: "{{ item.id }}" }
+
+    # ---- the TARGET gate (assert_target): a deploy aimed anywhere but the hosting guest -------
+    - name: Each TARGET case is decided correctly, for the stated reason
+      ansible.builtin.include_tasks: _one_target_case.yml
+      vars:
+        case: "{{ item }}"
+      loop:
+        - { id: no-limit-no-target, expect_ok: true }
+        - { id: target-is-the-guest, target: apps-host, expect_ok: true }
+        - { id: target-another-host, target: other-host, expect_ok: false, expect: "target='other-host' names a different host" }
+        - { id: limit-to-the-guest, limit: apps-host, expect_ok: false, expect: "a host limit ('apps-host')" }
+        - { id: limit-to-localhost, limit: localhost, expect_ok: false, expect: "a host limit ('localhost')" }
+        - { id: limit-to-another-host, limit: other-host, expect_ok: false, expect: "a host limit ('other-host')" }
+        - { id: guest-not-in-inventory, inventory: [localhost, other-host], expect_ok: false, expect: "is not in the inventory" }
+        - { id: every-reason-at-once, limit: other-host, target: other-host, expect_ok: false, expect: "(2):" }
+      loop_control: { label: "{{ item.id }}" }
+
+    - name: Run the base app through the entrypoint once more and keep the compose it builds
+      ansible.builtin.include_tasks: _one_fixture.yml
+      vars:
+        fixture: { id: base }
+        expect_refusal: false
+        keep_compose: true
+
+    - name: Keep the compose the platform would write for the base app
+      ansible.builtin.copy:
+        content: "{{ _hosting_compose | to_nice_yaml(indent=2) }}"
+        dest: "{{ render_root }}/hello.compose.yml"
+        mode: "0644"
+
+    # ---- the SECOND gate: the model compose RESOLVED -------------------------------------------
+    # A resolved bind of / is exactly what the interpolation chain becomes under `docker compose
+    # config`. These call the real filter on resolved-shaped models.
+    - name: The resolved-model gate refuses what Docker would actually mount
+      ansible.builtin.assert:
+        that:
+          - "item.model | richard_lynch.services.hosting_resolved_violations('/srv/apps/dev/hello', {'max_mem': '1g', 'max_cpus': 2.0}) | length > 0"
+          - "item.expect in (item.model | richard_lynch.services.hosting_resolved_violations('/srv/apps/dev/hello', {'max_mem': '1g', 'max_cpus': 2.0}) | join(' '))"
+        quiet: true
+      loop:
+        - id: resolved-root-bind
+          expect: "host bind"
+          model: { services: { web: { security_opt: ["no-new-privileges:true"], volumes: [{ type: bind, source: /, target: /h }] } } }
+        - id: resolved-own-data-bind
+          expect: "host bind"
+          model: { services: { web: { security_opt: ["no-new-privileges:true"], volumes: [{ type: bind, source: /srv/apps/dev/hello/data/x, target: /h }] } } }
+        - id: resolved-socket
+          expect: "Docker socket"
+          model: { services: { web: { security_opt: ["no-new-privileges:true"], volumes: [{ type: volume, source: /var/run/docker.sock, target: /s }] } } }
+        - id: resolved-privileged
+          expect: "privileged"
+          model: { services: { web: { privileged: true, security_opt: ["no-new-privileges:true"] } } }
+        - id: resolved-mem
+          expect: "above the platform maximum"
+          model: { services: { web: { mem_limit: "68719476736", security_opt: ["no-new-privileges:true"] } } }
+        - id: resolved-security-opt-dropped
+          expect: "security_opt"
+          model: { services: { web: { security_opt: ["apparmor=unconfined"] } } }
+        - id: resolved-bind-volume-driver
+          expect: "driver_opts"
+          model: { services: { web: { security_opt: ["no-new-privileges:true"] } }, volumes: { v: { driver_opts: { o: bind, device: /etc } } } }
+        - id: resolved-unreadable
+          expect: "could not be read"
+          model: "not a model"
+      loop_control: { label: "{{ item.id }}" }
+
+    - name: The resolved-model gate accepts a clean model (the near-miss)
+      ansible.builtin.assert:
+        that:
+          - >-
+            {'services': {'web': {'security_opt': ['no-new-privileges:true'], 'mem_limit': '536870912', 'cpus': 1,
+              'volumes': [{'type': 'volume', 'source': 'cache', 'target': '/c'}, {'type': 'tmpfs', 'target': '/t'}]}},
+             'volumes': {'cache': {'name': 'hosting-dev-hello_cache'}}}
+            | richard_lynch.services.hosting_resolved_violations('/srv/apps/dev/hello', {'max_mem': '1g', 'max_cpus': 2.0}) == []
+        quiet: true
+
+    - name: A platform secret is written by the platform, to the app's own secrets dir, for its service only
+      ansible.builtin.assert:
+        that:
+          - "_sec_compose.secrets == {'api_key': {'file': '/srv/apps/prod/shop/secrets/api_key'}}"
+          - _sec_compose.services.web.secrets == ['api_key']
+          - "_sec_files == [{'key': 'api_key', 'item': 'service/example/api-key', 'field': 'password', 'service': 'web', 'uid': 10001, 'path': '/srv/apps/prod/shop/secrets/api_key'}]"
+          # the resolved model of exactly that is accepted (near-miss) ...
+          - "_sec_resolved | richard_lynch.services.hosting_resolved_violations('/srv/apps/prod/shop', {'max_mem': '1g', 'max_cpus': 2.0}, _sec_files) == []"
+          # ... and a resolved secret pointing at any other file, or handed to another service, is not
+          - >-
+            'did not write' in (_sec_resolved | combine({'secrets': {'api_key': {'file': '/etc/shadow'}}})
+              | richard_lynch.services.hosting_resolved_violations('/srv/apps/prod/shop', {}, _sec_files) | join(' '))
+          - >-
+            'was not declared' in ({'services': {'other': {'secrets': [{'source': 'api_key'}]}}, 'secrets': _sec_resolved.secrets}
+              | richard_lynch.services.hosting_resolved_violations('/srv/apps/prod/shop', {}, _sec_files) | join(' '))
+          - >-
+            'did not write' in (_sec_resolved | richard_lynch.services.hosting_resolved_violations('/srv/apps/prod/shop', {}, []) | join(' '))
+        quiet: true
+      vars:
+        _sec_app: >-
+          {{ _base_app | combine({'tier': 'prod', 'name': 'shop',
+               'secrets': {'api_key': {'item': 'service/example/api-key', 'field': 'password', 'service': 'web', 'uid': 10001}}}) }}
+        _sec_compose: "{{ _sec_app | richard_lynch.services.hosting_compose('prod', hosting_tiers, {'image_allowlist': hosting_image_allowlist}) }}"
+        _sec_files: "{{ _sec_app | richard_lynch.services.hosting_secret_files('prod', hosting_tiers) }}"
+        _sec_resolved:
+          services:
+            web:
+              security_opt: ['no-new-privileges:true']
+              secrets: [{source: api_key, target: /run/secrets/api_key}]
+          secrets:
+            api_key: {name: hosting-prod-shop_api_key, file: /srv/apps/prod/shop/secrets/api_key}
+
+    - name: A dollar sign in an app value reaches the written compose ESCAPED
+      ansible.builtin.assert:
+        that:
+          - _dollar_compose.services.web.environment.PRICE == '5$$'
+        quiet: true
+      vars:
+        _dollar_app: >-
+          {{ _base_app | combine({'compose': {'services': {'web': {'image': 'nginx:1.27-alpine', 'environment': {'PRICE': '5$'}}}}}, recursive=true) }}
+        _dollar_compose: "{{ _dollar_app | richard_lynch.services.hosting_compose('dev', hosting_tiers, {'image_allowlist': hosting_image_allowlist}) }}"
+
+    # ---- private registry logins (hosting_registries) ------------------------------------------
+    # The login and the manifest probe need 1Password and a registry, so they are checked on the host
+    # by the role's own two-sided gate. What CAN run here runs for real: the argspec, and the
+    # well-formedness gate that is the first task of tasks/_registries.yml.
+    - name: Load the main entrypoint's argspec
+      ansible.builtin.set_fact:
+        _hosting_main_spec: "{{ (lookup('ansible.builtin.file', playbook_dir ~ '/../../meta/argument_specs.yml') | from_yaml).argument_specs.main.options }}"
+
+    - name: Each registry case is decided correctly by the argspec and the gate, for the stated reason
+      ansible.builtin.include_tasks: _one_registry_case.yml
+      vars:
+        case: "{{ item }}"
+        _reg: &reg
+          host: ghcr.io
+          username: someone
+          item: service/example/registry-token
+          field: password
+          vault: Example-Vault
+          probe_image: "ghcr.io/example/private-shop@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      loop:
+        - { id: none-declared, registries: [], spec_ok: true, gate_ok: true }
+        - id: missing-probe
+          registries: ["{{ _reg | dict2items | rejectattr('key', 'equalto', 'probe_image') | items2dict }}"]
+          spec_ok: false
+          spec_expect: probe_image
+          gate_ok: false
+          gate_expect: "missing probe_image"
+        - id: unknown-key
+          registries: ["{{ _reg | combine({'probe': 'ghcr.io/example/x:1'}) }}"]
+          spec_ok: false
+          spec_expect: probe
+          gate_ok: false
+          gate_expect: "unknown key(s) probe"
+        - id: scheme-in-host
+          registries: ["{{ _reg | combine({'host': 'https://ghcr.io'}) }}"]
+          spec_ok: true
+          gate_ok: false
+          gate_expect: "must be a bare lowercase registry host"
+        - id: probe-on-another-registry
+          registries: ["{{ _reg | combine({'probe_image': 'docker.io/library/nginx:1.27-alpine'}) }}"]
+          spec_ok: true
+          gate_ok: false
+          gate_expect: "is not on ghcr.io"
+        - id: probe-floating-tag
+          registries: ["{{ _reg | combine({'probe_image': 'ghcr.io/example/private-shop:latest'}) }}"]
+          spec_ok: true
+          gate_ok: false
+          gate_expect: "floating tag"
+        - id: probe-untagged
+          registries: ["{{ _reg | combine({'probe_image': 'ghcr.io/example/private-shop'}) }}"]
+          spec_ok: true
+          gate_ok: false
+          gate_expect: "no pinned tag"
+        - id: same-host-twice
+          registries: ["{{ _reg }}", "{{ _reg | combine({'username': 'other'}) }}"]
+          spec_ok: true
+          gate_ok: false
+          gate_expect: "listed twice"
+        # Near-miss: well formed, so the argspec accepts it. Not run through _registries.yml, which
+        # would go on to read 1Password; the gate's verdict on it is asserted directly below.
+        - { id: well-formed, registries: [*reg], spec_ok: true, layer2: false }
+      loop_control: { label: "{{ item.id }}" }
+
+    - name: The registry gate accepts the well-formed near-misses (digest, tag, tag+digest, a port)
+      ansible.builtin.assert:
+        that:
+          - "[item] | richard_lynch.services.hosting_registry_problems == []"
+        fail_msg: "{{ item.probe_image }} on {{ item.host }}: {{ [item] | richard_lynch.services.hosting_registry_problems }}"
+        quiet: true
+      loop:
+        - { host: ghcr.io, username: u, item: i, vault: v, probe_image: "ghcr.io/example/shop@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" }
+        - { host: ghcr.io, username: u, item: i, vault: v, probe_image: "ghcr.io/example/shop:release-1" }
+        - { host: ghcr.io, username: u, item: i, vault: v, probe_image: "ghcr.io/example/shop:1.2.3@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" }
+        - { host: "registry.example.test:5000", username: u, item: i, vault: v, probe_image: "registry.example.test:5000/team/shop:2" }
+      loop_control: { label: "{{ item.probe_image }}" }
+
+    # ---- the definition lookup -------------------------------------------------------------------
+    # The REAL lookup, fed files. `lookup('pipe', ...)` in a vars file passed as -e @file would run on
+    # the controller; every Jinja spelling must be refused, a plain file read.
+    - name: Create the definition fixture directories
+      ansible.builtin.file:
+        path: "{{ render_root }}/{{ item.path | dirname }}"
+        state: directory
+        mode: "0755"
+      loop: "{{ _definition_files }}"
+      loop_control: { label: "{{ item.path }}" }
+
+    - name: Write the definition fixtures
+      ansible.builtin.copy:
+        content: "{{ item.text }}"
+        dest: "{{ render_root }}/{{ item.path }}"
+        mode: "0644"
+      loop: "{{ _definition_files }}"
+      loop_control: { label: "{{ item.path }}" }
+
+    - name: Each definition is read as inert data or refused, for the stated reason
+      ansible.builtin.include_tasks: _one_definition.yml
+      vars:
+        case: "{{ item }}"
+      loop:
+        - { id: plain, path: apps/hosting/okapp/vars.yml, expect_ok: true }
+        - { id: lookup-pipe, path: apps/hosting/pipe/vars.yml, expect_ok: false, expect: "Jinja delimiter" }
+        - { id: statement, path: apps/hosting/stmt/vars.yml, expect_ok: false, expect: "Jinja delimiter" }
+        - { id: yaml-escaped-braces, path: apps/hosting/esc/vars.yml, expect_ok: false, expect: "once parsed" }
+        - { id: jinja-in-a-key, path: apps/hosting/keyjinja/vars.yml, expect_ok: false, expect: "Jinja delimiter" }
+        - { id: second-top-key, path: apps/hosting/twokeys/vars.yml, expect_ok: false, expect: "exactly one top-level key" }
+        - { id: old-key-name, path: apps/hosting/oldkey/vars.yml, expect_ok: false, expect: "exactly one top-level key" }
+        - { id: yaml-object-tag, path: apps/hosting/tagged/vars.yml, expect_ok: false, expect: "not plain YAML" }
+        - { id: outside-apps-hosting, path: ../../etc/passwd, expect_ok: false, expect: "is not apps/hosting" }
+        - { id: wrong-filename, path: apps/hosting/okapp/other.yml, expect_ok: false, expect: "is not apps/hosting" }
+      loop_control: { label: "{{ item.id }}" }
+
+    - name: The extra-vars list is judged (what the CLI would carry)
+      ansible.builtin.include_tasks: _one_extra_vars.yml
+      vars:
+        case: "{{ item }}"
+      loop:
+        - { id: file-and-apply, extra: ["@apps/hosting/okapp/vars.yml hosting_deploy_apply=true"], expect_ok: true }
+        - { id: file-alone, extra: ["@apps/hosting/okapp/vars.yml"], expect_ok: true }
+        - { id: two-files, extra: ["@apps/hosting/okapp/vars.yml", "@apps/hosting/pipe/vars.yml"], expect_ok: false, expect: "exactly one" }
+        - { id: no-file, extra: ["hosting_deploy_apply=true"], expect_ok: false, expect: "exactly one" }
+        - { id: smuggled-config, extra: ["@apps/hosting/okapp/vars.yml hosting_tiers=x"], expect_ok: false, expect: "hosting_tiers" }
+        - { id: smuggled-app, extra: ["@apps/hosting/okapp/vars.yml hosting_app_def=x"], expect_ok: false, expect: "hosting_app_def" }
+        - { id: json-blob, extra: ["@apps/hosting/okapp/vars.yml", "{\"x\": 1}"], expect_ok: false, expect: "refused" }
+      loop_control: { label: "{{ item.id }}" }

@@ -1,0 +1,408 @@
+---
+# service_hosting (main) — the hosting PLATFORM: a read-only docker-socket-proxy, Traefik with the
+# docker provider, one entrypoint and one docker network per tier.
+#
+# It never deploys or removes an app. Apps live under <tier root>/<name>/ and are owned by the
+# deploy_app entrypoint; this entrypoint only creates the tier roots, so a converge KEEPS every
+# existing app.
+#
+# The same discipline as the other docker-compose roles here: gate on what fails silently, render,
+# converge, restart only on a real config change, then PROVE the result from the daemon.
+
+- name: Load this entrypoint's generated defaults
+  # defaults/main.yml is the only defaults file Ansible loads on its own; the generator writes one
+  # per entrypoint, so the entrypoint loads its own.
+  ansible.builtin.include_vars:
+    file: "{{ role_path }}/defaults/main.yml"
+
+- name: Resolve declared options over their generated defaults
+  ansible.builtin.include_tasks: _resolve_defaults.yml
+
+- name: Apply the generated argspec guards
+  ansible.builtin.include_tasks: _argspec_guards.yml
+
+- name: HARD GATE — images must be pinned, never floating
+  # A floating tag makes the deployed version a function of WHEN the play ran.
+  ansible.builtin.assert:
+    that:
+      - "':' in item"
+      - item.rsplit(":", 1)[1] not in ["latest", "stable", "main", "edge", "canary"]
+    fail_msg: "{{ item }} must carry an explicit version tag (not latest/stable/main/edge/canary)."
+    quiet: true
+  loop:
+    - "{{ hosting_traefik_image }}"
+    - "{{ hosting_socket_proxy_image }}"
+
+- name: HARD GATE — tiers must not share an entrypoint port, a network or a root
+  # Two tiers on one port would make the tunnel's dev route reach prod apps, which is the whole
+  # separation this platform exists to provide. Compared on the DERIVED sets so a copy-paste of a
+  # tier block (same port, new name) is caught.
+  ansible.builtin.assert:
+    that:
+      - hosting_tiers | length >= 1
+      - _ports | length == (_ports | unique | length)
+      - _networks | length == (_networks | unique | length)
+      - _roots | length == (_roots | unique | length)
+      - _suffixes | length == (_suffixes | unique | length)
+      - _ports | map('int') | select('equalto', 8082) | list | length == 0
+    fail_msg: >-
+      hosting_tiers must give every tier its own entrypoint_port, network, root and suffix
+      (and none may use 8082, the internal ping entrypoint). Got ports={{ _ports }}
+      networks={{ _networks }} roots={{ _roots }} suffixes={{ _suffixes }}.
+    quiet: true
+  vars:
+    _ports: "{{ hosting_tiers.values() | map(attribute='entrypoint_port') | list }}"
+    _networks: "{{ hosting_tiers.values() | map(attribute='network') | list }}"
+    _roots: "{{ hosting_tiers.values() | map(attribute='root') | list }}"
+    _suffixes: "{{ hosting_tiers.values() | map(attribute='suffix') | list }}"
+
+- name: Ensure the platform and tier directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop: "{{ [hosting_root, hosting_root ~ '/traefik'] + (hosting_tiers.values() | map(attribute='root') | list) }}"
+
+- name: Create the proxy network, internal so it has no route out
+  # The socket proxy needs to talk to Traefik and to nothing else. The bridge gets a STABLE NAME
+  # (hst-*) so the firewall can name it; a generated br-<id> would change on re-creation.
+  community.docker.docker_network:
+    name: hosting_proxy
+    internal: true
+    driver_options:
+      com.docker.network.bridge.name: hst-proxy
+    state: present
+
+- name: Create one docker network per tier
+  # Not internal, because apps may need egress (the firewall decides how far it reaches).
+  community.docker.docker_network:
+    name: "{{ item.value.network }}"
+    internal: false
+    driver_options:
+      com.docker.network.bridge.name: "{{ item.value.bridge }}"
+    state: present
+  loop: "{{ hosting_tiers | dict2items }}"
+  loop_control:
+    label: "{{ item.key }} {{ item.value.network }} ({{ item.value.bridge }})"
+
+- name: Make sure iptables is present (the firewall below is DOCKER-USER rules)
+  ansible.builtin.apt:
+    name: iptables
+    state: present
+    update_cache: false
+
+- name: Find the resolver file Docker copies into containers
+  ansible.builtin.stat:
+    path: /run/systemd/resolve/resolv.conf
+  register: _hosting_resolved_stat
+
+- name: Read the guest's upstream nameservers
+  # Containers query these directly from their own network namespace, so the egress block has to
+  # let exactly these through on port 53 or every container loses DNS.
+  ansible.builtin.command:
+    argv:
+      - grep
+      - -h
+      - "^nameserver "
+      - "{{ '/run/systemd/resolve/resolv.conf' if _hosting_resolved_stat.stat.exists else '/etc/resolv.conf' }}"
+  register: _hosting_ns_raw
+  changed_when: false
+  failed_when: false
+
+- name: Keep the IPv4 nameservers
+  ansible.builtin.set_fact:
+    _hosting_dns_servers: >-
+      {{ _hosting_ns_raw.stdout_lines | default([]) | map('regex_replace', '^nameserver +', '') | map('trim')
+         | select('match', '^[0-9]{1,3}([.][0-9]{1,3}){3}$') | reject('match', '^127[.]') | unique | list }}
+
+- name: HARD GATE — at least one routable nameserver was found
+  # An empty list would render a firewall that drops DNS for every container, and the symptom
+  # (an app that cannot resolve anything) would be blamed on the app.
+  ansible.builtin.assert:
+    that:
+      - _hosting_dns_servers | length > 0
+    fail_msg: >-
+      No non-loopback IPv4 nameserver in the guest's resolver file
+      ({{ _hosting_ns_raw.stdout_lines | default([]) }}); the container egress block would cut DNS.
+    quiet: true
+
+- name: Install the firewall script
+  ansible.builtin.template:
+    src: hosting-firewall.sh.j2
+    dest: /usr/local/sbin/hosting-firewall.sh
+    mode: "0755"
+  register: _hosting_fw_script
+
+- name: Install the firewall unit
+  ansible.builtin.template:
+    src: hosting-firewall.service.j2
+    dest: /etc/systemd/system/hosting-firewall.service
+    mode: "0644"
+  register: _hosting_fw_unit
+
+- name: Enable the firewall at boot and (re)apply it now
+  # Applied BEFORE the platform is converged, so a tier port is never published unfiltered.
+  # restarted (not started) so a changed script takes effect; the script is re-runnable.
+  ansible.builtin.systemd:
+    name: hosting-firewall
+    enabled: true
+    state: "{{ 'restarted' if (_hosting_fw_script is changed or _hosting_fw_unit is changed) else 'started' }}"
+    daemon_reload: "{{ _hosting_fw_unit is changed }}"
+
+- name: Render each tier's Traefik static configuration
+  # A DIRECTORY bind mount (config/ -> /etc/traefik), not the file: ansible writes atomically via
+  # rename, which gives a NEW inode, and a file-level bind mount keeps reading the old one forever.
+  ansible.builtin.template:
+    src: traefik.yml.j2
+    dest: "{{ hosting_root }}/traefik/traefik-{{ item.key }}.yml"
+    mode: "0644"
+  loop: "{{ hosting_tiers | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  register: _hosting_static
+
+- name: Render the platform compose project
+  ansible.builtin.template:
+    src: compose.yml.j2
+    dest: "{{ hosting_root }}/compose.yml"
+    mode: "0644"
+  register: _hosting_compose
+
+- name: Log in to the private registries, and prove each login can read a private image
+  # Before the platform converge, so the login exists before deploy_app pulls a PROD app's private
+  # images; a no-op when hosting_registries is empty.
+  ansible.builtin.include_tasks: _registries.yml
+
+- name: Converge the platform
+  community.docker.docker_compose_v2:
+    project_src: "{{ hosting_root }}"
+    project_name: hosting
+    state: present
+    pull: missing
+    remove_orphans: true
+  register: _hosting_up
+
+- name: Restart on a static-config change
+  # Traefik reads its static config once at start; the file changing on disk is not the process
+  # having it.
+  community.docker.docker_compose_v2:
+    project_src: "{{ hosting_root }}"
+    project_name: hosting
+    state: restarted
+  # NOT skipped when the converge above changed something else: skipping it whenever the socket
+  # proxy or a tier's compose changed in the same run would leave Traefik on the old static
+  # config. A restart after a recreate is redundant and harmless; a missed one is not.
+  when: _hosting_static.results | selectattr('changed') | list | length > 0
+
+- name: Wait for each tier's Traefik to report healthy
+  no_log: true  # INSPECTENV-01: the result carries every Env VALUE
+  community.docker.docker_container_info:
+    name: "hosting-traefik-{{ item.key }}-1"
+  register: _hosting_traefik
+  until: (_hosting_traefik.container.State.Health.Status | default('')) == 'healthy'
+  retries: 24
+  delay: 5
+  changed_when: false
+  loop: "{{ hosting_tiers | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: HARD GATE — every tier's Traefik is healthy (the wait above would otherwise exhaust and continue)
+  ansible.builtin.assert:
+    that:
+      - (item.container.State.Health.Status | default('')) == 'healthy'
+    fail_msg: >-
+      {{ item.item.key }}'s Traefik did not become healthy: {{ item.container.State | default({}) }}
+    quiet: true
+  loop: "{{ _hosting_traefik.results }}"
+  loop_control:
+    label: "{{ item.item.key }}"
+
+- name: Probe each tier's entrypoint from the guest
+  # Traefik's own 404 page proves the entrypoint is bound and is Traefik answering (no router
+  # exists for this Host). A different status, or no answer, means the tier is not served.
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ item.value.entrypoint_port }}/"
+    headers:
+      Host: "{{ platform_probe_host }}.{{ item.value.suffix }}"
+    status_code: [404]
+    return_content: false
+  vars:
+    platform_probe_host: hosting-platform-probe
+  loop: "{{ hosting_tiers | dict2items }}"
+  loop_control:
+    label: "{{ item.key }} :{{ item.value.entrypoint_port }}"
+  changed_when: false
+
+- name: NEGATIVE — the socket proxy refuses a write call
+  # The point of the proxy: a compromised Traefik (or a label-injection) must not be able to
+  # create, start or exec containers. A 403 from the proxy on POST /containers/create is the proof;
+  # a 2xx here means the proxy is configured read-write and the whole hop is decoration.
+  community.docker.docker_container_exec:
+    container: "hosting-traefik-{{ hosting_tiers | first }}-1"
+    argv:
+      - wget
+      - -S
+      - -O
+      - /dev/null
+      - --post-data=x
+      - http://socket-proxy:2375/containers/create
+  register: _hosting_postprobe
+  failed_when: false
+  changed_when: false
+
+- name: HARD GATE — the proxy answered 403 to the write
+  ansible.builtin.assert:
+    that:
+      - _hosting_postprobe.rc != 0
+      - "'403' in (_hosting_postprobe.stderr | default('') ~ _hosting_postprobe.stdout | default(''))"
+    fail_msg: >-
+      The Docker socket proxy did NOT refuse POST /containers/create (rc={{ _hosting_postprobe.rc | default('?') }}):
+      {{ (_hosting_postprobe.stderr | default('') ~ _hosting_postprobe.stdout | default(''))[:300] }}
+    quiet: true
+
+- name: Read the firewall back from the kernel
+  ansible.builtin.command:
+    argv: [iptables, -S, "{{ item }}"]
+  register: _hosting_fw_rules
+  loop: [DOCKER-USER, HOSTING-FW, INPUT]
+  changed_when: false
+
+- name: HARD GATE — the rules the unit claims to install are the rules in the kernel
+  # The unit reporting active proves the script ran, not that the chains hold what it meant.
+  # Each tier port must have its DROP, the LAN range its egress DROP, and both chains must be hooked.
+  ansible.builtin.assert:
+    that:
+      - "'-j HOSTING-FW' in _hosting_fw_rules.results[0].stdout"
+      - "'-j HOSTING-IN' in _hosting_fw_rules.results[2].stdout"
+      - _hosting_fw_rules.results[1].stdout_lines | select('search', '--ctorigdstport ' ~ item.value.entrypoint_port ~ ' .*-j DROP') | list | length == 1
+      - hosting_blocked_egress_cidrs | length == 0 or (_hosting_fw_rules.results[1].stdout_lines | select('search', '-d ' ~ (hosting_blocked_egress_cidrs | first) ~ ' .*-j DROP') | list | length >= 1)
+    fail_msg: >-
+      The firewall in the kernel does not match what hosting-firewall.sh installs for tier
+      {{ item.key }} (port {{ item.value.entrypoint_port }}):
+      {{ _hosting_fw_rules.results[1].stdout_lines | default([]) }}
+    quiet: true
+  loop: "{{ hosting_tiers | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: HARD GATE — every egress grant is pinned to one container (its bridge AND its address), none on a wildcard
+  # A grant matched on docker0/br-+/hst-+ is a grant to EVERY container on the guest.
+  ansible.builtin.assert:
+    that:
+      - _wild | length == 0
+      - _unpinned | length == 0
+      - _missing | length == 0
+    fail_msg: >-
+      Egress RETURN rules on a wildcard bridge: {{ _wild }}. Without a source address:
+      {{ _unpinned }}. Grants with no rule in the kernel: {{ _missing }}.
+    quiet: true
+  vars:
+    _egress_lines: >-
+      {{ _hosting_fw_rules.results[1].stdout_lines | select('search', ' --dport [0-9]+ -j RETURN')
+         | reject('search', ' --dport 53 ') | list }}
+    _wild: "{{ _egress_lines | select('search', ' -i (docker0|br-[+]|hst-[+]) ') | list }}"
+    _unpinned: "{{ _egress_lines | reject('search', ' -s [0-9.]+/32 ') | list }}"
+    _missing: "{{ _missing_json | from_json }}"
+    _missing_json: >-
+      {% set out = [] %}
+      {% for r in hosting_egress_allow | richard_lynch.services.hosting_egress_rules(hosting_tiers) %}
+      {%   set hits = _egress_lines | select('search', ' -s ' ~ r.source ~ '/32 ') | select('search', ' -i ' ~ r.bridge ~ ' ') | select('search', ' --dport ' ~ r.port ~ ' ') | list %}
+      {%   if hits | length == 0 %}{% set _ = out.append(r.app ~ '/' ~ r.service ~ ' ' ~ r.source ~ ' -> ' ~ r.cidr ~ ':' ~ r.port) %}{% endif %}
+      {% endfor %}
+      {{ out | to_json }}
+
+- name: NEGATIVE — a tier's Traefik cannot reach another tier's Traefik
+  # With one Traefik on both networks, DEV could request the PROD entrypoint with a
+  # PROD Host and be routed with no Access in the path. Now each Traefik sits on its own network
+  # only, so the other tier's name must not even resolve from it.
+  community.docker.docker_container_exec:
+    container: "hosting-traefik-{{ item.0.key }}-1"
+    argv:
+      - wget
+      - -T
+      - "4"
+      - -O
+      - /dev/null
+      - "http://traefik-{{ item.1.key }}:{{ item.1.value.entrypoint_port }}/"
+  register: _hosting_cross
+  failed_when: false
+  changed_when: false
+  loop: "{{ (hosting_tiers | dict2items) | product(hosting_tiers | dict2items) | list }}"
+  loop_control:
+    label: "{{ item.0.key }} -> {{ item.1.key }}"
+  when: item.0.key != item.1.key
+
+- name: HARD GATE — no tier's Traefik answered another tier's
+  ansible.builtin.assert:
+    that:
+      - item.rc | default(1) != 0
+    fail_msg: "{{ item.item.0.key }}'s Traefik reached {{ item.item.1.key }}'s entrypoint: tier isolation is broken."
+    quiet: true
+  loop: "{{ _hosting_cross.results }}"
+  loop_control:
+    label: "{{ item.item.0.key }} -> {{ item.item.1.key }}"
+  when: item.skipped is not defined
+
+# ---- the reaper: TTL removal of DEV apps, and its textfile metrics --------------------------------
+# A tier declared with `reap: true` (host_vars) has its apps removed once their ttl_hours pass. The
+# script is the ONE removal implementation: the remove_app entrypoint runs it with --remove, so a
+# timed removal and an explicit one cannot drift into doing different things.
+- name: Work out which tiers the reaper looks at
+  ansible.builtin.set_fact:
+    _hosting_reaper_tiers: >-
+      {% set o = {} %}{% for k, v in hosting_tiers.items() %}{% set _ = o.update({k: {'root': v.root, 'reap': v.reap | default(false) | bool}}) %}{% endfor %}{{ o }}
+
+- name: Install the reaper
+  ansible.builtin.template:
+    src: hosting-reaper.py.j2
+    dest: /usr/local/sbin/hosting-reaper
+    mode: "0755"
+
+- name: Install the reaper's unit and timer
+  ansible.builtin.template:
+    src: "hosting-reaper.{{ item }}.j2"
+    dest: "/etc/systemd/system/hosting-reaper.{{ item }}"
+    mode: "0644"
+  loop: [service, timer]
+  register: _hosting_reaper_units
+
+- name: Enable the reaper timer at boot and start it now
+  ansible.builtin.systemd:
+    name: hosting-reaper.timer
+    enabled: true
+    state: "{{ 'restarted' if _hosting_reaper_units is changed else 'started' }}"
+    daemon_reload: "{{ _hosting_reaper_units is changed }}"
+
+- name: Run the reaper once now, so its metrics exist before the first timer tick
+  # A dry run first would only say what the real run then does; the real run IS the read-back of
+  # the script: it must exit 0 and write its metrics file. It removes only apps whose TTL passed.
+  ansible.builtin.systemd:
+    name: hosting-reaper.service
+    state: started
+  changed_when: false
+
+- name: Read the reaper back (timer active, last run succeeded, metrics fresh)
+  ansible.builtin.shell:
+    cmd: |
+      set -u
+      echo "timer=$(systemctl is-active hosting-reaper.timer) enabled=$(systemctl is-enabled hosting-reaper.timer)"
+      echo "result=$(systemctl show -p Result --value hosting-reaper.service)"
+      echo "status=$(systemctl show -p ExecMainStatus --value hosting-reaper.service)"
+      echo "age=$(( $(date +%s) - $(stat -c %Y {{ hosting_textfile_dir }}/hosting_reaper.prom 2>/dev/null || echo 0) ))"
+      grep -c '^hosting_reaper_last_run_success 1$' {{ hosting_textfile_dir }}/hosting_reaper.prom 2>/dev/null || true
+    executable: /bin/bash
+  register: _hosting_reaper_state
+  changed_when: false
+  failed_when: false
+
+- name: HARD GATE — the reaper timer is active and its last run succeeded and wrote fresh metrics
+  ansible.builtin.assert:
+    that:
+      - "'timer=active enabled=enabled' in _hosting_reaper_state.stdout_lines"
+      - "'result=success' in _hosting_reaper_state.stdout_lines"
+      - "'status=0' in _hosting_reaper_state.stdout_lines"
+      - (_hosting_reaper_state.stdout_lines | select('match', '^age=') | first | default('age=999999') | regex_replace('^age=', '') | int) < 300
+      - _hosting_reaper_state.stdout_lines | last | default('0') | int == 1
+    fail_msg: "The reaper is not healthy: {{ _hosting_reaper_state.stdout_lines }} (journalctl -u hosting-reaper.service)."
+    quiet: true

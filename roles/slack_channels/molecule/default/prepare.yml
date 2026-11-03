@@ -1,0 +1,28 @@
+---
+- name: Prepare - start the stub Slack workspace
+  hosts: localhost
+  gather_facts: false
+  vars_files: [vars.yml]
+  tasks:
+    - name: Write the seed workspace
+      ansible.builtin.copy:
+        dest: /tmp/molecule-slack-channels-state.json
+        content: "{{ stub_state | to_nice_json }}\n"
+        mode: "0600"
+
+    - name: Start the stub (left running for converge, idempotence and verify; cleanup stops it)
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_playbook_python }}"
+          - "{{ lookup('ansible.builtin.env', 'MOLECULE_PROJECT_DIRECTORY') }}/tests/stub_slack.py"
+          - "{{ stub_port }}"
+          - /tmp/molecule-slack-channels-state.json
+      async: 3600
+      poll: 0
+      changed_when: true
+
+    - name: Wait for it to listen
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: "{{ stub_port }}"
+        timeout: 20

@@ -1,0 +1,39 @@
+---
+# One fixture through the REAL deploy_app entrypoint (preview mode, so no Docker is needed).
+# Inputs: fixture (id, optional svc / top / app mutations, expect), expect_refusal (bool).
+- name: Reset the gate result
+  ansible.builtin.set_fact:
+    _gate_passed: false
+    _gate_msg: ""
+
+- name: Run the entrypoint
+  block:
+    - name: "{{ fixture.id }} — deploy_app (preview)"
+      ansible.builtin.include_role:
+        name: service_hosting
+        tasks_from: deploy_app
+        public: true
+      vars:
+        hosting_deploy_apply: false
+        hosting_secrets_vault: "{{ fixture.vault | default(_molecule_secrets_vault) }}"
+        hosting_app: >-
+          {{ _base_app | combine(fixture.app | default({}))
+             | combine({'compose': (_base_app.compose | combine(fixture.top | default({}), recursive=True)
+                | combine({'services': {'web': _base_app.compose.services.web | combine(fixture.svc | default({}))}}))}) }}
+    - name: Note that the gate let it through
+      ansible.builtin.set_fact:
+        _gate_passed: true
+  rescue:
+    - name: Capture why it was refused
+      ansible.builtin.set_fact:
+        _gate_msg: "{{ ansible_failed_result.msg | default('') }}"
+
+- name: "{{ fixture.id }} — the gate decided correctly, and for the stated reason"
+  ansible.builtin.assert:
+    that:
+      - expect_refusal | bool != _gate_passed | bool
+      - (not (expect_refusal | bool)) or (fixture.expect in _gate_msg)
+    fail_msg: >-
+      fixture {{ fixture.id }}: expected {{ 'REFUSAL' if expect_refusal | bool else 'ACCEPTANCE' }},
+      gate {{ 'ACCEPTED' if _gate_passed | bool else 'REFUSED' }}. Message: {{ _gate_msg[:600] }}
+    quiet: true

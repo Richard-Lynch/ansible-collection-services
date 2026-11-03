@@ -1,0 +1,39 @@
+---
+# service_hosting (assert_target) — the TARGET gate: refuse a deploy aimed at any host other than
+# the hosting guest, naming every reason at once.
+#
+# The deploy play's own hosts line is the literal guest, but a host LIMIT can still reshape the run
+# without touching it, and none of the shapes fails on its own (the hosting_target_refusals filter
+# lists the three cases). So the caller runs this from a play whose hosts line is `all`: whatever
+# the limit is, at least one host is left and this gate runs. Controller-side only (assert and
+# set_fact), so it never connects to the host it happens to be scheduled on.
+
+- name: Load this entrypoint's generated defaults
+  ansible.builtin.include_vars:
+    file: "{{ role_path }}/defaults/assert_target.yml"
+
+- name: Resolve declared options over their generated defaults
+  ansible.builtin.include_tasks: _resolve_defaults.yml
+
+- name: Apply the generated argspec guards
+  ansible.builtin.include_tasks: _argspec_guards.yml
+
+- name: Judge where this run is aimed
+  ansible.builtin.set_fact:
+    _hosting_target_refusals: >-
+      {{ hosting_target_guest | richard_lynch.services.hosting_target_refusals(hosting_inventory_hosts,
+           hosting_requested_limit, hosting_requested_target) }}
+
+- name: HARD GATE — the run is aimed at the hosting guest and nothing else
+  ansible.builtin.assert:
+    that:
+      - _hosting_target_refusals | length == 0
+    fail_msg: >-
+      REFUSED: this deploy is aimed somewhere other than {{ hosting_target_guest }}
+      ({{ _hosting_target_refusals | length }}):
+      {% for r in _hosting_target_refusals %}
+      [{{ loop.index }}] {{ r }}
+      {% endfor %}
+      Nothing was written. Run it with no LIMIT and no target=.
+    success_msg: "Aimed at {{ hosting_target_guest }} only (no limit, no other target)."
+    quiet: false

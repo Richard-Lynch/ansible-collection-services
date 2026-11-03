@@ -1,0 +1,30 @@
+---
+# AUTO-GENERATED defaults file — DO NOT EDIT.
+#
+# Source of truth: roles/jellyfin_transcode_reaper/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate jellyfin_transcode_reaper
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+# Entrypoint:      main
+
+# Only reap segments older than this many minutes. 6h by default: long
+# enough that a paused-but-live session is never touched, short enough to
+# be useful. Floored at 60 — a shorter window risks deleting segments from
+# a session that is merely paused, and the reaper cannot tell the
+# difference.
+jtr_older_than_min__default: 360
+
+# systemd OnCalendar expression. Daily at 04:00 by default — outside
+# plausible viewing hours, so the 'skip while transcoding' guard rarely has
+# to fire. The timer is Persistent, so a run missed while the host was off
+# happens at next boot.
+jtr_on_calendar__default: '*-*-* 04:00:00'
+
+# Where the reaper script is installed.
+jtr_script_path__default: /usr/local/sbin/jellyfin-reap-transcodes
+
+# 'absent' removes the timer, unit and script. The cleanup is a host-level
+# capability, so retiring it should not mean leaving orphaned units behind.
+jtr_state__default: present

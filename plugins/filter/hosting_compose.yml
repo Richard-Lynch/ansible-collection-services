@@ -1,0 +1,37 @@
+# Copyright: (c) 2026, Richard Lynch
+# GNU General Public License v3.0+ (see https://www.gnu.org/licenses/gpl-3.0.txt)
+---
+DOCUMENTATION:
+  name: hosting_compose
+  short_description: Build the compose project written for an accepted hosting app
+  author: Richard Lynch (@Richard-Lynch)
+  description:
+    - Returns the app's own services with the Traefik labels, the tier network, resource limits and
+      C(no-new-privileges) added by the platform, never taken from the app.
+    - Raises an error when the definition is not acceptable, so a compose project cannot be built
+      from a refused definition.
+  options:
+    _input:
+      description: The app definition.
+      type: dict
+      required: true
+    tier_name:
+      description: The tier the app is deployed to.
+      type: str
+      required: true
+    tiers:
+      description: The tier definitions, keyed by tier name.
+      type: dict
+      required: true
+    defaults:
+      description: Platform defaults (image allowlist, default and maximum limits).
+      type: dict
+      required: true
+EXAMPLES: |
+  - name: Build the compose project
+    ansible.builtin.set_fact:
+      compose: "{{ app | richard_lynch.services.hosting_compose('dev', tiers, {'image_allowlist': allowlist}) }}"
+RETURN:
+  _value:
+    description: The compose project as a mapping (C(name), C(services), C(networks), ...).
+    type: dict

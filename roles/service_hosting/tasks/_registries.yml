@@ -1,0 +1,127 @@
+---
+# Private registry logins (hosting_registries), run by main BEFORE anything is pulled.
+#
+# The login is not the proof. `docker login` succeeding says the registry accepted a credential, not
+# that the credential can READ the images an app will run (a token minted without read:packages
+# logs in fine and then 403s every pull). So each registry names a PRIVATE probe_image, and the gate
+# is two-sided: it must be readable WITH the stored config and refused WITHOUT any config. The second
+# half is what makes the first mean something: a probe image that is public, or was made public
+# later, would pass the first half with no login at all.
+
+- name: HARD GATE — the registry list is well formed (host, probe image on that host, pinned)
+  ansible.builtin.assert:
+    that:
+      - _hosting_registry_problems | length == 0
+    fail_msg: "hosting_registries refused: {{ _hosting_registry_problems | join('; ') }}"
+    quiet: true
+  vars:
+    _hosting_registry_problems: "{{ hosting_registries | richard_lynch.services.hosting_registry_problems }}"
+
+- name: Locate the docker config the platform's compose reads
+  # docker compose runs as the connecting user and reads that user's ~/.docker/config.json, so that
+  # is where the credential has to be; derived from facts, not a hardcoded /root.
+  ansible.builtin.set_fact:
+    _hosting_docker_config_dir: "{{ ansible_env.HOME }}/.docker"
+  when: hosting_registries | length > 0
+
+- name: Ensure the docker config directory is private to its owner
+  ansible.builtin.file:
+    path: "{{ _hosting_docker_config_dir }}"
+    state: directory
+    owner: "{{ ansible_user_id }}"
+    mode: "0700"
+  when: hosting_registries | length > 0
+
+- name: HARD GATE — each registry's token read back non-empty
+  # A Password-category 1Password item holds its value in `password`, the default field.
+  ansible.builtin.assert:
+    that:
+      - lookup('richard_lynch.common.onepassword_cached', item.item, field=item.field | default('password'), vault=item.vault) | length > 0
+    fail_msg: "The token for {{ item.host }} (1Password item {{ item.item }}, field {{ item.field | default('password') }}) read back EMPTY."
+    quiet: true
+  loop: "{{ hosting_registries }}"
+  loop_control:
+    label: "{{ item.host }}"
+  no_log: true
+
+- name: Log in to each private registry
+  # no_log: the module's arguments carry the token, and a failure dumps them. Idempotent: the
+  # module compares the stored auth with these credentials and only writes on a difference.
+  community.docker.docker_login:
+    registry_url: "{{ item.host }}"
+    username: "{{ item.username }}"
+    password: "{{ lookup('richard_lynch.common.onepassword_cached', item.item, field=item.field | default('password'), vault=item.vault) }}"
+    config_path: "{{ _hosting_docker_config_dir }}/config.json"
+  loop: "{{ hosting_registries }}"
+  loop_control:
+    label: "{{ item.host }}"
+  no_log: true
+
+- name: Keep the stored credential readable by its owner only
+  # With no credential helper on a headless guest, docker stores the token base64-encoded (not
+  # encrypted) in config.json, so the file mode is the only thing protecting it.
+  ansible.builtin.file:
+    path: "{{ _hosting_docker_config_dir }}/config.json"
+    state: file
+    owner: "{{ ansible_user_id }}"
+    mode: "0600"
+  when: hosting_registries | length > 0
+
+- name: Read each probe image's manifest WITH the stored login
+  ansible.builtin.command:
+    argv:
+      [
+        docker,
+        --config,
+        "{{ _hosting_docker_config_dir }}",
+        manifest,
+        inspect,
+        "{{ item.probe_image }}",
+      ]
+  register: _hosting_probe_auth
+  changed_when: false
+  failed_when: false
+  loop: "{{ hosting_registries }}"
+  loop_control:
+    label: "{{ item.host }} {{ item.probe_image }}"
+
+- name: Read each probe image's manifest with NO login (an empty config)
+  # A config directory that does not exist is an empty config to the docker CLI; against a private
+  # image it answers rc=1, `unauthorized`.
+  ansible.builtin.command:
+    argv:
+      [
+        docker,
+        --config,
+        /nonexistent/hosting-anonymous,
+        manifest,
+        inspect,
+        "{{ item.probe_image }}",
+      ]
+  register: _hosting_probe_anon
+  changed_when: false
+  failed_when: false
+  loop: "{{ hosting_registries }}"
+  loop_control:
+    label: "{{ item.host }} {{ item.probe_image }}"
+
+- name: HARD GATE — the login is what makes the private image readable
+  ansible.builtin.assert:
+    that:
+      - item.0.rc == 0
+      - (item.0.stdout | from_json).schemaVersion is defined
+      - item.1.rc != 0
+      - item.1.stderr is search('(?i)unauthori[sz]ed|denied|forbidden')
+    fail_msg: >-
+      {{ item.0.item.host }}: {{ item.0.item.probe_image }}
+      {%- if item.0.rc != 0 %} could NOT be read with the login (rc={{ item.0.rc }}:
+      {{ item.0.stderr[:300] }}): the token lacks read:packages, has expired, or the image is gone.
+      {%- elif item.1.rc == 0 %} was readable WITHOUT any login, so it is public and proves nothing
+      about the credential; name a private image as probe_image.
+      {%- else %} gave an unexpected answer: with login {{ item.0.stdout[:200] }}; without
+      (rc={{ item.1.rc }}) {{ item.1.stderr[:200] }}.
+      {%- endif %}
+    quiet: true
+  loop: "{{ _hosting_probe_auth.results | zip(_hosting_probe_anon.results) | list }}"
+  loop_control:
+    label: "{{ item.0.item.host }}"

@@ -1,0 +1,28 @@
+---
+- name: Verify postgres compose invariants
+  hosts: localhost
+  gather_facts: false
+  vars: { render_dir: /tmp/molecule-postgres }
+  tasks:
+    - ansible.builtin.slurp: { src: "{{ render_dir }}/docker-compose.yml" }
+      register: _c
+    - ansible.builtin.set_fact: { compose: "{{ _c.content | b64decode }}" }
+    - name: Shared network + exporter present, pgadmin off
+      ansible.builtin.assert:
+        that:
+          - "'external: true' in compose"
+          - "'pgnet:' in compose"
+          - "'postgres_exporter' in compose"
+          - "'pgadmin' not in compose"          # disabled by default
+        fail_msg: "postgres compose wrong (network/exporter/pgadmin)."
+        success_msg: "postgres compose OK — shared net, exporter on, pgadmin off."
+    - ansible.builtin.slurp: { src: "{{ render_dir }}/docker-compose.all-interfaces.yml" }
+      register: _c_all
+    - name: The database port is on loopback by default, and on every interface only when asked
+      ansible.builtin.assert:
+        that:
+          - "'- \"127.0.0.1:5432:5432\"' in compose"
+          - "'- \"5432:5432\"' in (_c_all.content | b64decode)"
+          - "'127.0.0.1:5432' not in (_c_all.content | b64decode)"
+        fail_msg: "postgres port binding wrong: {{ compose }}"
+    - ansible.builtin.file: { path: "{{ render_dir }}", state: absent }

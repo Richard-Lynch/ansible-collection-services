@@ -1,0 +1,43 @@
+# Copyright: (c) 2026, Richard Lynch
+# GNU General Public License v3.0+ (see https://www.gnu.org/licenses/gpl-3.0.txt)
+---
+DOCUMENTATION:
+  name: hosting_violations
+  short_description: Every reason a hosting app definition must be refused
+  author: Richard Lynch (@Richard-Lynch)
+  description:
+    - Judges an app definition against a tier's rules before anything is written. All checks run,
+      so one refusal lists everything wrong with the definition.
+    - Service keys are an allowlist; images must be on the image allowlist and pinned; resource
+      limits must stay within the caps.
+    - An empty list means the definition is acceptable.
+  options:
+    _input:
+      description: The app definition (a mapping with at least C(name), C(tier) and C(compose)).
+      type: dict
+      required: true
+    tier_name:
+      description: The tier the app is deployed to, a key of O(tiers).
+      type: str
+      required: true
+    tiers:
+      description: The tier definitions (root, network, domain, ...), keyed by tier name.
+      type: dict
+      required: true
+    image_allowlist:
+      description: Image reference prefixes an app may use.
+      type: list
+      elements: str
+      required: true
+    limits:
+      description: Resource caps, C(max_mem) and C(max_cpus).
+      type: dict
+EXAMPLES: |
+  - name: Refuse a definition that breaks the rules
+    ansible.builtin.assert:
+      that: (app | richard_lynch.services.hosting_violations('dev', tiers, allowlist)) == []
+RETURN:
+  _value:
+    description: One message per violation; empty when the definition is acceptable.
+    type: list
+    elements: str

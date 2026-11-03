@@ -1,0 +1,25 @@
+---
+dependency: { name: galaxy }
+driver: { name: default }
+platforms: [{ name: localhost }]
+provisioner:
+  name: ansible
+  inventory: { host_vars: { localhost: { ansible_connection: local } } }
+  # Molecule runs from the scenario directory, so the repo's roles_path (./roles) does not apply and
+  # include_role of this very role would not be found -- and a refusal-test that cannot FIND the
+  # role 'refuses' every fixture for the wrong reason (the expected-reason assert caught exactly
+  # that on the first run).
+  env:
+    ANSIBLE_ROLES_PATH: "${MOLECULE_PROJECT_DIRECTORY}/../"
+    # The hosting filters and the hosting_definition lookup are collection plugins, found through
+    # the collections path below.
+    ANSIBLE_COLLECTIONS_PATH: "${MOLECULE_PROJECT_DIRECTORY}/../../collections.galaxy:${MOLECULE_PROJECT_DIRECTORY}/../../../../.."
+  playbooks: { converge: converge.yml, verify: verify.yml }
+verifier: { name: ansible }
+scenario:
+  # No idempotence step: converge deletes its render root first so each run renders from a clean
+  # state (a stale artifact from a previous run would satisfy verify and hide a template that had
+  # stopped rendering), which makes a second converge "changed" by construction. The role's real
+  # idempotence (compose recreate: auto, restart only on a static-config change) needs a Docker
+  # daemon and is asserted on the live guest by the role's read-backs.
+  test_sequence: [syntax, converge, verify]

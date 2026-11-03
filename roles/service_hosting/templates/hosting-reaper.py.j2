@@ -1,0 +1,189 @@
+#!/usr/bin/env python3
+# Managed by service_hosting -- do not edit.
+#
+# hosting-reaper: remove apps whose TTL has passed on a reaping tier, or one named app on request.
+#
+#   hosting-reaper                     reap every expired app (what the timer runs)
+#   hosting-reaper --remove TIER NAME  remove that one app now (the remove_app entrypoint runs this)
+#   hosting-reaper --dry-run           report what would be reaped, change nothing
+#
+# An app's record is <tier root>/<name>/hosting.json, written by deploy_app. Its TTL counts from
+# the record's mtime, i.e. from the last deploy that CHANGED the definition (deploy_app rewrites the
+# record only when it differs). ttl_hours 0 or absent = never expires. Only tiers declared with
+# `reap: true` are reaped by TTL; an explicit --remove works on a reaping tier only, so a PROD app
+# cannot be removed by this script (PROD changes arrive by a merged PR).
+#
+# REMOVAL: `docker compose down --remove-orphans` (named volumes are KEPT: an app's data is never
+# deleted by a timer), then the app directory MOVES to <reaped root>/<tier>/<name>-<UTC stamp>. The
+# containers are read back from the daemon afterwards; a project with a container left is a FAILED
+# removal and the directory stays where it is.
+#
+# Every run writes textfile metrics atomically, success or not, so a reaper that stops running is
+# visible as a stale timestamp rather than as silence.
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+
+TIERS = json.loads({{ _hosting_reaper_tiers | to_json | to_json }})
+REAPED_ROOT = {{ hosting_reaped_root | to_json }}
+TEXTFILE_DIR = {{ hosting_textfile_dir | to_json }}
+PROM = os.path.join(TEXTFILE_DIR, "hosting_reaper.prom")
+
+
+def log(msg):
+    print(msg, flush=True)
+
+
+def records():
+    """Yield (tier, name, dir, record, mtime) for every app record on every tier."""
+    for tier, cfg in sorted(TIERS.items()):
+        root = cfg["root"]
+        if not os.path.isdir(root):
+            continue
+        for name in sorted(os.listdir(root)):
+            d = os.path.join(root, name)
+            path = os.path.join(d, "hosting.json")
+            if not os.path.isfile(path):
+                continue
+            try:
+                with open(path) as fh:
+                    rec = json.load(fh)
+            except (OSError, ValueError) as exc:
+                log("unreadable record %s: %s" % (path, exc))
+                rec = None
+            yield tier, name, d, rec, os.stat(path).st_mtime
+
+
+def project_containers(project):
+    out = subprocess.run(
+        ["docker", "ps", "-aq", "--filter", "label=com.docker.compose.project=%s" % project],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return [line for line in out.stdout.split() if line]
+
+
+def remove(tier, name, d):
+    """Bring the project down, prove it is gone, then move the directory aside. True on success."""
+    project = "hosting-%s-%s" % (tier, name)
+    compose = os.path.join(d, "compose.yml")
+    if os.path.isfile(compose):
+        rc = subprocess.run(
+            ["docker", "compose", "-p", project, "-f", compose, "down", "--remove-orphans", "--timeout", "20"]
+        ).returncode
+        if rc != 0:
+            log("REMOVE FAILED %s: docker compose down rc=%d" % (project, rc))
+            return False
+    left = project_containers(project)
+    if left:
+        log("REMOVE FAILED %s: %d container(s) still present after down: %s" % (project, len(left), left))
+        return False
+    # Platform secrets (PROD-only today, so normally absent here) are never archived: a moved-aside
+    # directory is kept indefinitely, and a credential copy in it would outlive the app.
+    secrets_dir = os.path.join(d, "secrets")
+    if os.path.isdir(secrets_dir):
+        shutil.rmtree(secrets_dir)
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    dest_dir = os.path.join(REAPED_ROOT, tier)
+    os.makedirs(dest_dir, mode=0o755, exist_ok=True)
+    dest = os.path.join(dest_dir, "%s-%s" % (name, stamp))
+    os.rename(d, dest)
+    log("REMOVED %s (containers gone; directory moved to %s; named volumes kept)" % (project, dest))
+    return True
+
+
+def write_metrics(lines):
+    os.makedirs(TEXTFILE_DIR, mode=0o755, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=TEXTFILE_DIR, prefix=".hosting_reaper.")
+    with os.fdopen(fd, "w") as fh:
+        fh.write("\n".join(lines) + "\n")
+    os.chmod(tmp, 0o644)
+    os.rename(tmp, PROM)
+
+
+def main(argv):
+    dry = "--dry-run" in argv
+    now = time.time()
+    ok = True
+    reaped = 0
+    apps = []
+
+    if "--remove" in argv:
+        i = argv.index("--remove")
+        try:
+            tier, name = argv[i + 1], argv[i + 2]
+        except IndexError:
+            log("usage: hosting-reaper --remove TIER NAME")
+            return 2
+        if tier not in TIERS or not TIERS[tier].get("reap"):
+            log("REFUSED: tier %r is not a reaping tier (reaping tiers: %s)"
+                % (tier, sorted(t for t, c in TIERS.items() if c.get("reap"))))
+            return 3
+        d = os.path.join(TIERS[tier]["root"], name)
+        if os.path.dirname(d) != TIERS[tier]["root"] or not os.path.isfile(os.path.join(d, "hosting.json")):
+            log("REFUSED: no app record at %s/hosting.json" % d)
+            return 4
+        return 0 if remove(tier, name, d) else 1
+
+    for tier, name, d, rec, mtime in records():
+        if rec is None:
+            ok = False
+            continue
+        try:
+            ttl = int(rec.get("ttl_hours") or 0)
+        except (TypeError, ValueError):
+            log("bad ttl_hours in %s: %r" % (d, rec.get("ttl_hours")))
+            ok = False
+            continue
+        expires = mtime + ttl * 3600 if ttl > 0 else 0
+        apps.append((tier, name, ttl, expires))
+        if TIERS[tier].get("reap") and ttl > 0 and now >= expires:
+            if dry:
+                log("WOULD REAP %s/%s (expired %ds ago)" % (tier, name, int(now - expires)))
+                continue
+            try:
+                if remove(tier, name, d):
+                    reaped += 1
+                else:
+                    ok = False
+            except (OSError, subprocess.SubprocessError) as exc:
+                log("REMOVE FAILED %s/%s: %s" % (tier, name, exc))
+                ok = False
+
+    if dry:
+        return 0 if ok else 1
+
+    m = [
+        "# HELP hosting_reaper_last_run_timestamp_seconds When the reaper last ran.",
+        "# TYPE hosting_reaper_last_run_timestamp_seconds gauge",
+        "hosting_reaper_last_run_timestamp_seconds %d" % now,
+        "# HELP hosting_reaper_last_run_success 1 if every record was readable and every expired app was removed.",
+        "# TYPE hosting_reaper_last_run_success gauge",
+        "hosting_reaper_last_run_success %d" % (1 if ok else 0),
+        "# HELP hosting_reaper_reaped_last_run Apps removed by TTL in the last run.",
+        "# TYPE hosting_reaper_reaped_last_run gauge",
+        "hosting_reaper_reaped_last_run %d" % reaped,
+        "# HELP hosting_app_ttl_hours The app's declared TTL; 0 = never expires.",
+        "# TYPE hosting_app_ttl_hours gauge",
+    ]
+    for tier, name, ttl, _ in apps:
+        m.append('hosting_app_ttl_hours{tier="%s",app="%s"} %d' % (tier, name, ttl))
+    m += [
+        "# HELP hosting_app_expires_timestamp_seconds When the app is reaped (apps with a TTL only).",
+        "# TYPE hosting_app_expires_timestamp_seconds gauge",
+    ]
+    for tier, name, ttl, expires in apps:
+        if ttl > 0:
+            m.append('hosting_app_expires_timestamp_seconds{tier="%s",app="%s"} %d' % (tier, name, expires))
+    write_metrics(m)
+    log("reaper: %d app record(s), %d reaped, success=%s" % (len(apps), reaped, ok))
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

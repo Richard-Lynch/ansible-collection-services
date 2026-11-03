@@ -1,0 +1,12 @@
+# ANSIBLE MANAGED — roles/jellyfin_transcode_reaper. Do not edit here.
+[Unit]
+Description=Reap orphaned Jellyfin transcode segments
+Documentation=file://{{ jtr_script_path }}
+
+[Service]
+Type=oneshot
+ExecStart={{ jtr_script_path }}
+# The script exits 0 when it skips (transcode in progress) as well as when it reaps, so a failure
+# here is a real failure — a missing directory, a permission problem — and worth surfacing.
+StandardOutput=journal
+StandardError=journal

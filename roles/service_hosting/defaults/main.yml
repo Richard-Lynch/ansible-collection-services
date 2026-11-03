@@ -1,0 +1,60 @@
+---
+# AUTO-GENERATED defaults file — DO NOT EDIT.
+#
+# Source of truth: roles/service_hosting/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate service_hosting
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+# Entrypoint:      main
+
+# Host directory holding the platform's own compose project.
+hosting_root__default: /opt/hosting
+
+# Traefik image. A floating tag (latest and friends) is refused. Must be 3.6.1 or newer:
+# v3.3 speaks Docker API 1.24 and a current Docker Engine (minimum API 1.40) rejects it,
+# so the docker provider never starts and every Host answers 404.
+hosting_traefik_image__default: traefik:v3.6.25
+
+# Image of the read-only Docker API proxy Traefik talks to instead of the
+# real socket. A floating tag is refused.
+hosting_socket_proxy_image__default: tecnativa/docker-socket-proxy:0.3.0
+
+# Traefik log level.
+hosting_log_level__default: INFO
+
+# Memory limit for each tier's Traefik container.
+hosting_traefik_memory__default: 256m
+
+# Destination ranges a container may not open connections to: the private
+# ranges, link-local and carrier-grade NAT (which includes a tailnet).
+# Internet egress stays open. Docker's own 172.16/12 pool is not listed so
+# containers of one app can still talk to each other.
+hosting_blocked_egress_cidrs__default:
+  - 10.0.0.0/8
+  - 192.168.0.0/16
+  - 169.254.0.0/16
+  - 100.64.0.0/10
+
+# How often the reaper timer runs (a systemd time span). A tier declared
+# with reap true has its apps removed once their ttl_hours have passed.
+hosting_reaper_interval__default: 15min
+
+# Where a removed app's directory is moved (tier/name-stamp). Named volumes
+# are kept: neither the reaper nor remove_app deletes an app's data.
+hosting_reaped_root__default: /srv/apps/.reaped
+
+# The node exporter textfile directory the reaper writes its metrics to.
+# Must match the directory the host's metrics agent collects.
+hosting_textfile_dir__default: /var/lib/node_exporter/textfile_collector
+
+# Private registries the guest logs in to before anything is pulled, so an app
+# may run an image that is not public. Each entry: host (the registry, e.g.
+# ghcr.io), username, item and field (the 1Password item holding a pull-only
+# token, and its field), vault, and probe_image: a PRIVATE image on that
+# registry, pinned, that the converge proves it can read with the login and
+# cannot read without it. The credential is stored in the connecting user's
+# docker config, 0600 in a 0700 directory.
+# Installation configuration: set by the caller (inventory).
+hosting_registries__default: []

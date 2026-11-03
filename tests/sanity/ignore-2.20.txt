@@ -1,0 +1,5 @@
+roles/jellyfin_transcode_reaper/templates/reap.sh.j2 shebang
+roles/service_hosting/templates/hosting-reaper.py.j2 shebang
+roles/slack_channels/tests/stub_slack.py shebang
+roles/slack_channels/tests/test_slack_channels.py shebang
+plugins/modules/slack_channels.py replace-urlopen

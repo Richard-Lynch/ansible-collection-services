@@ -1,0 +1,31 @@
+# Copyright: (c) 2026, Richard Lynch
+# GNU General Public License v3.0+ (see https://www.gnu.org/licenses/gpl-3.0.txt)
+---
+DOCUMENTATION:
+  name: hosting_egress_rules
+  short_description: Firewall egress exceptions, each pinned to one container's address
+  author: Richard Lynch (@Richard-Lynch)
+  description:
+    - Turns egress grants into firewall rules that allow traffic only from the app's own bridge
+      and the one service address the grant names, so a grant never extends to another app or the
+      app's other services.
+    - Raises an error for an incomplete or conflicting grant rather than widening it.
+  options:
+    _input:
+      description: Grants, each C({app, service, address, subnet, cidr, ports, tier, proto}).
+      type: list
+      elements: dict
+      required: true
+    tiers:
+      description: The tier definitions, keyed by tier name.
+      type: dict
+      required: true
+EXAMPLES: |
+  - name: Render the egress exceptions
+    ansible.builtin.debug:
+      msg: "{{ grants | richard_lynch.services.hosting_egress_rules(tiers) }}"
+RETURN:
+  _value:
+    description: One rule per grant and port.
+    type: list
+    elements: dict

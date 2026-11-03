@@ -1,0 +1,62 @@
+---
+# Resolve caller-supplied vars over the generated defaults, and build the desired-settings map.
+
+- name: Assert the device was supplied
+  ansible.builtin.assert:
+    that:
+      - jtc_device is defined
+      - jtc_device is match('^/dev/dri/renderD[0-9]+$')
+    fail_msg: >-
+      jellyfin_transcode_config requires jtc_device as a render node path, e.g.
+      '/dev/dri/renderD128'. Got: '{{ jtc_device | default('(undefined)') }}'.
+      This must be the DISCRETE GPU's node — a host with an iGPU also has renderD128, and pointing
+      Jellyfin at the wrong one silently gives you the weaker GPU.
+    success_msg: "Target render node: {{ jtc_device }}"
+    quiet: true
+
+- name: Resolve defaults
+  ansible.builtin.set_fact:
+    jtc_apply: "{{ jtc_apply | default(jtc_apply__default) }}"
+    jtc_container: "{{ jtc_container | default(jtc_container__default) }}"
+    jtc_accel_type: "{{ jtc_accel_type | default(jtc_accel_type__default) }}"
+    jtc_hw_encoding: "{{ jtc_hw_encoding | default(jtc_hw_encoding__default) }}"
+    jtc_tonemapping: "{{ jtc_tonemapping | default(jtc_tonemapping__default) }}"
+    jtc_vpp_tonemapping: "{{ jtc_vpp_tonemapping | default(jtc_vpp_tonemapping__default) }}"
+    jtc_allow_hevc: "{{ jtc_allow_hevc | default(jtc_allow_hevc__default) }}"
+    jtc_allow_av1: "{{ jtc_allow_av1 | default(jtc_allow_av1__default) }}"
+    jtc_restart: "{{ jtc_restart | default(jtc_restart__default) }}"
+
+- name: Build the desired-settings map
+  # One place defining what this role owns. Everything else in encoding.xml (~45 settings) is
+  # deliberately left alone — Jellyfin owns those, and a template would silently reset them.
+  #
+  # QsvDevice is set alongside VaapiDevice because Jellyfin's QSV path reads its own key; leaving
+  # it pointing at the iGPU would silently use the wrong GPU if the accel type is ever switched.
+  ansible.builtin.set_fact:
+    _jtc_desired:
+      HardwareAccelerationType: "{{ jtc_accel_type }}"
+      VaapiDevice: "{{ jtc_device }}"
+      QsvDevice: "{{ jtc_device }}"
+      EnableHardwareEncoding: "{{ jtc_hw_encoding | string | lower }}"
+      EnableTonemapping: "{{ jtc_tonemapping | string | lower }}"
+      EnableVppTonemapping: "{{ jtc_vpp_tonemapping | string | lower }}"
+      AllowHevcEncoding: "{{ jtc_allow_hevc | string | lower }}"
+      AllowAv1Encoding: "{{ jtc_allow_av1 | string | lower }}"
+      # Throttling bounds how much a LIVE session can write. Orphans from sessions that ended
+      # badly are the job of the systemd timer jellyfin_transcode_reaper installs.
+      EnableThrottling: "{{ jtc_throttling | string | lower }}"
+      ThrottleDelaySeconds: "{{ jtc_throttle_delay_seconds | string }}"
+      SegmentKeepSeconds: "{{ jtc_segment_keep_seconds | string }}"
+
+- name: Derive the backup timestamp
+  ansible.builtin.set_fact:
+    _jtc_stamp: "{{ ansible_facts['date_time']['iso8601_basic_short'] | default('nodate') }}"
+
+- name: HARD GATE — facts must be gathered for a unique backup name
+  # Without gathered facts every run reuses one backup path, so a second apply would overwrite the
+  # ORIGINAL settings with already-modified ones, destroying the only route back.
+  ansible.builtin.assert:
+    that:
+      - _jtc_stamp != 'nodate'
+    fail_msg: "This role needs gather_facts: true (ansible_facts.date_time is used for backup names)."
+    quiet: true

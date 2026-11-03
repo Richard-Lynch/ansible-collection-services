@@ -1,0 +1,75 @@
+---
+# AUTO-GENERATED argument spec — DO NOT EDIT.
+#
+# Source of truth: roles/slack_message/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate slack_message
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+argument_specs:
+  main:
+    short_description: Send a Slack message, optionally with a file, as a bot
+    description:
+      - Posts text to a Slack user (opening the DM) or a channel with a bot token, or
+      - uploads one file with the text as its comment via the external-upload flow
+      - (files.getUploadURLExternal, POST of the bytes, files.completeUploadExternal).
+      - Every Slack response is asserted ok, and an upload is read back with files.info
+      - until the file is shared in the target conversation. Runs on the controller.
+    version_added: '1.0'
+    author: Collection maintainers
+    options:
+      slack_message_target:
+        description:
+          - Slack id to send to. A user id (U or W prefix) opens or reuses the DM with
+          - that user; a conversation id (C, G or D prefix) is posted to directly.
+        type: str
+        required: true
+      slack_message_text:
+        description:
+          - Message text. With a file it is the file's initial comment.
+        type: str
+        required: true
+      slack_message_file:
+        description:
+          - Controller path of a file to upload. Empty sends a text-only message.
+        type: str
+        required: false
+        default: ''
+      slack_message_title:
+        description:
+          - Title shown for the file. Empty uses the file's basename.
+        type: str
+        required: false
+        default: ''
+      slack_message_token_item:
+        description:
+          - 1Password item holding the bot token (xoxb), read with
+          - 'richard_lynch.common.onepassword_cached. Title with slashes reads empty: use the id'
+          - if a title read comes back empty.
+        type: str
+        required: true
+      slack_message_token_field:
+        description:
+          - Field of that item holding the token.
+        type: str
+        required: false
+        default: credential
+      slack_message_op_vault:
+        description:
+          - 1Password vault holding the token item.
+        type: str
+        required: true
+      slack_message_api_url:
+        description:
+          - Base URL of the Slack Web API. Only a test points it anywhere else.
+        type: str
+        required: false
+        default: https://slack.com/api
+      slack_message_share_wait_s:
+        description:
+          - How long to wait for an uploaded file to show as shared in the target
+          - conversation (Slack shares it asynchronously after completeUploadExternal).
+        type: int
+        required: false
+        default: 30

@@ -1,0 +1,27 @@
+---
+# AUTO-GENERATED defaults file — DO NOT EDIT.
+#
+# Source of truth: roles/slack_channels/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate slack_channels
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+# Entrypoint:      main
+
+# Act on the plan. False reports it and changes nothing in Slack.
+slack_channels_apply__default: false
+
+# A workspace admin's USER token (xoxp-), used ONLY for the steps Slack
+# does not authorize a bot to take: renaming a channel a human made. Empty
+# means none; a planned rename is then reported as needing it.
+slack_channels_admin_token__default: ''
+
+# Prefix of the trailing marker that identifies the bot's guide message in
+# each channel (the marker is this followed by the channel name). Set it
+# once: changing it on a workspace with guides makes them look absent, so
+# the next apply posts new ones beside the old.
+slack_channels_guide_marker_prefix__default: 'guide:'
+
+# Slack Web API base URL. Only a test points it elsewhere.
+slack_channels_api_url__default: https://slack.com/api

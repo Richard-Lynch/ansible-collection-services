@@ -1,0 +1,76 @@
+---
+- name: Resolve declared options over their generated defaults
+  ansible.builtin.include_tasks: _resolve_defaults.yml
+
+- name: Apply the generated argspec guards
+  ansible.builtin.include_tasks: _argspec_guards.yml
+
+# One module call reads, plans, and (apply only) acts and re-reads; see the richard_lynch.services.slack_channels module.
+# no_log because the task carries the token; the register holds no token and is printed below.
+# failed_when: false so the report is ALWAYS printed; the gates after it decide.
+- name: Reconcile the declared channels ({{ 'APPLY' if slack_channels_apply | bool else 'report only' }})
+  richard_lynch.services.slack_channels:
+    token: "{{ slack_channels_token }}"
+    api_url: "{{ slack_channels_api_url }}"
+    channels: "{{ slack_channels }}"
+    apply: "{{ slack_channels_apply | bool }}"
+    admin_token: "{{ slack_channels_admin_token }}"
+    guide_marker_prefix: "{{ slack_channels_guide_marker_prefix }}"
+  register: _slack_channels
+  failed_when: false
+  no_log: true
+
+- name: Report the workspace, the plan and what was done
+  ansible.builtin.debug:
+    msg:
+      error: "{{ _slack_channels.msg | default('') }}"
+      team: "{{ _slack_channels.team | default('') }} ({{ _slack_channels.team_id | default('') }})"
+      bot_user_id: "{{ _slack_channels.bot_user_id | default('') }}"
+      enterprise_grid: "{{ _slack_channels.enterprise_id | default('') or 'no (admin.* APIs unavailable)' }}"
+      scopes: "{{ _slack_channels.scopes | default([]) }}"
+      admin_user_id: "{{ _slack_channels.admin_user_id | default('no admin token') }}"
+      admin_scopes: "{{ _slack_channels.admin_scopes | default([]) }}"
+      admin_missing_scopes: "{{ _slack_channels.admin_missing_scopes | default([]) }}"
+      rename_needs_admin_token: "{{ _slack_channels.rename_needs_admin_token | default(false) }}"
+      needed_scopes: "{{ _slack_channels.needed_scopes | default([]) }}"
+      missing_scopes: "{{ _slack_channels.missing_scopes | default([]) }}"
+      refusals: "{{ _slack_channels.refusals | default([]) }}"
+      notes: "{{ _slack_channels.notes | default([]) }}"
+      bookmarks_token: "{{ _slack_channels.bookmarks_token | default('none') }}"
+      state: "{{ _slack_channels.state | default([]) }}"
+      plan: "{{ _slack_channels.plan | default([]) }}"
+      results: "{{ _slack_channels.results | default('not applied') }}"
+      remaining: "{{ _slack_channels.remaining | default('not applied') }}"
+      readback: "{{ _slack_channels.state_after | default('not applied') }}"
+
+- name: HARD GATE — the workspace was read and the declaration is valid
+  ansible.builtin.assert:
+    # `plan` exists only once auth.test, the listing and the validation all succeeded (gating on
+    # `.failed` would read the failed_when above, not the module).
+    that:
+      - _slack_channels.plan is defined
+      - _slack_channels.bot_user_id | default('') | length > 0
+    fail_msg: "Could not read or plan: {{ _slack_channels.msg | default('no result') }}"
+    quiet: true
+
+- name: HARD GATE — the declaration is unambiguous (nothing refused)
+  ansible.builtin.assert:
+    that: _slack_channels.refusals | length == 0
+    fail_msg: "Refused: {{ _slack_channels.refusals | join('; ') }}"
+    quiet: true
+
+# The read-back is a fresh conversations.list + conversations.members, re-planned: a step that
+# answered ok and did not take effect shows up as a remaining action, not as a success.
+- name: HARD GATE — every step succeeded and the read-back has nothing left to do
+  when: slack_channels_apply | bool and _slack_channels.plan | length > 0
+  ansible.builtin.assert:
+    that:
+      - _slack_channels.results | default([]) | rejectattr('ok') | list | length == 0
+      - _slack_channels.remaining is defined
+      - _slack_channels.remaining | length == 0
+    fail_msg: >-
+      Failed steps: {{ _slack_channels.results | default([]) | rejectattr('ok')
+      | map(attribute='error', default='?') | list }}; still to do after the read-back:
+      {{ _slack_channels.remaining | default('read-back did not run') }}.
+      {{ _slack_channels.msg | default('') }}
+    quiet: true

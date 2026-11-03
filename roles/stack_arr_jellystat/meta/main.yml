@@ -1,0 +1,12 @@
+---
+galaxy_info:
+  role_name: stack_arr_jellystat
+  namespace: richard_lynch
+  author: Richard Lynch
+  description: >-
+    Write the docker-compose.yml for Jellystat and its own PostgreSQL container - compose layer
+    only: never starts, stops or recreates a container, never touches the database's files.
+  license: GPL-3.0-or-later
+  min_ansible_version: "2.19"
+  galaxy_tags: [arr, docker, compose, jellystat, postgres]
+dependencies: []

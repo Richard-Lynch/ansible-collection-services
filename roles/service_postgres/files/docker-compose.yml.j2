@@ -1,0 +1,60 @@
+services:
+  {{ postgres_container_name }}:
+    image: {{ postgres_image }}
+    container_name: {{ postgres_container_name }}
+    restart: unless-stopped
+    env_file:
+      - ./postgres.env
+    volumes:
+      - {{ postgres_container_name }}-data:/var/lib/postgresql/data
+      - {{ postgres_config_file_path }}:/etc/postgresql/postgresql.conf:ro
+    command:
+      - "postgres"
+      - "-c"
+      - "config_file=/etc/postgresql/postgresql.conf"
+    ports:
+      - "{{ (postgres_bind_address ~ ':') if postgres_bind_address else '' }}{{ postgres_host_port }}:5432"
+    networks:
+      - {{ postgres_network }}
+
+{% if postgres_exporter_enabled %}
+  postgres_exporter:
+    image: {{ postgres_exporter_image }}
+    container_name: postgres_exporter
+    restart: unless-stopped
+    env_file:
+      - ./postgres-exporter.env
+    ports:
+      - "{{ (postgres_exporter_bind_address ~ ':') if postgres_exporter_bind_address else '' }}{{ postgres_exporter_port }}:9187"
+    depends_on:
+      - {{ postgres_container_name }}
+    networks:
+      - {{ postgres_network }}
+{% endif %}
+
+{% if pgadmin_enabled %}
+  {{ pgadmin_container_name }}:
+    image: {{ pgadmin_image }}
+    container_name: {{ pgadmin_container_name }}
+    restart: unless-stopped
+    env_file:
+      - ./pgadmin.env
+    ports:
+      - "{{ (pgadmin_bind_address ~ ':') if pgadmin_bind_address else '' }}{{ pgadmin_host_port }}:80"
+    volumes:
+      - {{ pgadmin_container_name }}-data:/var/lib/pgadmin
+    depends_on:
+      - {{ postgres_container_name }}
+    networks:
+      - {{ postgres_network }}
+{% endif %}
+
+networks:
+  {{ postgres_network }}:
+    external: true
+
+volumes:
+  {{ postgres_container_name }}-data:
+{% if pgadmin_enabled %}
+  {{ pgadmin_container_name }}-data:
+{% endif %}

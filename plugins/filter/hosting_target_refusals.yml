@@ -1,0 +1,38 @@
+# Copyright: (c) 2026, Richard Lynch
+# GNU General Public License v3.0+ (see https://www.gnu.org/licenses/gpl-3.0.txt)
+---
+DOCUMENTATION:
+  name: hosting_target_refusals
+  short_description: Every reason a hosting deploy is aimed somewhere other than the hosting guest
+  author: Richard Lynch (@Richard-Lynch)
+  description:
+    - Refuses a run with any host limit (each form of a limit skips a different gate), a target
+      naming another host, or a hosting guest that is not in the inventory.
+    - An empty list means the run is aimed at the guest.
+  options:
+    _input:
+      description: The hosting guest's inventory name.
+      type: str
+      required: true
+    inventory_hosts:
+      description: Every host in the inventory.
+      type: list
+      elements: str
+      required: true
+    limit:
+      description: The run's host limit, if any.
+      type: str
+      default: ""
+    target:
+      description: A target extra variable, if any.
+      type: str
+      default: ""
+EXAMPLES: |
+  - name: Refuse a retargeted run
+    ansible.builtin.assert:
+      that: (guest | richard_lynch.services.hosting_target_refusals(groups['all'], ansible_limit | default(''))) == []
+RETURN:
+  _value:
+    description: One message per reason; empty when the run is aimed at the guest.
+    type: list
+    elements: str

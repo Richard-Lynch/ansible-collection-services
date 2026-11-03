@@ -1,0 +1,8 @@
+# Copyright: (c) 2026, Richard Lynch
+# GNU General Public License v3.0+ (see https://www.gnu.org/licenses/gpl-3.0.txt)
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# The oldest ansible-core this collection's CI tests against, not the oldest it might happen to
+# work on.
+---
+requires_ansible: ">=2.19.0"

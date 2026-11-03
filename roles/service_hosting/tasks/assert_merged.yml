@@ -1,0 +1,61 @@
+---
+# service_hosting (assert_merged) — the PROD gate: the definition being deployed must be exactly
+# what exists on the merge ref (hosting_merge_ref), i.e. what a reviewer approved and merged.
+#
+# The merge IS the approval; this is how the deploy play knows it happened. It is why the play can
+# be left runnable by someone who may not approve their own changes: it cannot deploy anything that
+# has not been merged. A local edit, an unmerged branch and a stale checkout all fail the comparison.
+
+- name: Load this entrypoint's generated defaults
+  ansible.builtin.include_vars:
+    file: "{{ role_path }}/defaults/assert_merged.yml"
+
+- name: Resolve declared options over their generated defaults
+  ansible.builtin.include_tasks: _resolve_defaults.yml
+
+- name: Apply the generated argspec guards
+  ansible.builtin.include_tasks: _argspec_guards.yml
+
+- name: HARD GATE — the definition declares where it lives, and that is the conventional path
+  # The comparison reads the file NAMED by `source`, so an unchecked `source` would let a definition
+  # point at some other merged file. Pinned to <prefix><name>/vars.yml.
+  ansible.builtin.assert:
+    that:
+      - hosting_app.source is defined
+      - hosting_app.name is defined
+      - hosting_app.source == hosting_source_prefix ~ hosting_app.name ~ '/vars.yml'
+    fail_msg: >-
+      REFUSED: a PROD definition must carry `source: {{ hosting_source_prefix }}{{ hosting_app.name | default('<name>') }}/vars.yml`
+      (found '{{ hosting_app.source | default('(none)') }}'), the path the owner reviews and merges.
+    quiet: true
+
+- name: Fetch the merge ref
+  ansible.builtin.command:
+    argv: [git, fetch, --quiet, "{{ hosting_merge_ref.split('/', 1)[0] }}", "{{ hosting_merge_ref.split('/', 1)[1] }}"]
+    chdir: "{{ hosting_repo_root }}"
+  changed_when: false
+
+- name: Read the definition as it exists on the merge ref
+  ansible.builtin.command:
+    argv: [git, show, "{{ hosting_merge_ref }}:{{ hosting_app.source }}"]
+    chdir: "{{ hosting_repo_root }}"
+  register: _hosting_merged_raw
+  changed_when: false
+  failed_when: false
+
+- name: HARD GATE — it is on the merge ref, and identical to what would be deployed
+  # `failed_when: false` above means a missing file arrives as rc!=0 and EMPTY stdout; asserting rc
+  # first names the real cause instead of reporting a confusing "differs".
+  ansible.builtin.assert:
+    that:
+      - _hosting_merged_raw.rc == 0
+      - (_hosting_merged_raw.stdout | from_yaml).hosting_app_def is defined
+      - (_hosting_merged_raw.stdout | from_yaml).hosting_app_def == hosting_app
+    fail_msg: >-
+      REFUSED: {{ hosting_app.source }} is not on {{ hosting_merge_ref }}
+      {{ '(git show failed: ' ~ (_hosting_merged_raw.stderr | default('') | trim)[:160] ~ ')'
+         if _hosting_merged_raw.rc != 0 else 'in this form (the deployed definition differs from the merged one)' }}.
+      PROD deploys only what the owner merged. Open a PR adding {{ hosting_source_prefix }}{{ hosting_app.name }}/,
+      have it merged, `git fetch`, then run this play again.
+    success_msg: "{{ hosting_app.source }} on {{ hosting_merge_ref }} matches the definition being deployed."
+    quiet: false

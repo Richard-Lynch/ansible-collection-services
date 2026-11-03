@@ -1,0 +1,11 @@
+---
+galaxy_info:
+  namespace: richard_lynch
+  author: Richard Lynch
+  description: >-
+    Install a systemd timer that deletes Jellyfin transcode segments left behind by sessions that
+    ended uncleanly, skipping any run while ffmpeg is transcoding.
+  license: GPL-3.0-or-later
+  min_ansible_version: "2.19"
+  galaxy_tags: [jellyfin, media, systemd, cleanup]
+dependencies: []

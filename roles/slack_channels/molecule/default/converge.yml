@@ -1,0 +1,17 @@
+---
+# Applies the declaration through the role itself: a rename (with the bot already a member), a
+# create + invite + purpose + topic, a join, and a channel with an undeclared member.
+- name: Converge - reconcile the stub workspace
+  hosts: localhost
+  gather_facts: false
+  vars_files: [vars.yml]
+  tasks:
+    - name: Reconcile
+      ansible.builtin.include_role:
+        name: slack_channels
+      vars:
+        slack_channels_token: "{{ stub_token }}"
+        slack_channels_admin_token: "{{ stub_admin_token }}"
+        slack_channels_api_url: "{{ stub_url }}"
+        slack_channels: "{{ declared }}"
+        slack_channels_apply: true

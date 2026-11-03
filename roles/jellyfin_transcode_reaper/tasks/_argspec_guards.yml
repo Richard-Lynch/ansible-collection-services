@@ -1,0 +1,17 @@
+---
+# GENERATED from roles/jellyfin_transcode_reaper/meta/argument_specs.py — DO NOT EDIT.
+# Regenerate with: venv/bin/python tools/argspec/cli.py x generate jellyfin_transcode_reaper
+#
+# These are the constraints Ansible's role-argspec validator CANNOT enforce. It handles
+# type/required/choices/no_log, but has no numeric-range, length or pattern checking, so
+# without this file those declarations would be decorative.
+#
+# Include from the role's entrypoints:  - ansible.builtin.include_tasks: _argspec_guards.yml
+
+- name: "GUARD (generated) — jtr_older_than_min must be >= 60"
+  ansible.builtin.assert:
+    that:
+      - "jtr_older_than_min | int >= 60"
+    fail_msg: "jtr_older_than_min violates a constraint declared in meta/argument_specs.py: must be >= 60. Got: {{ jtr_older_than_min | default('(unset)') }}"
+    quiet: true
+  when: jtr_older_than_min is defined

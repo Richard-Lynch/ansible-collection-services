@@ -1,0 +1,9 @@
+# Managed by service_hosting -- do not edit.
+[Unit]
+Description=Hosting reaper (remove DEV apps whose TTL has passed; write its textfile metrics)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/hosting-reaper

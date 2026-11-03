@@ -1,0 +1,19 @@
+---
+dependency: { name: galaxy }
+driver: { name: default }
+platforms: [{ name: localhost }]
+provisioner:
+  name: ansible
+  inventory: { host_vars: { localhost: { ansible_connection: local } } }
+  # Molecule does not inherit ansible.cfg. The stub collection comes FIRST so the role's own
+  # `richard_lynch.common.onepassword_cached` lookup resolves to a fake token instead of calling
+  # `op`. The real richard_lynch.common IS installed in collections.galaxy, but the collection
+  # loader takes a collection from the FIRST path that has it, so the stub shadows all of it and a
+  # run can never reach 1Password (the scenario uses nothing else from that collection).
+  env:
+    ANSIBLE_ROLES_PATH: "${MOLECULE_PROJECT_DIRECTORY}/../"
+    ANSIBLE_COLLECTIONS_PATH: "${MOLECULE_SCENARIO_DIRECTORY}/stub_collections:${MOLECULE_PROJECT_DIRECTORY}/../../collections.galaxy"
+  playbooks: { converge: converge.yml, verify: verify.yml }
+verifier: { name: ansible }
+scenario:
+  test_sequence: [syntax, converge, verify]

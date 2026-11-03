@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# ci — thin caller of the shared CI gate (ansible-devkit's reusable-ci.yml). The job id `ci` makes
+# the required status check `ci / gate`; every repo built on ansible-devkit has this same file.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: Richard-Lynch/ansible-devkit/.github/workflows/reusable-ci.yml@v0.2.3
+    with:
+      kind: collection
+      # Every ansible-core this collection supports: meta/runtime.yml requires_ansible >=2.19.0.
+      ansible_core: '["2.19", "2.20", "2.21"]'

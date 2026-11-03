@@ -1,0 +1,14 @@
+---
+galaxy_info:
+  role_name: stack_arr_service
+  namespace: richard_lynch
+  author: Richard Lynch
+  description: >-
+    Write one docker-compose.yml for a linuxserver.io-shaped arr-stack media service (optional
+    exportarr metrics sidecar, Traefik labels, device passthrough, raw sibling containers) -
+    compose layer only: never starts, stops or recreates the container, never touches its config
+    volume.
+  license: GPL-3.0-or-later
+  min_ansible_version: "2.19"
+  galaxy_tags: [arr, docker, compose, media]
+dependencies: []

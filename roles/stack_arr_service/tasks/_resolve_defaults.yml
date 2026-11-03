@@ -1,0 +1,51 @@
+---
+# AUTO-GENERATED defaults resolver — DO NOT EDIT.
+#
+# Source of truth: roles/stack_arr_service/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate stack_arr_service
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+
+# Binds every declared option to its generated default, so a caller-supplied value
+# wins and an unsupplied one falls back rather than evaluating Undefined.
+#
+# Include this FIRST from every entrypoint:
+#   - ansible.builtin.include_tasks: _resolve_defaults.yml
+#
+# Role-specific setup logic belongs in tasks/setup_vars.yml, NOT here — this file is
+# overwritten on every generation.
+#
+# TWO BRANCHES, because `set_fact` persists for the whole play. A role invoked twice in
+# one play would otherwise see its OWN leftover facts on the second call, so a later
+# caller that omitted an option silently inherited the earlier caller's value instead of
+# the declared default. On a repeat call this ignores the role's own facts and rebinds
+# the defaults; an include-level `vars:` shadows the fact, so a value the caller DID
+# supply this time still wins. Roles called once per play only ever run the first branch.
+
+- name: Resolve declared options over their generated defaults
+  ansible.builtin.set_fact:
+    arr_network: "{{ arr_network | default(arr_network__default) if arr_network__default is defined else arr_network | default(omit) }}"
+    arr_exportarr_bind_address: "{{ arr_exportarr_bind_address | default(arr_exportarr_bind_address__default) if arr_exportarr_bind_address__default is defined else arr_exportarr_bind_address | default(omit) }}"
+    arr_config_base_dir: "{{ arr_config_base_dir | default(arr_config_base_dir__default) if arr_config_base_dir__default is defined else arr_config_base_dir | default(omit) }}"
+    arr_common_puid: "{{ arr_common_puid | default(arr_common_puid__default) if arr_common_puid__default is defined else arr_common_puid | default(omit) }}"
+    arr_common_pgid: "{{ arr_common_pgid | default(arr_common_pgid__default) if arr_common_pgid__default is defined else arr_common_pgid | default(omit) }}"
+    arr_common_umask: "{{ arr_common_umask | default(arr_common_umask__default) if arr_common_umask__default is defined else arr_common_umask | default(omit) }}"
+    arr_common_tz: "{{ arr_common_tz | default(arr_common_tz__default) if arr_common_tz__default is defined else arr_common_tz | default(omit) }}"
+  when: not (_stack_arr_service__argspec_resolved | default(false))
+
+- name: Rebind the defaults on a repeat call, ignoring this role's own leftover facts
+  ansible.builtin.set_fact:
+    arr_network: "{{ arr_network__default if arr_network__default is defined else arr_network | default(omit) }}"
+    arr_exportarr_bind_address: "{{ arr_exportarr_bind_address__default if arr_exportarr_bind_address__default is defined else arr_exportarr_bind_address | default(omit) }}"
+    arr_config_base_dir: "{{ arr_config_base_dir__default if arr_config_base_dir__default is defined else arr_config_base_dir | default(omit) }}"
+    arr_common_puid: "{{ arr_common_puid__default if arr_common_puid__default is defined else arr_common_puid | default(omit) }}"
+    arr_common_pgid: "{{ arr_common_pgid__default if arr_common_pgid__default is defined else arr_common_pgid | default(omit) }}"
+    arr_common_umask: "{{ arr_common_umask__default if arr_common_umask__default is defined else arr_common_umask | default(omit) }}"
+    arr_common_tz: "{{ arr_common_tz__default if arr_common_tz__default is defined else arr_common_tz | default(omit) }}"
+  when: _stack_arr_service__argspec_resolved | default(false)
+
+- name: Record that this role has resolved its options in this play
+  ansible.builtin.set_fact:
+    _stack_arr_service__argspec_resolved: true

@@ -1,0 +1,32 @@
+---
+# One PROD provenance case through the REAL assert_merged entrypoint (a real git fetch/show).
+- name: Reset
+  ansible.builtin.set_fact:
+    _m_passed: false
+    _m_msg: ""
+
+- name: Run assert_merged
+  block:
+    - name: "{{ case.id }} — assert_merged"
+      ansible.builtin.include_role:
+        name: service_hosting
+        tasks_from: assert_merged
+      vars:
+        hosting_app: "{{ case.app }}"
+        hosting_repo_root: "{{ render_root }}/work"
+        hosting_source_prefix: apps/hosting/
+    - name: Note that it passed
+      ansible.builtin.set_fact:
+        _m_passed: true
+  rescue:
+    - name: Capture why it was refused
+      ansible.builtin.set_fact:
+        _m_msg: "{{ ansible_failed_result.msg | default('') }}"
+
+- name: "{{ case.id }} — decided correctly, for the stated reason"
+  ansible.builtin.assert:
+    that:
+      - _m_passed | bool == case.expect_ok | bool
+      - case.expect_ok | bool or (case.expect in _m_msg)
+    fail_msg: "case {{ case.id }}: passed={{ _m_passed }} expected_ok={{ case.expect_ok }} message={{ _m_msg[:400] }}"
+    quiet: true

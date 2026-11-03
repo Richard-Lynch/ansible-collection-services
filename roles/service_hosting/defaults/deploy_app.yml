@@ -1,0 +1,32 @@
+---
+# AUTO-GENERATED defaults file — DO NOT EDIT.
+#
+# Source of truth: roles/service_hosting/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate service_hosting
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+# Entrypoint:      deploy_app
+
+# Generate-don't-apply. False validates and reports the compose that would
+# be written; true writes it, brings it up and reads it back.
+hosting_deploy_apply__default: false
+
+# Memory limit injected into any service that declares none, so one app
+# cannot take all of the host's memory.
+hosting_default_mem_limit__default: 512m
+
+# The largest memory limit any one service may declare. A service that
+# asks for more is refused: the injected default is a default, and without
+# a ceiling one app could take the whole guest.
+hosting_max_mem_limit__default: 1g
+
+# The largest CPU limit any one service may declare.
+hosting_max_cpus__default: 2.0
+
+# CPU limit injected into any service that declares none.
+hosting_default_cpus__default: 1.0
+
+# How long to wait for the app to answer through Traefik on the guest.
+hosting_readback_timeout_s__default: 60

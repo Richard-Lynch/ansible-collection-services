@@ -1,0 +1,61 @@
+---
+# One hosting_registries case through BOTH layers that judge it, for real:
+#   1. the role's own argspec (meta/argument_specs.yml, entrypoint main), via validate_argument_spec
+#      — catches a missing or unknown key;
+#   2. the role's REAL tasks/_registries.yml — its first task is the well-formedness gate, which
+#      runs before any 1Password lookup or docker call, so a refused case never reaches either.
+# A case expected to PASS is only run through layer 2 when its list is empty (a non-empty list
+# would go on to read 1Password and call docker, which this scenario has neither of); a non-empty
+# near-miss is judged by layer 1 and by the gate's own filter.
+- name: Reset
+  ansible.builtin.set_fact:
+    _r_spec_ok: false
+    _r_spec_msg: ""
+    _r_gate_ok: false
+    _r_gate_msg: ""
+
+- name: Layer 1 — the argspec
+  block:
+    - name: "{{ case.id }} — validate against the main entrypoint's argspec"
+      ansible.builtin.validate_argument_spec:
+        argument_spec: "{{ _hosting_main_spec }}"
+        provided_arguments:
+          hosting_tiers: "{{ hosting_tiers }}"
+          hosting_ingress_sources: "{{ hosting_ingress_sources }}"
+          hosting_registries: "{{ case.registries }}"
+    - name: Note the argspec accepted it
+      ansible.builtin.set_fact:
+        _r_spec_ok: true
+  rescue:
+    - name: Capture why the argspec refused it
+      ansible.builtin.set_fact:
+        _r_spec_msg: "{{ ansible_failed_result.msg | default('') }}"
+
+- name: Layer 2 — the role's own registry gate
+  block:
+    - name: "{{ case.id }} — the real _registries.yml"
+      ansible.builtin.include_role:
+        name: service_hosting
+        tasks_from: _registries
+      vars:
+        hosting_registries: "{{ case.registries }}"
+    - name: Note the gate accepted it
+      ansible.builtin.set_fact:
+        _r_gate_ok: true
+  rescue:
+    - name: Capture why the gate refused it
+      ansible.builtin.set_fact:
+        _r_gate_msg: "{{ ansible_failed_result.msg | default('') }}"
+  when: case.layer2 | default(true) | bool
+
+- name: "{{ case.id }} — decided correctly, for the stated reason"
+  ansible.builtin.assert:
+    that:
+      - _r_spec_ok | bool == case.spec_ok | bool
+      - case.spec_ok | bool or (case.spec_expect in _r_spec_msg)
+      - not (case.layer2 | default(true) | bool) or (_r_gate_ok | bool == case.gate_ok | bool)
+      - not (case.layer2 | default(true) | bool) or case.gate_ok | bool or (case.gate_expect in _r_gate_msg)
+    fail_msg: >-
+      case {{ case.id }}: argspec ok={{ _r_spec_ok }} (want {{ case.spec_ok }}) {{ _r_spec_msg[:300] }};
+      gate ok={{ _r_gate_ok }} (want {{ case.gate_ok | default('n/a') }}) {{ _r_gate_msg[:300] }}
+    quiet: true

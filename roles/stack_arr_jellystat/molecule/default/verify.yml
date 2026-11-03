@@ -1,0 +1,42 @@
+---
+- name: Verify rendered jellystat compose
+  hosts: localhost
+  gather_facts: false
+  vars:
+    render_dir: /tmp/molecule-stack-arr-jellystat
+  tasks:
+    - name: Read rendered compose
+      ansible.builtin.slurp: { src: "{{ render_dir }}/docker-compose.yml" }
+      register: _file
+
+    - name: Decode
+      ansible.builtin.set_fact:
+        compose: "{{ _file.content | b64decode }}"
+
+    - name: Both containers present, DB pinned, jellystat pinned by digest, secrets rendered
+      ansible.builtin.assert:
+        that:
+          - "'jellystat:' in compose"
+          - "'jellystat-db:' in compose"
+          - "'image: postgres:15.2' in compose"
+          - "'image: cyfershepard/jellystat@sha256:' in compose"
+          - "'depends_on:' in compose"
+          - "'- jellystat-db' in compose"
+          - "'shm_size: 1gb' in compose"
+          - "'POSTGRES_PASSWORD: \"TEST_PG_PASSWORD_NOT_REAL\"' in compose"
+          - "'JWT_SECRET: \"TEST_JWT_SECRET_NOT_REAL\"' in compose"
+          - "'external: true' in compose"
+          - "'Host(`jellystat.example.com`)' in compose"
+        fail_msg: "jellystat compose missing an expected invariant (image pin / dependency / secret wiring)."
+        success_msg: "jellystat OK — two-container dependency, pinned images, secrets rendered."
+
+    - name: No un-rendered Jinja delimiter leaked through
+      vars:
+        jinja_open: "{{ '{' ~ '{' }}"
+      ansible.builtin.assert:
+        that:
+          - jinja_open not in compose
+        fail_msg: "Rendered compose still contains a literal Jinja expression — template bug."
+
+    - name: Clean up
+      ansible.builtin.file: { path: "{{ render_dir }}", state: absent }

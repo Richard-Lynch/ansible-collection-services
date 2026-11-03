@@ -1,0 +1,109 @@
+{#
+  Rendered by stack_arr_service to
+  <arr_config_base_dir>/<compose_path_override or arr_service_name>/docker-compose.yml.
+  See the role's README.
+
+  COMPOSE LAYER ONLY: this file governs container definitions. It never templates, seeds, or
+  overwrites anything inside the bind-mounted config volume — that directory's contents (e.g.
+  config.xml, sabnzbd.ini, settings.json) are runtime state owned by the running application and
+  are treated as opaque data by this role.
+#}
+services:
+  {{ arr_service.container_name | default(arr_service_name) }}:
+    image: {{ arr_service.image }}
+    container_name: {{ arr_service.container_name | default(arr_service_name) }}
+    restart: unless-stopped
+{% if arr_service.command is defined %}
+    command: {{ arr_service.command }}
+{% endif %}
+{% if arr_service.network_mode is defined %}
+    network_mode: "{{ arr_service.network_mode }}"
+{% else %}
+    networks:
+      - {{ arr_network }}
+{% endif %}
+    volumes:
+{% set cv = arr_service.config_volume | default({}) %}
+      - {{ cv.host_path | default('./config') }}:{{ cv.container_path | default('/config') }}{{ (':' + cv.mode) if cv.mode is defined else '' }}
+{% for vol in arr_service.extra_volumes | default([]) %}
+      - {{ vol }}
+{% endfor %}
+{% if arr_service.devices is defined %}
+    devices:
+{% for dev in arr_service.devices %}
+      - {{ dev }}
+{% endfor %}
+{% endif %}
+{% if arr_service.group_add is defined %}
+    group_add:
+{% for grp in arr_service.group_add %}
+      - "{{ grp }}"
+{% endfor %}
+{% endif %}
+    environment:
+      PUID: {{ arr_common_puid }}
+      PGID: {{ arr_common_pgid }}
+      UMASK: "{{ arr_common_umask }}"
+      TZ: {{ arr_common_tz }}
+{% for key, value in (arr_service.environment | default({})).items() %}
+      {{ key }}: {{ value }}
+{% endfor %}
+{% set tf = arr_service.traefik | default({}) %}
+{% if tf %}
+    labels:
+      traefik.enable: true
+{% set router = tf.router_name | default(arr_service_name) %}
+{% if tf.service_port is defined %}
+      traefik.http.services.{{ router }}.loadbalancer.server.port: {{ tf.service_port }}
+{% endif %}
+{% if tf.hosts is defined %}
+{# The service's own name in the arr_service_svc_zone zone, appended automatically when the caller
+   passes that zone. Derived from `router` — the same variable the router labels use — so the name
+   is never hand-typed and cannot drift from the router it belongs to; a caller that registers the
+   same names in DNS can derive them the same way.
+
+   Opt out per service with `svc_dns: false` (e.g. while a service is unhealthy for unrelated
+   reasons) — the SAME flag gates the DNS side, which structurally guarantees DNS never contains a
+   name traefik will not route. #}
+{% set _svc_host = [] %}
+{% if arr_service_svc_zone is defined and (arr_service.svc_dns | default(true)) %}
+{% set _ = _svc_host.append(router ~ '.' ~ arr_service_svc_zone) %}
+{% endif %}
+      traefik.http.routers.{{ router }}.rule: "{{ (tf.hosts + _svc_host) | map('regex_replace', '^(.*)$', 'Host(`\\1`)') | join(' || ') }}"
+{% endif %}
+      traefik.http.routers.{{ router }}.entrypoints: {{ tf.entrypoints | default('websecure') }}
+      traefik.http.routers.{{ router }}.tls: true
+{% for key, value in (tf.extra_labels | default({})).items() %}
+      {{ key }}: {{ value }}
+{% endfor %}
+{% endif %}
+{% if arr_service.exportarr is defined %}
+{% set ex = arr_service.exportarr %}
+
+  exportarr-{{ arr_service_name }}:
+    image: {{ ex.image }}
+    container_name: exportarr-{{ arr_service_name }}
+    command: ["{{ ex.arg }}"]
+    restart: unless-stopped
+    ports:
+      - {{ (arr_exportarr_bind_address ~ ':') if arr_exportarr_bind_address else '' }}{{ ex.port }}:{{ ex.port }}
+    networks:
+      - {{ arr_network }}
+    environment:
+      URL: {{ ex.target_url }}
+      {{ ex.api_key_env_var | default('API_KEY') }}: "{{ ex.api_key }}"
+      PORT: {{ ex.port }}
+    depends_on:
+      {{ arr_service.container_name | default(arr_service_name) }}:
+        condition: service_started
+        restart: true
+{% endif %}
+{% for extra in arr_service.raw_extra_services | default([]) %}
+
+  {{ extra.name }}:
+{{ extra.definition | to_nice_yaml(indent=2) | indent(4, first=True) }}
+{% endfor %}
+
+networks:
+  {{ arr_network }}:
+    external: true

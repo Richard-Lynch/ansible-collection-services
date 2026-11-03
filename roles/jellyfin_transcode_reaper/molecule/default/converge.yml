@@ -1,0 +1,28 @@
+---
+# Render (not install: that needs root and systemd) the role's three templates with the role's own
+# defaults plus a caller-supplied transcode directory.
+- name: Converge — render the reaper script and units
+  hosts: localhost
+  gather_facts: false
+  vars:
+    render_dir: /tmp/molecule-jellyfin-transcode-reaper
+    # The one option a caller must supply; everything else comes from the role's own defaults.
+    jtr_transcode_dir: "/srv/media server/cache/transcodes"
+  tasks:
+    - name: Load the role's generated defaults
+      ansible.builtin.include_vars:
+        { file: "{{ playbook_dir }}/../../defaults/main.yml" }
+
+    - name: Resolve the role's options the way the role does (only the directory is supplied)
+      ansible.builtin.include_tasks: "{{ playbook_dir }}/../../tasks/_resolve_defaults.yml"
+
+    - name: Create the render directory
+      ansible.builtin.file:
+        { path: "{{ render_dir }}", state: directory, mode: "0755" }
+
+    - name: Render each template
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../templates/{{ item }}.j2"
+        dest: "{{ render_dir }}/{{ item }}"
+        mode: "0644"
+      loop: [reap.sh, reap.service, reap.timer]

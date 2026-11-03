@@ -1,0 +1,41 @@
+---
+# One Slack Web API call: POST _slm_body to _slm_method as _slm_format, and assert it answered
+# HTTP 200 with ok:true. Sets _slm_resp to the parsed body.
+#
+# failed_when: false on the call is deliberate: the call carries the token, so it is no_log, and a
+# failure inside it would print only "censored". The assert below has no secret in scope and
+# prints Slack's own answer (`{"ok":false,"error":"..."}`) instead.
+
+- name: "Call {{ _slm_method }}"
+  ansible.builtin.uri:
+    url: "{{ _slm_api }}/{{ _slm_method }}"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ _slm_token }}"
+    body_format: "{{ _slm_format }}"
+    body: "{{ _slm_body }}"
+    return_content: true
+    status_code: [200]
+    timeout: 30
+  register: _slm_raw
+  failed_when: false
+  changed_when: _slm_method in ['chat.postMessage', 'files.completeUploadExternal']
+  delegate_to: localhost
+  no_log: true
+
+- name: "HARD GATE — {{ _slm_method }} answered HTTP 200 with ok:true"
+  ansible.builtin.assert:
+    that:
+      - _slm_raw.status | default(-1) | int == 200
+      - (_slm_raw.content | default('') | from_json).ok | default(false) | bool
+    fail_msg: >-
+      Slack {{ _slm_method }} failed: HTTP {{ _slm_raw.status | default('none') }}
+      {{ _slm_raw.content | default(_slm_raw.msg | default('no response')) | truncate(400) }}
+    quiet: true
+
+- name: "Parse the {{ _slm_method }} response"
+  # no_log: files.getUploadURLExternal answers with a PRE-SIGNED upload_url, and a set_fact's
+  # result is written to the run log verbatim.
+  ansible.builtin.set_fact:
+    _slm_resp: "{{ _slm_raw.content | from_json }}"
+  no_log: true

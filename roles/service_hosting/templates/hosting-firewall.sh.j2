@@ -1,0 +1,67 @@
+#!/bin/sh
+# Managed by service_hosting -- do not edit. Re-runnable: it rebuilds its own chains each time.
+{#
+  WHY. Docker publishes a port with a DNAT rule that sits AHEAD of any ufw or hypervisor-level rule,
+  so with no filter here every LAN host reaches every app on the tier ports with NO Cloudflare
+  Access in the path, and every container can reach the rest of the private network.
+  DOCKER-USER is the only chain Docker leaves alone.
+
+    FORWARD path (DOCKER-USER -> HOSTING-FW)
+      1. a container may not open a connection into a blocked range (the LAN, link-local, CGNAT)
+         except DNS to the host's own resolvers and each hosting_egress_allow grant, from the
+         granted app's own bridge only;
+      2. a published tier port accepts new connections only from the ingress sources (the host
+         running cloudflared), judged on the ORIGINAL destination port because the DNAT has
+         already rewritten the one the packet carries.
+    INPUT path (HOSTING-IN): a container opens nothing on the host itself (sshd, the docker API).
+#}
+set -eu
+IPT=iptables
+
+$IPT -N HOSTING-FW 2>/dev/null || true
+$IPT -F HOSTING-FW
+$IPT -N HOSTING-IN 2>/dev/null || true
+$IPT -F HOSTING-IN
+
+# Replies to anything already allowed.
+$IPT -A HOSTING-FW -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+
+# 1. container egress
+{% for ns in _hosting_dns_servers %}
+for b in docker0 'br-+' 'hst-+'; do
+  $IPT -A HOSTING-FW -i "$b" -d {{ ns }} -p udp --dport 53 -j RETURN
+  $IPT -A HOSTING-FW -i "$b" -d {{ ns }} -p tcp --dport 53 -j RETURN
+done
+{% endfor %}
+{#  Each egress grant is for ONE container: it matches that app's own bridge (hst-a-<app>, its
+    default network, which the platform names and no app definition can join) AND the address the
+    platform pins the granted service to on it. Never a wildcard: a grant on br-+/hst-+/docker0 is
+    a grant to every container on the host. #}
+{% for rule in hosting_egress_allow | richard_lynch.services.hosting_egress_rules(hosting_tiers) %}
+$IPT -A HOSTING-FW -i {{ rule.bridge }} -s {{ rule.source }} -d {{ rule.cidr }} -p {{ rule.proto }} --dport {{ rule.port }} -j RETURN
+{% endfor %}
+{% for cidr in hosting_blocked_egress_cidrs %}
+for b in docker0 'br-+' 'hst-+'; do
+  $IPT -A HOSTING-FW -i "$b" -d {{ cidr }} -j DROP
+done
+{% endfor %}
+
+# 2. ingress to the published tier ports
+{% for tier, cfg in hosting_tiers.items() %}
+{% for src in hosting_ingress_sources %}
+$IPT -A HOSTING-FW -s {{ src }} -p tcp -m conntrack --ctorigdstport {{ cfg.entrypoint_port }} -j RETURN
+{% endfor %}
+$IPT -A HOSTING-FW -p tcp -m conntrack --ctstate NEW --ctorigdstport {{ cfg.entrypoint_port }} -m conntrack --ctstate DNAT -j DROP
+{% endfor %}
+$IPT -A HOSTING-FW -j RETURN
+
+# INPUT: nothing on the guest is a container's to open
+$IPT -A HOSTING-IN -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+for b in docker0 'br-+' 'hst-+'; do
+  $IPT -A HOSTING-IN -i "$b" -m conntrack --ctstate NEW -j DROP
+done
+$IPT -A HOSTING-IN -j RETURN
+
+# Hook both into the chains Docker and the kernel consult (once each).
+$IPT -C DOCKER-USER -j HOSTING-FW 2>/dev/null || $IPT -I DOCKER-USER 1 -j HOSTING-FW
+$IPT -C INPUT -j HOSTING-IN 2>/dev/null || $IPT -I INPUT 1 -j HOSTING-IN

@@ -1,0 +1,13 @@
+---
+galaxy_info:
+  namespace: richard_lynch
+  author: Richard Lynch
+  description: >-
+    Send a Slack message as a bot to a user's DM or a channel, optionally uploading one file with
+    the message as its comment, and read back that Slack accepted and shared it.
+  license: GPL-3.0-or-later
+  min_ansible_version: "2.19"
+  galaxy_tags:
+    - slack
+    - notification
+dependencies: []

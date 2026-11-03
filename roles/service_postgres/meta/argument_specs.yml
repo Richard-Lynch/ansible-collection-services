@@ -1,0 +1,147 @@
+---
+# AUTO-GENERATED argument spec — DO NOT EDIT.
+#
+# Source of truth: roles/service_postgres/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate service_postgres
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+argument_specs:
+  main:
+    short_description: Deploy Postgres (+exporter) on the shared network with per-service DBs
+    version_added: '1.0'
+    author: Collection maintainers
+    options:
+      postgres_container_name:
+        description:
+          - Container name.
+        type: str
+        required: false
+      postgres_image:
+        description:
+          - Postgres image tag.
+        type: str
+        required: false
+      postgres_host_port:
+        description:
+          - Host port → 5432.
+        type: int
+        required: false
+      postgres_bind_address:
+        description:
+          - Host address the database port is published on (default loopback). Empty
+          - string publishes on every interface, which the host firewall does not filter.
+        type: str
+        required: false
+      postgres_verify_host:
+        description:
+          - Address the verify entrypoint connects to, from the target host itself.
+          - 'Default: postgres_bind_address, or 127.0.0.1 when that is empty or 0.0.0.0.'
+        type: str
+        required: false
+      postgres_db:
+        description:
+          - Superuser bootstrap database.
+        type: str
+        required: false
+      postgres_user:
+        description:
+          - Superuser role.
+        type: str
+        required: false
+      postgres_password:
+        description:
+          - Superuser password, supplied by the caller (the placeholder default is rejected).
+        type: str
+        required: false
+      postgres_network:
+        description:
+          - Shared external docker network.
+        type: str
+        required: false
+      postgres_databases:
+        description:
+          - 'Per-service DBs to ensure: [{name, owner, password}].'
+        type: list
+        required: false
+        elements: dict
+      postgres_settings:
+        description:
+          - postgresql.conf settings.
+        type: dict
+        required: false
+      postgres_config_file_path:
+        description:
+          - Path to the rendered postgresql.conf.
+        type: str
+        required: false
+      postgres_config_path:
+        description:
+          - Config dir.
+        type: str
+        required: false
+      postgres_exporter_enabled:
+        description:
+          - Deploy postgres_exporter (Prometheus scrape).
+        type: bool
+        required: false
+        default: true
+      postgres_exporter_image:
+        description:
+          - Exporter image.
+        type: str
+        required: false
+      postgres_exporter_port:
+        description:
+          - Exporter host port.
+        type: int
+        required: false
+      postgres_exporter_bind_address:
+        description:
+          - 'Host address the exporter port is published on (default loopback: the'
+          - exporter has no authentication). Empty string publishes on every interface.
+        type: str
+        required: false
+      postgres_env_file_mode:
+        description:
+          - Mode of the rendered env files, which hold credentials (default 0600).
+        type: str
+        required: false
+      pgadmin_enabled:
+        description:
+          - Deploy pgAdmin (off by default).
+        type: bool
+        required: false
+        default: false
+      pgadmin_image:
+        description:
+          - pgAdmin image.
+        type: str
+        required: false
+      pgadmin_container_name:
+        description:
+          - pgAdmin container name.
+        type: str
+        required: false
+      pgadmin_host_port:
+        description:
+          - pgAdmin host port.
+        type: int
+        required: false
+      pgadmin_bind_address:
+        description:
+          - Host address the pgAdmin port is published on (default loopback). Empty
+          - string publishes on every interface.
+        type: str
+        required: false
+      pgadmin_default_email:
+        description:
+          - pgAdmin login email.
+        type: str
+        required: false
+      pgadmin_default_password:
+        description:
+          - pgAdmin login password.
+        type: str
+        required: false

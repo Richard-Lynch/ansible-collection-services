@@ -1,0 +1,35 @@
+---
+# One TARGET case through the REAL assert_target entrypoint (the gate PLAY 0 of the deploy and
+# remove plays runs). Both directions: retargeted runs that must be refused for the stated reason,
+# and near-misses (no limit; target= naming the guest itself) that must pass.
+- name: Reset
+  ansible.builtin.set_fact:
+    _t_passed: false
+    _t_msg: ""
+
+- name: Run assert_target
+  block:
+    - name: "{{ case.id }} — assert_target"
+      ansible.builtin.include_role:
+        name: service_hosting
+        tasks_from: assert_target
+      vars:
+        hosting_target_guest: apps-host
+        hosting_inventory_hosts: "{{ case.inventory | default(['localhost', 'apps-host', 'other-host']) }}"
+        hosting_requested_limit: "{{ case.limit | default('') }}"
+        hosting_requested_target: "{{ case.target | default('') }}"
+    - name: Note that it passed
+      ansible.builtin.set_fact:
+        _t_passed: true
+  rescue:
+    - name: Capture why it was refused
+      ansible.builtin.set_fact:
+        _t_msg: "{{ ansible_failed_result.msg | default('') }}"
+
+- name: "{{ case.id }} — decided correctly, for the stated reason"
+  ansible.builtin.assert:
+    that:
+      - _t_passed | bool == case.expect_ok | bool
+      - case.expect_ok | bool or (case.expect in _t_msg)
+    fail_msg: "case {{ case.id }}: passed={{ _t_passed }} expected_ok={{ case.expect_ok }} message={{ _t_msg[:400] }}"
+    quiet: true

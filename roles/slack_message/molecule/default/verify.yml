@@ -1,0 +1,92 @@
+---
+# Asserts on what ARRIVED at the stub (requests.jsonl), not on what the role reported: the
+# channel each call targeted, the comment, and that the uploaded bytes are the fixture's bytes.
+- name: Verify slack_message
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _dir: "{{ lookup('env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/slack_message"
+  tasks:
+    - name: Read the stub's request log and the converge outcomes
+      ansible.builtin.set_fact:
+        _reqs: "{{ lookup('ansible.builtin.file', _dir ~ '/requests.jsonl').splitlines() | map('from_json') | list }}"
+        _out: "{{ lookup('ansible.builtin.file', _dir ~ '/outcomes.json') | from_json }}"
+
+    - name: Hash the fixture
+      ansible.builtin.stat:
+        path: "{{ _dir }}/fixture.shortcut"
+        checksum_algorithm: sha256
+      register: _fixture
+
+    - name: Select the calls of interest
+      ansible.builtin.set_fact:
+        _opens: "{{ _reqs | selectattr('method', 'equalto', 'conversations.open') | list }}"
+        # Only AUTHED posts: the wrong-token-field case reaches chat.postMessage and is refused.
+        _posts: "{{ _reqs | selectattr('method', 'equalto', 'chat.postMessage') | selectattr('authed') | list }}"
+        _urls: "{{ _reqs | selectattr('method', 'equalto', 'files.getUploadURLExternal') | list }}"
+        _uploads: "{{ _reqs | selectattr('method', 'equalto', 'upload') | list }}"
+        _completes: "{{ _reqs | selectattr('method', 'equalto', 'files.completeUploadExternal') | list }}"
+
+    - name: The text message opened the user's DM and posted into THAT conversation
+      ansible.builtin.assert:
+        that:
+          - _opens | selectattr('body.users', 'equalto', 'U0TEXT1') | list | length == 1
+          - _out.text_channel == 'D0TEXT1'
+          - _posts | length == 1
+          - _posts[0].body.channel == 'D0TEXT1'
+          - _posts[0].body.text == 'hello text'
+
+    - name: Every successful upload sent the fixture's exact bytes as octet-stream
+      ansible.builtin.assert:
+        that:
+          - _uploads | length == 3
+          - _uploads | map(attribute='sha256') | unique | list == [_fixture.stat.checksum]
+          - _uploads | map(attribute='bytes') | unique | list == [_fixture.stat.size]
+          - _uploads | map(attribute='content_type') | unique | list == ['application/octet-stream']
+          - _urls | map(attribute='body.length') | map('int') | unique | list == [_fixture.stat.size]
+          - _urls | map(attribute='body.filename') | unique | list == ['fixture.shortcut']
+
+    - name: The DM upload was completed into the DM with the comment and the default title
+      ansible.builtin.assert:
+        that:
+          - _dm | length == 1
+          - "_dm[0].body.initial_comment == 'Test comment: ignore'"
+          - _dm[0].body.files[0].title == 'fixture.shortcut'
+          - _dm[0].authed
+      vars:
+        _dm: "{{ _completes | selectattr('body.channel_id', 'equalto', 'D0FILE1') | list }}"
+
+    - name: The channel upload went straight to the channel (no conversations.open) with its title
+      ansible.builtin.assert:
+        that:
+          - _ch | length == 1
+          - _ch[0].body.files[0].title == 'Fixture'
+          - _opens | selectattr('body.users', 'equalto', 'C0CHAN1') | list | length == 0
+      vars:
+        _ch: "{{ _completes | selectattr('body.channel_id', 'equalto', 'C0CHAN1') | list }}"
+
+    - name: Every expected failure was recorded with its reason
+      ansible.builtin.assert:
+        that:
+          - _out.failures | length == 6
+          - "'user_not_found' in _out.failures['unknown-user']"
+          - "'invalid_auth' in _out.failures['wrong-token-field']"
+
+    - name: The failing cases sent nothing they should not have
+      ansible.builtin.assert:
+        that:
+          # unknown-user stopped at conversations.open; empty-token, missing-file and bad-target
+          # reached no API; the only refused bearer is wrong-token-field's one chat.postMessage.
+          - _posts | length == 1
+          - _completes | length == 3
+          - _unauthed | length == 1
+          - _unauthed[0].method == 'chat.postMessage'
+      vars:
+        _unauthed: "{{ _reqs | rejectattr('method', 'equalto', 'upload') | rejectattr('authed') | list }}"
+
+    - name: Stop the stub
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ lookup('ansible.builtin.file', _dir ~ '/port') | trim }}/shutdown"
+        method: POST
+        return_content: true
+      changed_when: false

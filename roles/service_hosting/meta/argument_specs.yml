@@ -1,0 +1,393 @@
+---
+# AUTO-GENERATED argument spec — DO NOT EDIT.
+#
+# Source of truth: roles/service_hosting/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate service_hosting
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+argument_specs:
+  main:
+    short_description: Traefik (docker provider) and the per-tier networks for app hosting
+    description:
+      - 'Converges the hosting platform on a Docker guest: a read-only docker-socket-proxy,'
+      - Traefik with the docker provider and one entrypoint per tier, and one docker
+      - network per tier. Apps are NOT deployed here; the deploy_app entrypoint does that,
+      - and a converge of this entrypoint never removes an app.
+      - Routing is by container labels written by the deploy_app entrypoint, so publishing
+      - an app needs no DNS, tunnel or Cloudflare step once the wildcard edge exists.
+    version_added: '1.0'
+    author: Collection maintainers
+    options:
+      hosting_tiers:
+        description:
+          - The tiers this hosting guest serves, keyed by tier name (dev, prod).
+          - 'Each tier declares: suffix (the hostname suffix, apps are name.suffix), entrypoint_port'
+          - (the Traefik entrypoint port cloudflared sends that tier to), network (the docker
+          - network only that tier's apps join), bridge (a STABLE linux bridge name for it, at most 15
+          - characters, so the firewall can name it), root (where that tier's apps live on the guest),
+          - "and the 1Password item names of the tier's Access service token. Optional: reap (true:"
+          - 'apps expire by ttl_hours) and secrets (true: an app may declare platform secrets, 1Password'
+          - items delivered as 0400 files; only for a tier whose definitions are owner-merged).
+          - 'Installation configuration: set by the caller (inventory), never defaulted here.'
+        type: dict
+        required: true
+      hosting_root:
+        description:
+          - Host directory holding the platform's own compose project.
+        type: str
+        required: false
+        default: /opt/hosting
+      hosting_traefik_image:
+        description:
+          - 'Traefik image. A floating tag (latest and friends) is refused. Must be 3.6.1 or newer:'
+          - v3.3 speaks Docker API 1.24 and a current Docker Engine (minimum API 1.40) rejects it,
+          - so the docker provider never starts and every Host answers 404.
+        type: str
+        required: false
+        default: traefik:v3.6.25
+      hosting_socket_proxy_image:
+        description:
+          - Image of the read-only Docker API proxy Traefik talks to instead of the
+          - real socket. A floating tag is refused.
+        type: str
+        required: false
+        default: tecnativa/docker-socket-proxy:0.3.0
+      hosting_log_level:
+        description:
+          - Traefik log level.
+        type: str
+        required: false
+        default: INFO
+        choices:
+          - DEBUG
+          - INFO
+          - WARN
+          - ERROR
+      hosting_traefik_memory:
+        description:
+          - Memory limit for each tier's Traefik container.
+        type: str
+        required: false
+        default: 256m
+      hosting_ingress_sources:
+        description:
+          - 'Addresses allowed to open NEW connections to a published tier port: the'
+          - host that runs cloudflared. Everything else is dropped, because Docker's
+          - published ports otherwise bypass every other rule and would let any LAN
+          - host reach an app with no Cloudflare Access in the path.
+          - 'Installation configuration: set by the caller (inventory).'
+        type: list
+        required: true
+        elements: str
+      hosting_blocked_egress_cidrs:
+        description:
+          - 'Destination ranges a container may not open connections to: the private'
+          - ranges, link-local and carrier-grade NAT (which includes a tailnet).
+          - Internet egress stays open. Docker's own 172.16/12 pool is not listed so
+          - containers of one app can still talk to each other.
+        type: list
+        required: false
+        default:
+          - 10.0.0.0/8
+          - 192.168.0.0/16
+          - 169.254.0.0/16
+          - 100.64.0.0/10
+        elements: str
+      hosting_reaper_interval:
+        description:
+          - How often the reaper timer runs (a systemd time span). A tier declared
+          - with reap true has its apps removed once their ttl_hours have passed.
+        type: str
+        required: false
+        default: 15min
+      hosting_reaped_root:
+        description:
+          - Where a removed app's directory is moved (tier/name-stamp). Named volumes
+          - "are kept: neither the reaper nor remove_app deletes an app's data."
+        type: str
+        required: false
+        default: /srv/apps/.reaped
+      hosting_textfile_dir:
+        description:
+          - The node exporter textfile directory the reaper writes its metrics to.
+          - Must match the directory the host's metrics agent collects.
+        type: str
+        required: false
+        default: /var/lib/node_exporter/textfile_collector
+      hosting_egress_allow:
+        description:
+          - 'Exceptions to the container egress block, each a GRANT TO ONE CONTAINER: app, service (the'
+          - compose service granted), subnet (at least a /29, for the app's own network), address (the
+          - service's pinned address, in the lower half of subnet, past the gateway), cidr and ports
+          - (where it may go), and optionally tier (default prod) and proto (default tcp). The app's
+          - default network goes on a stable bridge named hst-a- plus the app name with that subnet,
+          - the service is pinned to address, and the firewall allows the grant from that bridge AND
+          - that source only, so no other container holds it. An incomplete grant is refused. DNS to
+          - the guest's own resolvers is always allowed.
+          - REQUIRED with no default (estate configuration; an empty list grants nothing). Being
+          - "required also keeps the caller's value on a repeat call of the role in one play: the"
+          - deploy play runs assert_target first, and a defaulted option is rebound to its default
+          - on the second call, which would silently drop every grant from the deployed compose.
+        type: list
+        required: true
+        elements: dict
+      hosting_registries:
+        description:
+          - Private registries the guest logs in to before anything is pulled, so an app
+          - 'may run an image that is not public. Each entry: host (the registry, e.g.'
+          - ghcr.io), username, item and field (the 1Password item holding a pull-only
+          - 'token, and its field), vault, and probe_image: a PRIVATE image on that'
+          - registry, pinned, that the converge proves it can read with the login and
+          - cannot read without it. The credential is stored in the connecting user's
+          - docker config, 0600 in a 0700 directory.
+          - 'Installation configuration: set by the caller (inventory).'
+        type: list
+        required: false
+        default: []
+        elements: dict
+        options:
+          host:
+            description:
+              - Registry host, no scheme.
+            type: str
+            required: true
+          username:
+            description:
+              - Registry user name.
+            type: str
+            required: true
+          item:
+            description:
+              - 1Password item holding the token.
+            type: str
+            required: true
+          field:
+            description:
+              - Field of the item that holds the token.
+            type: str
+            required: false
+            default: password
+          vault:
+            description:
+              - 1Password vault holding the item.
+            type: str
+            required: true
+          probe_image:
+            description:
+              - A private image on this registry, pinned by tag or digest,
+              - that the login must make readable.
+            type: str
+            required: true
+  assert_merged:
+    short_description: Refuse unless an app definition is exactly what is on the merge ref
+    description:
+      - The PROD gate. A PROD app may only be deployed when its definition is byte-for-byte
+      - (as parsed YAML) what exists on hosting_merge_ref, i.e. what was reviewed and merged.
+      - Fetches the ref, reads the file the definition names as its source, and refuses if the
+      - file is absent there, is not the conventional path for the app, or differs from the
+      - definition being deployed. A local edit, an unmerged branch and a stale checkout all
+      - fail the comparison.
+    version_added: '1.0'
+    author: Collection maintainers
+    options:
+      hosting_app:
+        description:
+          - The app definition being deployed; must carry source.
+        type: dict
+        required: true
+      hosting_repo_root:
+        description:
+          - Path of the git checkout the definition belongs to.
+        type: str
+        required: true
+      hosting_merge_ref:
+        description:
+          - 'Remote ref that means merged: remote/branch.'
+        type: str
+        required: false
+        default: origin/main
+      hosting_source_prefix:
+        description:
+          - Directory in the repo where reviewed app definitions live, with a
+          - 'trailing slash: a PROD definition must carry source <prefix><name>/vars.yml.'
+        type: str
+        required: true
+  assert_target:
+    short_description: Refuse a deploy aimed at any host other than the hosting guest
+    description:
+      - The TARGET gate of the deploy and remove plays. Refuses, naming every reason at once,
+      - 'when the run was retargeted: a host limit (--limit / LIMIT=) of any kind, or a target'
+      - extra var naming a different host, or a hosting guest absent from the inventory.
+      - 'A limit is refused outright because each shape of it defeats a different gate: a'
+      - limit to the guest skips the controller-side PROD merge gate, a limit to localhost
+      - skips the deploy and exits green, and a limit to another host skips every play.
+      - Run it from a play whose hosts line is all, so no limit can skip the gate itself.
+    version_added: '1.1'
+    author: Collection maintainers
+    options:
+      hosting_target_guest:
+        description:
+          - The one inventory host a deploy may touch (the hosting guest).
+        type: str
+        required: true
+      hosting_inventory_hosts:
+        description:
+          - Every host in the inventory (the caller passes groups all).
+        type: list
+        required: true
+        elements: str
+      hosting_requested_limit:
+        description:
+          - The run's host limit, empty when none (the caller passes ansible_limit).
+        type: str
+        required: false
+        default: ''
+      hosting_requested_target:
+        description:
+          - A target extra var if one was passed, empty when none.
+        type: str
+        required: false
+        default: ''
+  deploy_app:
+    short_description: Validate an app definition and converge it onto its tier
+    description:
+      - Takes one app definition (name, tier, port, routed service and a compose project),
+      - refuses it with every reason if it breaks the gate (privileged, host networking, a
+      - socket mount, a host bind outside the app's own data directory, a published port,
+      - a routing label, an image off the allowlist or not pinned), writes the compose with
+      - Traefik labels the PLATFORM generates, brings it up and reads the app back through
+      - Traefik on the guest.
+      - "Generate-don't-apply: it validates and reports unless hosting_deploy_apply is true."
+    version_added: '1.0'
+    author: Collection maintainers
+    options:
+      hosting_tiers:
+        description:
+          - The tiers this hosting guest serves, keyed by tier name (dev, prod).
+          - 'Each tier declares: suffix (the hostname suffix, apps are name.suffix), entrypoint_port'
+          - (the Traefik entrypoint port cloudflared sends that tier to), network (the docker
+          - network only that tier's apps join), bridge (a STABLE linux bridge name for it, at most 15
+          - characters, so the firewall can name it), root (where that tier's apps live on the guest),
+          - "and the 1Password item names of the tier's Access service token. Optional: reap (true:"
+          - 'apps expire by ttl_hours) and secrets (true: an app may declare platform secrets, 1Password'
+          - items delivered as 0400 files; only for a tier whose definitions are owner-merged).
+          - 'Installation configuration: set by the caller (inventory), never defaulted here.'
+        type: dict
+        required: true
+      hosting_egress_allow:
+        description:
+          - 'Exceptions to the container egress block, each a GRANT TO ONE CONTAINER: app, service (the'
+          - compose service granted), subnet (at least a /29, for the app's own network), address (the
+          - service's pinned address, in the lower half of subnet, past the gateway), cidr and ports
+          - (where it may go), and optionally tier (default prod) and proto (default tcp). The app's
+          - default network goes on a stable bridge named hst-a- plus the app name with that subnet,
+          - the service is pinned to address, and the firewall allows the grant from that bridge AND
+          - that source only, so no other container holds it. An incomplete grant is refused. DNS to
+          - the guest's own resolvers is always allowed.
+          - REQUIRED with no default (estate configuration; an empty list grants nothing). Being
+          - "required also keeps the caller's value on a repeat call of the role in one play: the"
+          - deploy play runs assert_target first, and a defaulted option is rebound to its default
+          - on the second call, which would silently drop every grant from the deployed compose.
+        type: list
+        required: true
+        elements: dict
+      hosting_app:
+        description:
+          - 'The app definition: name, tier, port (the container port Traefik targets),'
+          - service (which compose service is routed), compose (a compose project as
+          - a mapping with a services key), and optionally health_path, expect_status
+          - and ttl_hours.
+        type: dict
+        required: true
+      hosting_image_allowlist:
+        description:
+          - 'Image reference prefixes an app may run. Installation configuration:'
+          - extended by a reviewed change to the caller's inventory, never by the app.
+        type: list
+        required: true
+        elements: str
+      hosting_secrets_vault:
+        description:
+          - The 1Password vault the app's platform secrets are read from (passed as
+          - vault= to richard_lynch.common.onepassword_cached). Needed only by an app
+          - that declares secrets; such an app is refused before anything is written
+          - when this is unset.
+        type: str
+        required: false
+      hosting_deploy_apply:
+        description:
+          - Generate-don't-apply. False validates and reports the compose that would
+          - be written; true writes it, brings it up and reads it back.
+        type: bool
+        required: false
+        default: false
+      hosting_default_mem_limit:
+        description:
+          - Memory limit injected into any service that declares none, so one app
+          - cannot take all of the host's memory.
+        type: str
+        required: false
+        default: 512m
+      hosting_max_mem_limit:
+        description:
+          - The largest memory limit any one service may declare. A service that
+          - 'asks for more is refused: the injected default is a default, and without'
+          - a ceiling one app could take the whole guest.
+        type: str
+        required: false
+        default: 1g
+      hosting_max_cpus:
+        description:
+          - The largest CPU limit any one service may declare.
+        type: float
+        required: false
+        default: 2.0
+      hosting_default_cpus:
+        description:
+          - CPU limit injected into any service that declares none.
+        type: float
+        required: false
+        default: 1.0
+      hosting_readback_timeout_s:
+        description:
+          - How long to wait for the app to answer through Traefik on the guest.
+        type: int
+        required: false
+        default: 60
+  remove_app:
+    short_description: Remove one app from a reaping (DEV) tier and prove it gone
+    description:
+      - "Runs the reaper's explicit removal for one app: compose down, the daemon read back"
+      - for any container left, the directory moved under hosting_reaped_root, and Traefik
+      - asked for the app's Host (404 when the router is gone). Refuses a tier that is not
+      - declared with reap true, so a PROD app cannot be removed here.
+      - "Generate-don't-apply: previews unless hosting_remove_confirm is true."
+    version_added: '1.0'
+    author: Collection maintainers
+    options:
+      hosting_tiers:
+        description:
+          - The tiers this hosting guest serves, keyed by tier name (dev, prod).
+          - 'Each tier declares: suffix (the hostname suffix, apps are name.suffix), entrypoint_port'
+          - (the Traefik entrypoint port cloudflared sends that tier to), network (the docker
+          - network only that tier's apps join), bridge (a STABLE linux bridge name for it, at most 15
+          - characters, so the firewall can name it), root (where that tier's apps live on the guest),
+          - "and the 1Password item names of the tier's Access service token. Optional: reap (true:"
+          - 'apps expire by ttl_hours) and secrets (true: an app may declare platform secrets, 1Password'
+          - items delivered as 0400 files; only for a tier whose definitions are owner-merged).
+          - 'Installation configuration: set by the caller (inventory), never defaulted here.'
+        type: dict
+        required: true
+      hosting_app:
+        description:
+          - The app definition; only its name and tier are read.
+        type: dict
+        required: true
+      hosting_remove_confirm:
+        description:
+          - False previews the removal; true removes the app.
+        type: bool
+        required: false
+        default: false

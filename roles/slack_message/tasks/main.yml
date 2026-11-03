@@ -1,0 +1,102 @@
+---
+# slack_message (main) — send one Slack message as a bot, optionally with one file attached.
+#
+# Runs on the CONTROLLER (delegate_to: localhost), whatever host the play targets: the file is a
+# controller file and the token is resolved there. Every Slack response is parsed from `content`
+# (never `.json`) and asserted `ok`, so a refusal fails here with Slack's own error string rather
+# than as a missing message the owner notices later.
+#
+# Sending is an ACTION, not a state: a second run sends a second message. `changed` is reported
+# only by the tasks that actually post something.
+
+- name: Load this entrypoint's generated defaults
+  ansible.builtin.include_vars:
+    file: "{{ role_path }}/defaults/main.yml"
+
+- name: Resolve declared options over their generated defaults
+  ansible.builtin.include_tasks: _resolve_defaults.yml
+
+- name: Apply the generated argspec guards
+  ansible.builtin.include_tasks: _argspec_guards.yml
+
+- name: Derive the API base and the mode
+  ansible.builtin.set_fact:
+    _slm_api: "{{ slack_message_api_url | regex_replace('/+$', '') }}"
+    _slm_has_file: "{{ slack_message_file | length > 0 }}"
+    _slm_is_user: "{{ slack_message_target[:1] in ['U', 'W'] }}"
+
+- name: Stat the file to upload
+  ansible.builtin.stat:
+    path: "{{ slack_message_file }}"
+  register: _slm_stat
+  delegate_to: localhost
+  when: _slm_has_file | bool
+
+- name: HARD GATE — the file exists on the controller, is a regular file and is not empty
+  # getUploadURLExternal is told the length up front; an empty or missing file would be refused
+  # by Slack with an error that names the length, not the path.
+  ansible.builtin.assert:
+    that:
+      - _slm_stat.stat.exists
+      - _slm_stat.stat.isreg | default(false)
+      - _slm_stat.stat.size | int > 0
+    fail_msg: "{{ slack_message_file }} is missing, not a regular file, or empty on the controller."
+    quiet: true
+  when: _slm_has_file | bool
+
+- name: Resolve the bot token
+  ansible.builtin.set_fact:
+    _slm_token: >-
+      {{ lookup('richard_lynch.common.onepassword_cached', slack_message_token_item,
+                field=slack_message_token_field, vault=slack_message_op_vault) }}
+  no_log: true
+
+- name: HARD GATE — the token read back non-empty
+  # An empty bearer answers `not_authed`, which would otherwise read as a scope problem.
+  ansible.builtin.assert:
+    that:
+      - _slm_token | default('') | trim | length > 0
+    fail_msg: "The Slack token (1Password item {{ slack_message_token_item }}) read back EMPTY."
+    quiet: true
+  no_log: true
+
+- name: Open (or reuse) the DM with the target user
+  ansible.builtin.include_tasks: _api.yml
+  vars:
+    _slm_method: conversations.open
+    _slm_format: form-urlencoded
+    _slm_body: { users: "{{ slack_message_target }}" }
+  when: _slm_is_user | bool
+
+- name: Record the conversation to post into
+  ansible.builtin.set_fact:
+    _slm_channel: "{{ _slm_resp.channel.id if _slm_is_user | bool else slack_message_target }}"
+
+- name: HARD GATE — the conversation id is known
+  ansible.builtin.assert:
+    that:
+      - _slm_channel | default('') | length > 0
+    fail_msg: "conversations.open answered ok but returned no channel id for {{ slack_message_target }}."
+    quiet: true
+
+- name: Post a text-only message
+  when: not (_slm_has_file | bool)
+  block:
+    - name: Call chat.postMessage
+      ansible.builtin.include_tasks: _api.yml
+      vars:
+        _slm_method: chat.postMessage
+        _slm_format: json
+        _slm_body: { channel: "{{ _slm_channel }}", text: "{{ slack_message_text }}" }
+
+    - name: READ-BACK — the message was posted in the target conversation
+      ansible.builtin.assert:
+        that:
+          - _slm_resp.channel | default('') == _slm_channel
+          - _slm_resp.ts | default('') | length > 0
+        fail_msg: "chat.postMessage answered ok but not for {{ _slm_channel }}: {{ _slm_resp | to_json | truncate(300) }}"
+        quiet: true
+
+- name: Upload the file with the text as its comment
+  ansible.builtin.include_tasks: _upload.yml
+  when: _slm_has_file | bool

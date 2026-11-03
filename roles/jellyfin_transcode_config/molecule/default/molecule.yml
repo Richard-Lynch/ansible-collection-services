@@ -1,0 +1,18 @@
+---
+# Offline: the role's DRY RUN against a fixture encoding.xml on the controller, plus the refusals
+# (a missing config path, an out-of-range guard value). No Jellyfin, no Docker: the apply path's
+# restart needs a container and is proven on a real host by the role's own read-backs.
+dependency: { name: galaxy }
+driver: { name: default }
+platforms: [{ name: localhost }]
+provisioner:
+  name: ansible
+  inventory: { host_vars: { localhost: { ansible_connection: local } } }
+  # Molecule runs from the scenario directory, so include_role of this very role needs the roles
+  # directory on the path; the collections path makes community.docker (used by the apply block)
+  # resolvable when the role's tasks are loaded.
+  env:
+    ANSIBLE_ROLES_PATH: "${MOLECULE_PROJECT_DIRECTORY}/../"
+    ANSIBLE_COLLECTIONS_PATH: "${MOLECULE_PROJECT_DIRECTORY}/../../collections.galaxy:${MOLECULE_PROJECT_DIRECTORY}/../../../../.."
+  playbooks: { converge: converge.yml, verify: verify.yml }
+verifier: { name: ansible }

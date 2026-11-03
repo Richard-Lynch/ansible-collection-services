@@ -1,0 +1,10 @@
+# Managed by service_hosting -- do not edit.
+[Unit]
+Description=Run the hosting reaper every {{ hosting_reaper_interval }}
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec={{ hosting_reaper_interval }}
+
+[Install]
+WantedBy=timers.target

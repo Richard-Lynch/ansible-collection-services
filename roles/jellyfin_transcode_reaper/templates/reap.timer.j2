@@ -1,0 +1,14 @@
+# ANSIBLE MANAGED — roles/jellyfin_transcode_reaper. Do not edit here.
+[Unit]
+Description=Reap orphaned Jellyfin transcode segments ({{ jtr_on_calendar }})
+
+[Timer]
+OnCalendar={{ jtr_on_calendar }}
+# Run on next boot if the machine was off at the scheduled time — an orphaned cache does not clear
+# itself while the host is down.
+Persistent=true
+# Spread the start so this never lands exactly on another timer.
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

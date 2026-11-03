@@ -1,0 +1,20 @@
+---
+- name: Cleanup - stop the stub Slack workspace
+  hosts: localhost
+  gather_facts: false
+  vars_files: [vars.yml]
+  tasks:
+    - name: Stop the stub
+      ansible.builtin.command:
+        argv: [pkill, -f, "stub_slack.py {{ stub_port }}"]
+      register: _kill
+      changed_when: _kill.rc == 0
+      # rc 1 = no such process (nothing was running); anything else is a real error
+      failed_when: _kill.rc not in [0, 1]
+
+    - name: Wait for the port to close
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: "{{ stub_port }}"
+        state: stopped
+        timeout: 20

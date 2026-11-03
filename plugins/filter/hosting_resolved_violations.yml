@@ -1,0 +1,36 @@
+# Copyright: (c) 2026, Richard Lynch
+# GNU General Public License v3.0+ (see https://www.gnu.org/licenses/gpl-3.0.txt)
+---
+DOCUMENTATION:
+  name: hosting_resolved_violations
+  short_description: Judge a compose project as docker compose resolved it
+  author: Richard Lynch (@Richard-Lynch)
+  description:
+    - Applies the hosting rules to the output of C(docker compose config --format json), because
+      compose interpolates variables before it mounts anything.
+    - An empty list means the resolved project is acceptable.
+  options:
+    _input:
+      description: The resolved compose project, parsed from C(docker compose config --format json).
+      type: dict
+      required: true
+    app_root:
+      description: The app's own directory; bind mounts outside it are refused.
+      type: str
+      required: true
+    limits:
+      description: Resource caps, C(max_mem) and C(max_cpus).
+      type: dict
+    secret_files:
+      description: The platform secret files the app may mount, as P(richard_lynch.services.hosting_secret_files#filter) returns them.
+      type: list
+      elements: dict
+EXAMPLES: |
+  - name: Refuse what compose resolved the file to
+    ansible.builtin.assert:
+      that: (resolved | richard_lynch.services.hosting_resolved_violations('/srv/apps/dev/hello')) == []
+RETURN:
+  _value:
+    description: One message per violation; empty when acceptable.
+    type: list
+    elements: str

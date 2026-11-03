@@ -1,0 +1,36 @@
+---
+# AUTO-GENERATED defaults file — DO NOT EDIT.
+#
+# Source of truth: roles/stack_arr_service/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate stack_arr_service
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+# Entrypoint:      main
+
+# Per-service definition. See README for the full field list.
+arr_service__default:
+  config_volume:
+    host_path: ./config
+    container_path: /config
+  traefik:
+    entrypoints: websecure
+  exportarr:
+    api_key_env_var: API_KEY
+
+# Shared external docker network name the services join.
+arr_network__default: traefik
+
+# Host address the exportarr sidecar's metrics port is published on. exportarr
+# serves its metrics without authentication, so the default keeps it on loopback;
+# set the address a remote scraper reaches, or an empty string for every
+# interface (a Docker-published port is not filtered by the host firewall).
+arr_exportarr_bind_address__default: 127.0.0.1
+
+# Parent directory; the role writes /opt/<arr_service_name>/docker-compose.yml.
+arr_config_base_dir__default: /opt
+arr_common_puid__default: 1000
+arr_common_pgid__default: 1000
+arr_common_umask__default: '002'
+arr_common_tz__default: Etc/UTC

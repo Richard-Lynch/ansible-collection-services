@@ -1,0 +1,41 @@
+---
+# GENERATED from roles/slack_channels/meta/argument_specs.py — DO NOT EDIT.
+# Regenerate with: venv/bin/python tools/argspec/cli.py x generate slack_channels
+#
+# These are the constraints Ansible's role-argspec validator CANNOT enforce. It handles
+# type/required/choices/no_log, but has no numeric-range, length or pattern checking, so
+# without this file those declarations would be decorative.
+#
+# Include from the role's entrypoints:  - ansible.builtin.include_tasks: _argspec_guards.yml
+
+- name: "GUARD (generated) — slack_channels must be at least 1 long"
+  ansible.builtin.assert:
+    that:
+      - "slack_channels | default('') | length >= 1"
+    fail_msg: "slack_channels violates a constraint declared in meta/argument_specs.py: must be at least 1 long. Got: {{ slack_channels | default('(unset)') }}"
+    quiet: true
+  when: slack_channels is defined
+
+- name: "GUARD (generated) — slack_channels_api_url must be at least 1 long"
+  ansible.builtin.assert:
+    that:
+      - "slack_channels_api_url | default('') | length >= 1"
+    fail_msg: "slack_channels_api_url violates a constraint declared in meta/argument_specs.py: must be at least 1 long. Got: {{ slack_channels_api_url | default('(unset)') }}"
+    quiet: true
+  when: slack_channels_api_url is defined
+
+- name: "GUARD (generated) — slack_channels_guide_marker_prefix must be at least 1 long"
+  ansible.builtin.assert:
+    that:
+      - "slack_channels_guide_marker_prefix | default('') | length >= 1"
+    fail_msg: "slack_channels_guide_marker_prefix violates a constraint declared in meta/argument_specs.py: must be at least 1 long. Got: {{ slack_channels_guide_marker_prefix | default('(unset)') }}"
+    quiet: true
+  when: slack_channels_guide_marker_prefix is defined
+
+- name: "GUARD (generated) — slack_channels_token must be at least 1 long"
+  ansible.builtin.assert:
+    that:
+      - "slack_channels_token | default('') | length >= 1"
+    fail_msg: "slack_channels_token violates a constraint declared in meta/argument_specs.py: must be at least 1 long. Got: (value suppressed — no_log)"
+    quiet: true
+  when: slack_channels_token is defined

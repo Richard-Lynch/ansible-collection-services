@@ -1,0 +1,18 @@
+---
+- name: Assert the DB credentials were actually supplied (never ship an empty secret)
+  ansible.builtin.assert:
+    that:
+      - jellystat_postgres_password | default('') | length > 0
+      - jellystat_jwt_secret | default('') | length > 0
+    fail_msg: >-
+      jellystat_postgres_password and jellystat_jwt_secret must be resolved by the calling play
+      (see README "Secrets") — this role never calls a secret lookup itself.
+    quiet: true
+
+- name: Store vars
+  ansible.builtin.set_fact:
+    jellystat_image: "{{ jellystat_image | default(jellystat_image__default) }}"
+    jellystat_db_image: "{{ jellystat_db_image | default(jellystat_db_image__default) }}"
+    jellystat_network: "{{ jellystat_network | default(jellystat_network__default) }}"
+    jellystat_config_dir: "{{ jellystat_config_dir | default(jellystat_config_dir__default) }}"
+    jellystat_postgres_user: "{{ jellystat_postgres_user | default(jellystat_postgres_user__default) }}"

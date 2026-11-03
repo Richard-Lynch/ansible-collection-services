@@ -1,0 +1,30 @@
+---
+- name: Converge — render postgres compose (no docker)
+  hosts: localhost
+  gather_facts: false
+  vars:
+    postgres_container_name: postgres
+    postgres_image: "postgres:16-alpine"
+    postgres_host_port: 5432
+    postgres_network: pgnet
+    postgres_exporter_enabled: true
+    postgres_exporter_image: "quay.io/prometheuscommunity/postgres-exporter"
+    postgres_exporter_port: 9187
+    postgres_exporter_bind_address: 127.0.0.1
+    postgres_bind_address: 127.0.0.1
+    pgadmin_enabled: false
+    postgres_config_file_path: "/opt/postgres/config/postgresql.conf"
+    render_dir: /tmp/molecule-postgres
+  tasks:
+    - ansible.builtin.file: { path: "{{ render_dir }}", state: directory, mode: "0755" }
+    - ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../files/docker-compose.yml.j2"
+        dest: "{{ render_dir }}/docker-compose.yml"
+        mode: "0644"
+    # The same template with the database published on every interface ("" is the opt-out).
+    - ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../files/docker-compose.yml.j2"
+        dest: "{{ render_dir }}/docker-compose.all-interfaces.yml"
+        mode: "0644"
+      vars:
+        postgres_bind_address: ""

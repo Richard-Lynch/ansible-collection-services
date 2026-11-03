@@ -1,0 +1,43 @@
+---
+# Render (not include_role — avoids roles_path resolution issues when molecule runs from inside the
+# role dir).
+- name: Converge — render jellystat compose (no docker)
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - "{{ playbook_dir }}/../../defaults/main.yml"
+  vars:
+    render_dir: /tmp/molecule-stack-arr-jellystat
+
+  tasks:
+    - name: Set the values this scenario deliberately overrides
+      # BEFORE the resolver include below, deliberately. setup_vars.yml opens with an assert that
+      # these two are already non-empty — the role never fetches them itself, the calling play is
+      # expected to have resolved them — so including the resolver first fails with
+      # "must be resolved by the calling play".
+      #
+      # Safe to set first: every resolution in setup_vars.yml uses `| default(...)`, so a value
+      # already present wins and is not clobbered.
+      #
+      # Never real secrets in CI — obviously-fake, non-empty values (the role's own assert would
+      # correctly reject an empty one).
+      ansible.builtin.set_fact:
+        jellystat_postgres_password: "TEST_PG_PASSWORD_NOT_REAL"
+        jellystat_jwt_secret: "TEST_JWT_SECRET_NOT_REAL"
+        # Required, no default: the hostnames are the caller's (documentation names here).
+        jellystat_traefik_hosts: ["jellystat.example.com"]
+
+    - name: Resolve the rest via the role's OWN setup_vars.yml
+      # INCLUDED, not mirrored. Copying `<name>: "{{ <name>__default }}"` lines into this play's
+      # `vars:` would be a second source of truth: add a variable to the role and the scenario
+      # fails with "'<var>' is undefined", which reads as a broken ROLE and is really a stale TEST.
+      ansible.builtin.include_tasks: "{{ playbook_dir }}/../../tasks/setup_vars.yml"
+
+    - name: Ensure render dir exists
+      ansible.builtin.file: { path: "{{ render_dir }}", state: directory, mode: "0755" }
+
+    - name: Render docker-compose from the role template
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../files/docker-compose.yml.j2"
+        dest: "{{ render_dir }}/docker-compose.yml"
+        mode: "0600"

@@ -1,0 +1,4 @@
+# Managed by service_hosting (deploy_app) -- do not edit by hand.
+# App {{ hosting_app.name }} on tier {{ _hosting_tier_name }}. The labels, networks and limits below
+# were written by the platform from the app's name and port; the app definition cannot set them.
+{{ _hosting_compose | to_nice_yaml(indent=2) }}

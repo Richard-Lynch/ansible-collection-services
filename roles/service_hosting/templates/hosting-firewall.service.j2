@@ -1,0 +1,15 @@
+# Managed by service_hosting -- do not edit.
+[Unit]
+Description=Hosting guest firewall (container egress and published tier ports)
+After=docker.service
+Requires=docker.service
+# Docker rewrites its own chains on a restart; re-apply ours with it.
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/hosting-firewall.sh
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,120 @@
+---
+# The external-upload flow (files.upload was retired by Slack in 2025):
+#   1. files.getUploadURLExternal(filename, length) -> upload_url + file_id
+#   2. POST the raw bytes to upload_url
+#   3. files.completeUploadExternal(files=[{id,title}], channel_id, initial_comment)
+# then files.info until the file is SHARED in the conversation. Sharing is asynchronous, so an ok
+# from step 3 alone does not prove the owner can see the file.
+
+- name: Name the upload
+  ansible.builtin.set_fact:
+    _slm_filename: "{{ slack_message_file | basename }}"
+    _slm_title: "{{ slack_message_title if slack_message_title | length > 0 else slack_message_file | basename }}"
+
+- name: Ask Slack for an upload URL
+  ansible.builtin.include_tasks: _api.yml
+  vars:
+    _slm_method: files.getUploadURLExternal
+    _slm_format: form-urlencoded
+    _slm_body: { filename: "{{ _slm_filename }}", length: "{{ _slm_stat.stat.size }}" }
+
+- name: HARD GATE — Slack returned an upload URL and a file id
+  ansible.builtin.assert:
+    that:
+      - _slm_resp.upload_url | default('') | length > 0
+      - _slm_resp.file_id | default('') | length > 0
+    fail_msg: "files.getUploadURLExternal answered ok without upload_url/file_id."
+    quiet: true
+
+- name: Record the upload target
+  ansible.builtin.set_fact:
+    _slm_upload_url: "{{ _slm_resp.upload_url }}"
+    _slm_file_id: "{{ _slm_resp.file_id }}"
+  no_log: true
+
+- name: POST the file's bytes to the upload URL
+  # `src` sends the file as the raw request body, byte for byte (a slurp+b64decode round trip
+  # through a Jinja string would not survive a binary plist). The URL is pre-signed, so it is
+  # treated like a credential: no_log, and the gate below prints only the status.
+  ansible.builtin.uri:
+    url: "{{ _slm_upload_url }}"
+    method: POST
+    src: "{{ slack_message_file }}"
+    headers:
+      Content-Type: application/octet-stream
+    return_content: true
+    status_code: [200]
+    timeout: 120
+  register: _slm_put
+  failed_when: false
+  changed_when: false
+  delegate_to: localhost
+  no_log: true
+
+- name: HARD GATE — the upload URL accepted the bytes
+  ansible.builtin.assert:
+    that:
+      - _slm_put.status | default(-1) | int == 200
+    fail_msg: >-
+      POST to the upload URL failed: HTTP {{ _slm_put.status | default('none') }}
+      {{ _slm_put.content | default(_slm_put.msg | default('no response')) | truncate(300) }}
+    quiet: true
+
+- name: Complete the upload and share it in the conversation
+  ansible.builtin.include_tasks: _api.yml
+  vars:
+    _slm_method: files.completeUploadExternal
+    _slm_format: json
+    _slm_body:
+      files: [{ id: "{{ _slm_file_id }}", title: "{{ _slm_title }}" }]
+      channel_id: "{{ _slm_channel }}"
+      initial_comment: "{{ slack_message_text }}"
+
+- name: READ-BACK — completeUploadExternal returned the file that was uploaded
+  ansible.builtin.assert:
+    that:
+      - _slm_file_id in (_slm_resp.files | default([]) | map(attribute='id') | list)
+    fail_msg: "files.completeUploadExternal answered ok without file {{ _slm_file_id }}: {{ _slm_resp | to_json | truncate(300) }}"
+    quiet: true
+
+- name: Wait for the file to be shared in the conversation
+  ansible.builtin.uri:
+    url: "{{ _slm_api }}/files.info"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ _slm_token }}"
+    body_format: form-urlencoded
+    body: { file: "{{ _slm_file_id }}" }
+    return_content: true
+    status_code: [200]
+    timeout: 30
+  register: _slm_info
+  until: >-
+    _slm_info.status | default(-1) | int == 200
+    and _slm_channel in ((_slm_info.content | from_json).file.shares | default({}) | dict2items
+                         | map(attribute='value') | map('list') | flatten)
+  retries: "{{ [(slack_message_share_wait_s | int) // 3, 1] | max }}"
+  delay: 3
+  failed_when: false
+  changed_when: false
+  delegate_to: localhost
+  no_log: true
+
+- name: Read the shares from files.info
+  ansible.builtin.set_fact:
+    _slm_info_body: "{{ _slm_info.content | default('{}') | from_json }}"
+
+- name: READ-BACK — files.info shows the file shared in the target conversation
+  # The until above gives up quietly after its retries; this is what makes giving up a failure.
+  ansible.builtin.assert:
+    that:
+      - _slm_info.status | default(-1) | int == 200
+      - _slm_info_body.ok | default(false) | bool
+      - _slm_channel in (_slm_info_body.file.shares | default({}) | dict2items | map(attribute='value') | map('list') | flatten)
+    fail_msg: >-
+      File {{ _slm_file_id }} is not shared in {{ _slm_channel }} after {{ slack_message_share_wait_s }}s.
+      files.info: HTTP {{ _slm_info.status | default('none') }}
+      error={{ _slm_info_body.error | default('none') }}
+      shares={{ _slm_info_body.file.shares | default({}) | to_json | truncate(300) }}
+    success_msg: "{{ _slm_filename }} ({{ _slm_stat.stat.size }} bytes) is shared in {{ _slm_channel }} as {{ _slm_file_id }}."
+    quiet: false

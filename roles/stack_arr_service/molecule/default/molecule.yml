@@ -1,0 +1,12 @@
+---
+# Offline: render the compose template for a couple of representative services and assert on the
+# rendered YAML (image pin, PUID/PGID/TZ, traefik labels, exportarr sidecar, no secret literals
+# leaking from anywhere except the resolved lookup itself). No docker, no remote host.
+dependency: { name: galaxy }
+driver: { name: default }
+platforms: [{ name: localhost }]
+provisioner:
+  name: ansible
+  inventory: { host_vars: { localhost: { ansible_connection: local } } }
+  playbooks: { converge: converge.yml, verify: verify.yml }
+verifier: { name: ansible }

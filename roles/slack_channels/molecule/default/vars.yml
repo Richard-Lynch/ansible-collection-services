@@ -1,0 +1,35 @@
+---
+stub_port: 18765
+stub_url: "http://127.0.0.1:18765"
+stub_token: xoxb-stub-token
+stub_admin_token: xoxp-stub-admin
+stub_state:
+  bot: UBOT0001
+  scopes: [channels:read, channels:manage, channels:join, channels:history, chat:write, pins:read, pins:write]
+  admin: false
+  # the workspace admin's USER token (tests/stub_slack.py ADMIN_TOKEN)
+  user: {id: UOWNER01, scopes: [channels:read, channels:write, bookmarks:read, bookmarks:write], admin: true}
+  channels:
+    # made by the bot, so the bot may rename it
+    - {id: C001, name: lobby, creator: UBOT0001, members: [UBOT0001, UOWNER01]}
+    # made by a human: a bot's rename is not_authorized, as on the real workspace
+    - {id: C002, name: lobby-config, creator: UOWNER01, members: [UBOT0001, UOWNER01]}
+    # the bot is not a member: it must join
+    - {id: C003, name: builds, members: [UOWNER01]}
+    # an undeclared member, who must never be removed
+    - {id: C004, name: backlog, members: [UBOT0001, UOWNER01, UEXTRA01]}
+    - {id: C005, name: diary, members: [UOWNER01], is_archived: true}
+declared:
+  - name: general
+    rename_from: lobby
+    purpose: "Main conversation"
+    members: [UOWNER01]
+    guide: "Just talk & keep follow-ups in the <thread>."
+  - name: alerts
+    purpose: "Service alerts"
+    topic: "Feed only. @helper in <a thread> to ask"
+    members: [UOWNER01]
+    guide: "Feed only."
+    bookmarks: [{title: Grafana, link: "https://grafana.example"}]
+  - {name: builds, members: [UOWNER01]}
+  - {name: backlog, members: [UOWNER01]}

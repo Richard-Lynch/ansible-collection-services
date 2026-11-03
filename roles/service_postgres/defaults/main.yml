@@ -1,0 +1,59 @@
+---
+postgres_container_name: postgres
+postgres_image: postgres:16-alpine
+postgres_config_path: /opt/postgres/config
+postgres_host_port: 5432
+# Host address the database port is published on. Loopback by default: a Docker-published port is
+# not filtered by the host firewall, so "" (every interface) exposes the database to the network.
+# Containers on postgres_network reach it as `<container>:5432` whatever this is set to.
+postgres_bind_address: 127.0.0.1
+
+# Superuser bootstrap database and role. The password has no usable default: the placeholder is
+# refused, so the caller always supplies it (from a secret store, never inline).
+postgres_db: postgres
+postgres_user: postgres
+postgres_password: "CHANGE_ME_VIA_1PASSWORD"
+
+# Docker network the database and exporter join; the role creates it (attachable) if absent, so
+# other compose projects on the host can join it and reach the database as `<container>:5432`.
+postgres_network: postgres
+
+# Per-service databases to ensure exist: [{name, owner, password}]. The owner role is created too.
+postgres_databases: []
+postgres_settings:
+  listen_addresses: "*"
+  max_connections: 100
+  shared_buffers: 256MB
+  work_mem: 4MB
+  maintenance_work_mem: 64MB
+  effective_cache_size: 512MB
+  log_min_duration_statement: 1000
+  logging_collector: true
+  log_directory: "log"
+  log_filename: "postgresql.log"
+  log_statement: "none"
+  timezone: "UTC"
+
+postgres_config_file_path: "{{ postgres_config_path }}/postgresql.conf"
+
+# A Prometheus postgres_exporter beside the database. On by default.
+postgres_exporter_enabled: true
+postgres_exporter_image: quay.io/prometheuscommunity/postgres-exporter
+postgres_exporter_port: 9187
+# The exporter serves metrics without authentication, so its published port defaults to loopback.
+# Set the address a remote scraper reaches, or "" for every interface (a Docker-published port is
+# not filtered by the host firewall).
+postgres_exporter_bind_address: 127.0.0.1
+
+# Mode of the rendered env files, which hold the superuser and exporter credentials.
+postgres_env_file_mode: "0600"
+
+# pgAdmin: off by default (an extra web surface; psql and the exporter cover most needs).
+pgadmin_enabled: false
+pgadmin_image: dpage/pgadmin4:latest
+pgadmin_container_name: pgadmin
+pgadmin_host_port: 8081
+# Host address the pgAdmin web UI is published on (loopback by default; "" for every interface).
+pgadmin_bind_address: 127.0.0.1
+pgadmin_default_email: admin@example.invalid
+pgadmin_default_password: "CHANGE_ME"

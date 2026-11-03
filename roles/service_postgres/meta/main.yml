@@ -1,0 +1,11 @@
+---
+galaxy_info:
+  namespace: richard_lynch
+  author: Richard Lynch
+  description: >-
+    Deploy PostgreSQL with a Prometheus postgres_exporter (and optional pgAdmin) as a Docker
+    Compose project, then ensure each declared service database and its owner role exist.
+  license: GPL-3.0-or-later
+  min_ansible_version: "2.19"
+  galaxy_tags: [postgresql, database, docker, prometheus]
+dependencies: []

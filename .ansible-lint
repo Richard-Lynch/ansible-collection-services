@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+---
+profile: production
+offline: true
+exclude_paths:
+  - .github/
+  - tests/output/
+  - collections.galaxy/
+  # molecule scenarios render the role's own files by relative path on purpose
+  - roles/*/molecule/
+skip_list:
+  # The roles' public variable names predate this collection and are kept stable for callers.
+  - var-naming[no-role-prefix]
+  # Generated argument specs and resolvers carry long Jinja expressions.
+  - yaml[line-length]
+  - yaml[truthy]

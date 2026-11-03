@@ -1,0 +1,135 @@
+---
+# Drives the REAL role against slack_stub.py on 127.0.0.1: every request the role builds goes
+# over HTTP through ansible.builtin.uri exactly as it would to slack.com, and the stub logs what
+# arrived. verify.yml then asserts on that log. Failure cases must fail WITH Slack's reason.
+- name: Converge slack_message against a local Slack stub
+  hosts: localhost
+  gather_facts: false
+  vars:
+    _dir: "{{ lookup('env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/slack_message"
+    # Every case passes ALL its options as include_role vars. A play-level var would be lost on
+    # the role's second call: the generated resolver rebinds unsupplied options to their defaults
+    # and the default API URL is the real slack.com.
+    _api: "http://127.0.0.1:{{ _port }}/api/"
+  tasks:
+    - name: Start from an empty work directory
+      ansible.builtin.file:
+        path: "{{ _dir }}"
+        state: "{{ item }}"
+        mode: "0700"
+      loop: [absent, directory]
+
+    - name: Write a binary fixture (every byte value, so a text round trip would corrupt it)
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_playbook_python }}"
+          - -c
+          - "import sys; open(sys.argv[1], 'wb').write(bytes(range(256)) * 40)"
+          - "{{ _dir }}/fixture.shortcut"
+        creates: "{{ _dir }}/fixture.shortcut"
+
+    - name: Start the Slack stub (exits by itself after 300s)
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_playbook_python }}"
+          - "{{ playbook_dir }}/slack_stub.py"
+          - --port-file
+          - "{{ _dir }}/port"
+          - --log
+          - "{{ _dir }}/requests.jsonl"
+          - --lifetime
+          - "300"
+      async: 330
+      poll: 0
+      changed_when: false
+
+    - name: Wait for the stub to publish its port
+      ansible.builtin.wait_for:
+        path: "{{ _dir }}/port"
+        search_regex: "^[0-9]+$"
+        timeout: 20
+
+    - name: Read the stub's port
+      ansible.builtin.set_fact:
+        _port: "{{ lookup('ansible.builtin.file', _dir ~ '/port') | trim }}"
+
+    - name: Wait for the stub to listen
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: "{{ _port }}"
+        timeout: 20
+
+    - name: "Case text-to-user: a text-only message to a user id opens the DM and posts there"
+      ansible.builtin.include_role:
+        name: slack_message
+      vars:
+        slack_message_target: U0TEXT1
+        slack_message_token_item: stub-item
+        slack_message_api_url: "{{ _api }}"
+        slack_message_op_vault: stub-vault
+        slack_message_share_wait_s: 6
+        slack_message_text: hello text
+
+    - name: Record the text case's channel
+      ansible.builtin.set_fact:
+        _text_channel: "{{ _slm_channel }}"
+
+    - name: "Case file-to-user: a file to a user id is uploaded byte for byte and shared in the DM"
+      ansible.builtin.include_role:
+        name: slack_message
+      vars:
+        slack_message_target: U0FILE1
+        slack_message_token_item: stub-item
+        slack_message_api_url: "{{ _api }}"
+        slack_message_op_vault: stub-vault
+        slack_message_share_wait_s: 6
+        slack_message_text: "Test comment: ignore"
+        slack_message_file: "{{ _dir }}/fixture.shortcut"
+
+    - name: "Case file-to-channel: a channel id is posted to directly, with an explicit title"
+      ansible.builtin.include_role:
+        name: slack_message
+      vars:
+        slack_message_target: C0CHAN1
+        slack_message_text: to a channel
+        slack_message_token_item: stub-item
+        slack_message_api_url: "{{ _api }}"
+        slack_message_op_vault: stub-vault
+        slack_message_share_wait_s: 6
+        slack_message_file: "{{ _dir }}/fixture.shortcut"
+        slack_message_title: Fixture
+
+    - name: Expected failures
+      ansible.builtin.include_tasks: _expect_failure.yml
+      loop_control:
+        loop_var: _case
+        label: "{{ _case.name }}"
+      loop:
+        - name: unknown-user
+          target: UNOTFOUND
+          expect: user_not_found
+        - name: never-shared
+          target: CNOSHARE
+          file: "{{ _dir }}/fixture.shortcut"
+          expect: "is not shared in CNOSHARE"
+        - name: wrong-token-field
+          target: C0CHAN1
+          field: password
+          expect: invalid_auth
+        - name: empty-token
+          target: C0CHAN1
+          item: empty-item
+          expect: read back EMPTY
+        - name: missing-file
+          target: C0CHAN1
+          file: "{{ _dir }}/absent.bin"
+          expect: missing, not a regular file
+        - name: bad-target
+          target: "#general"
+          expect: "must be matching"
+
+    - name: Hand the outcomes to verify
+      ansible.builtin.copy:
+        dest: "{{ _dir }}/outcomes.json"
+        content: "{{ {'text_channel': _text_channel, 'failures': _outcomes} | to_nice_json }}"
+        mode: "0600"
