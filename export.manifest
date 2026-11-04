@@ -1,6 +1,7 @@
 # export.manifest — every path in this repository, one per line (the disclosure gate's manifest
 # step compares it against the tree at the scanned commit and against every path in the history).
 .ansible-lint
+.disclose-allow
 .github/actionlint.yaml
 .github/workflows/ci.yml
 .github/workflows/disclose.yml
