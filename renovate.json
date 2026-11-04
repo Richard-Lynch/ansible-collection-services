@@ -1,4 +1,48 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["local>Richard-Lynch/ansible-devkit//renovate/default"]
+  "description": "The shared devkit policy, PINNED to a release tag (it moves only through a reviewed PR here), then THIS repository's automerge decisions, which come after the preset so the preset cannot widen them.",
+  "extends": [
+    "github>Richard-Lynch/ansible-devkit//renovate/default#v0.4.1"
+  ],
+  "packageRules": [
+    {
+      "description": "Nothing merges itself unless a rule below says so.",
+      "matchPackageNames": [
+        "/.*/"
+      ],
+      "automerge": false
+    },
+    {
+      "description": "GitHub's own actions (actions/*): a PATCH release at least 5 days old may merge itself once ci / gate and disclose / gate pass. Third-party actions and digest-only updates are always reviewed.",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "matchPackageNames": [
+        "actions/**"
+      ],
+      "matchUpdateTypes": [
+        "patch"
+      ],
+      "minimumReleaseAge": "5 days",
+      "automerge": true
+    },
+    {
+      "description": "Galaxy content runs on the privileged controller and is not hash-locked: always reviewed.",
+      "matchDatasources": [
+        "galaxy-collection",
+        "galaxy"
+      ],
+      "automerge": false
+    },
+    {
+      "description": "This repository's container build files: base-image updates are always reviewed.",
+      "matchManagers": [
+        "dockerfile"
+      ],
+      "matchFileNames": [
+        "roles/service_coding_worker/templates/card-image.Dockerfile.j2"
+      ],
+      "automerge": false
+    }
+  ]
 }
