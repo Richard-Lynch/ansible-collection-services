@@ -1,0 +1,15 @@
+---
+# Derived paths and probe addresses, in their own file so the molecule scenario renders the
+# templates with the role's REAL derivation instead of a hand-copied one (MOLMIRROR-02).
+- name: Derive the account's paths from facts, not from a hardcoded home
+  ansible.builtin.set_fact:
+    worker_conf_dir: /etc/worker
+    worker_lib_dir: /usr/local/lib/worker-sessiond
+    worker_state_dir: /var/lib/worker-sessiond
+    worker_node_dir: "/opt/node-v{{ worker_tools.node_version }}-linux-x64"
+    worker_node_bin: "/opt/node-v{{ worker_tools.node_version }}-linux-x64/bin"
+    # Where a probe on this guest reaches its own listeners: loopback when the bind includes it,
+    # otherwise the guest's address (an interface-name bind such as eth0 does not answer on lo).
+    worker_probe_sessiond_host: "{{ '127.0.0.1' if worker_sessiond_bind in ['127.0.0.1', '0.0.0.0'] else ansible_default_ipv4.address }}"
+    worker_probe_acpx_mcp_host: "{{ '127.0.0.1' if worker_acpx_mcp_bind in ['127.0.0.1', '0.0.0.0'] else worker_acpx_mcp_bind }}"
+    worker_probe_ttyd_host: "{{ '127.0.0.1' if worker_ttyd_bind in ['127.0.0.1', '0.0.0.0'] else ansible_default_ipv4.address }}"

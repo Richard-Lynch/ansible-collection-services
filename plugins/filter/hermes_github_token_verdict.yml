@@ -1,0 +1,30 @@
+# Copyright: (c) 2026, Richard Lynch
+# GNU General Public License v3.0+ (see https://www.gnu.org/licenses/gpl-3.0.txt)
+---
+DOCUMENTATION:
+  name: hermes_github_token_verdict
+  short_description: Classify a GitHub token from one authenticated GET /user
+  author: Richard Lynch (@Richard-Lynch)
+  description:
+    - Returns C(refused) for a dead token or a classic token carrying a scope that can push, merge or
+      run a workflow; C(classic-read) for a classic token whose every scope is read-shaped; C(fine-grained)
+      when GitHub sends no X-OAuth-Scopes header, whose permissions cannot be read from headers.
+    - C(write_scopes) names the write-shaped scopes of a live classic token, so a caller that knowingly
+      accepts one can tell it from a dead token (which carries an empty list).
+  options:
+    _input:
+      description: The HTTP status of GET /user.
+      type: int
+      required: true
+    scopes_header:
+      description: The X-OAuth-Scopes response header, or null when absent.
+      type: str
+      required: true
+EXAMPLES: |
+  - name: Classify the token
+    ansible.builtin.set_fact:
+      verdict: "{{ 200 | richard_lynch.services.hermes_github_token_verdict('read:org, read:user') }}"
+RETURN:
+  _value:
+    description: A mapping with C(outcome), C(reason) and C(write_scopes).
+    type: dict

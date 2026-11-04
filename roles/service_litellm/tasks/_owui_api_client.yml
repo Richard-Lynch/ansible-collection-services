@@ -1,0 +1,35 @@
+---
+# Sets litellm__owui_api_script: a client for Open WebUI's own API, run INSIDE the Open WebUI
+# container with community.docker.docker_container_exec and configured through its environment:
+#   OWUI_METHOD, OWUI_PATH, and optionally OWUI_BODY (a JSON string) and OWUI_TIMEOUT (s, 60).
+# Shared by the open_webui_connections and open_webui_task_model entrypoints (and any caller's own
+# proofs), so there is one copy of how the role authenticates to Open WebUI.
+# Why minting a token is sound here, and what to re-check on an image bump: open_webui_connections.yml.
+
+- name: Define the Open WebUI admin API client
+  ansible.builtin.set_fact:
+    # Runs INSIDE the Open WebUI container. Reads the earliest-created admin's id from the DB
+    # (opened read-only), mints a two-minute session JWT with the container's own
+    # WEBUI_SECRET_KEY, makes one call to the API on loopback and prints the response body.
+    # Exits non-zero on any HTTP error, printing the status and the body's first 300 characters.
+    litellm__owui_api_script: |
+      import json, os, sqlite3, sys, time, uuid, urllib.request, urllib.error
+      import jwt
+      db = sqlite3.connect("file:/app/backend/data/webui.db?mode=ro", uri=True)
+      row = db.execute("select id from user where role = 'admin' order by created_at limit 1").fetchone()
+      if row is None:
+          sys.exit("no admin user in Open WebUI's database")
+      now = int(time.time())
+      token = jwt.encode({"id": row[0], "iat": now, "exp": now + 120, "jti": str(uuid.uuid4())},
+                         os.environ["WEBUI_SECRET_KEY"], algorithm="HS256")
+      body = os.environ.get("OWUI_BODY")
+      req = urllib.request.Request("http://127.0.0.1:8080" + os.environ["OWUI_PATH"],
+                                   data=body.encode() if body else None,
+                                   method=os.environ["OWUI_METHOD"],
+                                   headers={"Authorization": "Bearer " + token,
+                                            "Content-Type": "application/json"})
+      try:
+          with urllib.request.urlopen(req, timeout=int(os.environ.get("OWUI_TIMEOUT", "60"))) as r:
+              print(r.read().decode())
+      except urllib.error.HTTPError as e:
+          sys.exit("HTTP %s from %s: %s" % (e.code, os.environ["OWUI_PATH"], e.read().decode()[:300]))

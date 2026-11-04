@@ -1,0 +1,25 @@
+---
+# The post_tool_call AUDIT hook is the only post_tool_call entry the role owns, so it is
+# its own tier-C leaf (no combine step like pre_tool_call's). No matcher: every tool, every profile.
+# No fail_closed: upstream ignores it on an observer event (and warns), and the hook exits 0 anyway.
+# The command is the image's interpreter in isolated mode, as for the pre_tool_call hooks
+# (_config_merge.yml says why).
+# Pure: reads hermes_audit_hook_enabled and hermes_audit_hook_timeout, sets one fact. Molecule
+# (verify) runs it directly, enabled and disabled.
+- name: Derive the audit-hook leaf
+  ansible.builtin.set_fact:
+    hermes__audit_hook_leaves: >-
+      {{ [{'key': 'hooks.post_tool_call', 'tier': 'C', 'value': [{
+            'command': '/opt/hermes/.venv/bin/python -I -B /opt/hermes-policy/hermes_audit_hook.py',
+            'timeout': hermes_audit_hook_timeout | int}]}]
+         if hermes_audit_hook_enabled | bool else [] }}
+
+- name: HARD GATE - the audit leaf exists exactly when the hook is enabled
+  ansible.builtin.assert:
+    that:
+      - (hermes__audit_hook_leaves | length) == (1 if hermes_audit_hook_enabled | bool else 0)
+      - >-
+        hermes__audit_hook_leaves | map(attribute='value') | flatten(levels=1)
+        | selectattr('fail_closed', 'defined') | list | length == 0
+    fail_msg: "hooks.post_tool_call leaf {{ hermes__audit_hook_leaves | to_json }} does not match hermes_audit_hook_enabled={{ hermes_audit_hook_enabled }}."
+    quiet: true

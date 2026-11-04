@@ -1,0 +1,20 @@
+---
+dependency: { name: galaxy }
+driver: { name: default }
+platforms: [{ name: localhost }]
+provisioner:
+  name: ansible
+  inventory: { host_vars: { localhost: { ansible_connection: local } } }
+  playbooks: { converge: converge.yml, verify: verify.yml }
+verifier: { name: ansible }
+scenario:
+  # No idempotence step: converge starts by DELETING the render root so each run renders from a
+  # known-clean state, which makes a second converge "changed" by construction. That teardown is
+  # the point — a stale artifact from a previous run with different vars would otherwise satisfy
+  # verify's asserts and hide a template that had stopped rendering.
+  #
+  # This costs nothing real here, because this scenario renders templates and never converges
+  # the role: `tasks/main.yml`'s own idempotence (deployment_config's change detection, compose
+  # `recreate: auto`, and the restart gated on a genuine config change) is not exercised by a
+  # render-only scenario either way. It is asserted on the live guest by the role's read-backs.
+  test_sequence: [syntax, converge, verify]

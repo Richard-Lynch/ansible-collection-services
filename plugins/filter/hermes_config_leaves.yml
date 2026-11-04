@@ -1,0 +1,29 @@
+# Copyright: (c) 2026, Richard Lynch
+# GNU General Public License v3.0+ (see https://www.gnu.org/licenses/gpl-3.0.txt)
+---
+DOCUMENTATION:
+  name: hermes_config_leaves
+  short_description: Flatten a rendered config fragment into owned leaves
+  author: Richard Lynch (@Richard-Lynch)
+  description:
+    - Returns one owned leaf per leaf of the mapping (keys as segment lists, so a segment containing a
+      dot survives), marking C(secret) any leaf whose last segment is in C(secret_names).
+  options:
+    _input:
+      description: The rendered config fragment (a mapping).
+      type: dict
+      required: true
+    secret_names:
+      description: Last-segment names whose leaves are secret.
+      type: list
+    tier:
+      description: Tier given to every leaf (default C(B)).
+      type: str
+EXAMPLES: |
+  - name: Leaves of a fragment
+    ansible.builtin.set_fact:
+      leaves: "{{ {'providers': {'gw': {'api_key': 'x', 'url': 'http://gw.example.com'}}} | richard_lynch.services.hermes_config_leaves(['api_key']) }}"
+RETURN:
+  _value:
+    description: A list of mappings with C(key), C(value), C(tier) and, when secret, C(secret).
+    type: list

@@ -1,0 +1,21 @@
+---
+# The managed-scope DOCUMENT and the two refusals that decide whether it may be staged, as their
+# own file so they run BEFORE the merge quiesces the stack (_config_merge.yml) and again at the top
+# of _managed_scope.yml. Pure: reads hermes__owned_all, writes nothing but a fact.
+- name: Build the managed-scope document from the tier-C leaves
+  ansible.builtin.set_fact:
+    hermes__managed_doc: "{{ hermes__owned_all | richard_lynch.services.hermes_managed_document(hermes_raw_read_prefixes) }}"
+  # NO no_log: the document holds tier-C NON-secret leaves only (the filter refuses a secret one),
+  # and hiding the task would also hide the filter's refusal message, which is the useful part.
+
+- name: HARD GATE - the pinned set must not be empty
+  # An empty managed file is the fail-open state the preflight exists to refuse; staging one would
+  # make the preflight's key check vacuous.
+  ansible.builtin.assert:
+    that:
+      - hermes__managed_doc | length > 0
+    fail_msg: >-
+      No owned leaf is tier C, so the managed scope would pin nothing. The floor is
+      platform_toolsets, hooks_auto_accept and the approvals and write-approval keys: declare them
+      in hermes_config_owned (inventory).
+    quiet: true

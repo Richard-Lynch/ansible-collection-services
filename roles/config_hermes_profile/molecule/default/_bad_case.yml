@@ -1,0 +1,36 @@
+---
+# One refusal. The failure message must contain `expect`, so a case refused by an unrelated task is
+# not counted as the gate it is for (a planted-link case has an empty `expect`: the confined helper's
+# task is no_log, so its reason is censored, and verify.yml proves instead that the link's target
+# was left exactly as it was). A case that is NOT refused lands in `survivors`.
+- name: "{{ item.id }}: try it"
+  block:
+    - name: "{{ item.id }}: run the file half"
+      ansible.builtin.include_role:
+        name: config_hermes_profile
+        tasks_from: _files
+      vars:
+        hermes_profile_name: "{{ item.profile | default('coder') }}"
+        hermes_profile_data_dir: "{{ root }}"
+        hermes_profile_anchor_uid: "{{ uid }}"
+        hermes_profile_uid: "{{ uid }}"
+        hermes_profile_gid: "{{ gid }}"
+        hermes_profile_leaves: "{{ coder_leaves }}"
+        hermes_profile_env: "{{ item.env }}"
+        hermes_profile_soul: ""
+        hermes_profile_apply: true
+        _hp_dir: "{{ root }}/profiles/{{ item.profile | default('coder') }}"
+        _hp_stat: {stat: {exists: true}}
+    - name: "{{ item.id }}: it was NOT refused"
+      ansible.builtin.set_fact:
+        _survivors: "{{ _survivors | default([]) + [item.id] }}"
+  rescue:
+    - name: "{{ item.id }}: refused"
+      ansible.builtin.set_fact:
+        _refused: "{{ _refused | default([]) + [{'id': item.id, 'for_the_right_reason': (item.expect in (ansible_failed_result.msg | default('')))}] }}"
+
+- name: "{{ item.id }}: record the outcome"
+  ansible.builtin.copy:
+    dest: "{{ root }}/outcome-{{ item.id }}.json"
+    content: "{{ {'id': item.id, 'refused': item.id not in (_survivors | default([])), 'right_reason': (_refused | default([]) | selectattr('id', 'equalto', item.id) | map(attribute='for_the_right_reason') | first | default(false))} | to_json }}"
+    mode: "0644"

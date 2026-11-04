@@ -1,0 +1,14 @@
+---
+galaxy_info:
+  role_name: service_litellm
+  namespace: richard_lynch
+  author: Richard Lynch
+  description: >-
+    Deploy LiteLLM — an OpenAI-compatible gateway in front of several LLM providers — with its
+    Postgres database, an optional Redis for shared worker state and an Open WebUI chat frontend,
+    as one compose stack; plus entrypoints that reconcile Open WebUI's connections and task model
+    through its API.
+  license: GPL-3.0-or-later
+  min_ansible_version: "2.19"
+  galaxy_tags: [litellm, llm, openwebui, gateway]
+dependencies: []

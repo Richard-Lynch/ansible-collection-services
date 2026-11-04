@@ -1,0 +1,52 @@
+---
+- name: Resolve declared options over their generated defaults
+  ansible.builtin.include_tasks: _resolve_defaults.yml
+
+- name: Apply the generated argspec guards
+  ansible.builtin.include_tasks: _argspec_guards.yml
+
+- name: HARD GATE — the catalogue file path is absolute and has no '..'
+  ansible.builtin.assert:
+    that:
+      - mcp_clients_file is abs
+      - "'..' not in mcp_clients_file.split('/')"
+    fail_msg: "mcp_clients_file '{{ mcp_clients_file }}' must be an absolute path without '..'."
+    quiet: true
+
+# The filter REFUSES (raises) an entry nobody reviewed, a literal credential, a missing
+# tools_include, an unknown transport, and an enablement naming a server or client the catalogue
+# does not allow. So reaching the next task means the document is reviewable as written.
+- name: Validate the catalogue and build the document
+  ansible.builtin.set_fact:
+    _mcp_doc: "{{ mcp_servers | richard_lynch.services.mcp_catalogue_document(mcp_clients) }}"
+
+- name: Ensure the catalogue's directory exists
+  ansible.builtin.file:
+    path: "{{ mcp_clients_file | dirname }}"
+    state: directory
+    mode: "0755"
+
+- name: Render the catalogue document
+  ansible.builtin.copy:
+    dest: "{{ mcp_clients_file }}"
+    content: "{{ _mcp_doc | to_nice_json(sort_keys=true) }}\n"
+    mode: "0644"
+
+- name: Read the document back
+  ansible.builtin.slurp:
+    src: "{{ mcp_clients_file }}"
+  register: _mcp_readback
+
+- name: HARD GATE — the file on disk is the validated document
+  ansible.builtin.assert:
+    that:
+      - (_mcp_readback.content | b64decode | from_json) == _mcp_doc
+    fail_msg: "{{ mcp_clients_file }} does not read back as the validated catalogue."
+    quiet: true
+
+- name: Report the catalogue
+  ansible.builtin.debug:
+    msg: >-
+      MCP catalogue: {{ _mcp_doc.servers | length }} server(s)
+      ({{ _mcp_doc.servers.keys() | sort | join(', ') }}); declared enablement
+      {{ _mcp_doc.enabled | to_json }}.

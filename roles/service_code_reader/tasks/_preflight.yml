@@ -1,0 +1,55 @@
+---
+# Gates that catch a failure which is SILENT at run time. Kept in their own file so the molecule
+# scenario runs the REAL gates (MOLMIRROR-02) rather than a copy of them.
+
+- name: HARD GATE — the port must be published on loopback only
+  # This service hands out login codes and its only authentication is a bearer token, so a
+  # 0.0.0.0 publish would put a code dispenser on every interface the guest has. Docker's
+  # iptables rules sit AHEAD of the host firewall, so "the firewall will cover it" is false.
+  # A positive test (loopback) rather than a deny list (0.0.0.0, ::, ''), because the list of
+  # wrong answers is open-ended and the list of right ones is two.
+  ansible.builtin.assert:
+    that:
+      - code_reader_bind == '::1' or code_reader_bind.startswith('127.')
+    fail_msg: >-
+      code_reader_bind is '{{ code_reader_bind }}'. It must be a loopback address (127.x or ::1):
+      the sidecar hands out verification codes behind a bearer token alone, and a published
+      Docker port bypasses the host firewall. Sibling containers reach it over the docker network.
+    quiet: true
+
+- name: HARD GATE — neither credential may contain a single quote (the env file single-quotes them)
+  # code-reader.env single-quotes both values so compose takes them literally (an unquoted value
+  # has `$` interpolated and ` #` read as a comment). A single quote inside the value would end
+  # the quoting early and the sidecar would present a truncated password -- loud (/healthz 503)
+  # but reading like a wrong password. The token is generated without specials; the IMAP
+  # password is the provider's choice, so it is the one that needs the check.
+  ansible.builtin.assert:
+    that:
+      - code_reader_imap_password is not search("'")
+      - code_reader_token is not search("'")
+    fail_msg: >-
+      code_reader_imap_password or code_reader_token contains a single quote, which the
+      single-quoted env file cannot carry. Choose a mailbox password without one.
+    quiet: true
+  no_log: true
+
+- name: HARD GATE — the image must be pinned, never floating
+  ansible.builtin.assert:
+    that:
+      - "':' in code_reader_image"
+      - code_reader_image.split(':')[-1] not in ['latest', 'stable', 'main', 'edge', '']
+    fail_msg: >-
+      code_reader_image must carry an explicit version tag, got '{{ code_reader_image }}'.
+    quiet: true
+
+- name: HARD GATE — every allowlist entry is an address or an at-domain, never a bare word
+  # An entry like 'example.com' (no at-sign) matches NOTHING in the sidecar, so the allowlist
+  # would silently admit no one -- which looks like "no code arrived", not "I mis-typed a rule".
+  ansible.builtin.assert:
+    that:
+      - code_reader_sender_allowlist | reject('search', '@') | list | length == 0
+      - code_reader_sender_allowlist | select('equalto', '@') | list | length == 0
+    fail_msg: >-
+      code_reader_sender_allowlist entries must be an exact address (a@b.com) or an at-sign plus
+      a domain (@b.com). Offending entries: {{ code_reader_sender_allowlist | reject('search', '@') | list }}
+    quiet: true

@@ -1,0 +1,109 @@
+---
+- name: Prepare - tools, keys, fixtures, the install, one real backup
+  hosts: localhost
+  gather_facts: false
+  vars_files: [vars.yml]
+  vars:
+    as_common: &as_common
+      agent_state_product: hermes
+      agent_state_python: "{{ ansible_playbook_python }}"
+      agent_state_install_dir: "{{ w }}/install"
+      agent_state_key_dir: "{{ w }}/keys-host"
+      agent_state_unit_dir: "{{ w }}/units"
+      agent_state_textfile_dir: "{{ w }}/textfile"
+      agent_state_packages: []
+      agent_state_enable_timers: false
+      agent_state_stack_managed: false
+      agent_state_restore_quiet_start: false
+      agent_state_root: "{{ w }}/src"
+      agent_state_mirror_dir: "{{ w }}/mirror-work"
+      agent_state_backup_target: "{{ w }}/share"
+      agent_state_repo_url: "file://{{ w }}/remote.git"
+      agent_state_mirror_paths: [SOUL.md, USER.md, memories, skills, cron/jobs.json, webhook_subscriptions.json]
+      agent_state_config_file: config.yaml
+      agent_state_sqlite_files: [state.db]
+      agent_state_backup_exclude: ["cache/", "logs/", "sandboxes/", "browser-profiles/"]
+      agent_state_required_paths: [SOUL.md, state.db]
+  tasks:
+    - name: Each real binary the scenario round-trips through is present (fail by name, never skip)
+      ansible.builtin.command:
+        cmd: "{{ item }} --version"
+      changed_when: false
+      loop: [age, age-keygen, zstd, git]
+
+    - name: ssh-keygen is present (the deploy-key read-back needs it; it has no --version, and no args would PROMPT)
+      ansible.builtin.command:
+        argv: [which, ssh-keygen]
+      changed_when: false
+
+    - name: Refuse to delete anything but the scratch tree
+      ansible.builtin.import_tasks: _scratch_gate.yml
+
+    # cleanup.yml already did this in the full sequence; kept so that `molecule prepare` on its own
+    # is still a pure function of its inputs, and converge of prepare's.
+    - name: Start from empty
+      ansible.builtin.file:
+        path: "{{ w }}"
+        state: absent
+
+    - name: Working directories
+      ansible.builtin.file:
+        path: "{{ w }}/{{ item }}"
+        state: directory
+        mode: "0755"
+      loop: [keys, share, textfile]
+
+    - name: The age identities - the real one and a wrong one
+      ansible.builtin.command:
+        cmd: "age-keygen -o {{ w }}/keys/{{ item }}.txt"
+        creates: "{{ w }}/keys/{{ item }}.txt"
+      loop: [age, wrong]
+
+    - name: A throwaway deploy key (the install reads it back with ssh-keygen -y, so it must be real)
+      ansible.builtin.command:
+        argv: [ssh-keygen, -q, -t, ed25519, -N, "", -C, molecule-deploy, -f, "{{ w }}/keys/deploy"]
+        creates: "{{ w }}/keys/deploy"
+
+    - name: Fixture state roots (a WAL database with unflushed pages, excluded dirs, a corrupt db)
+      ansible.builtin.command:
+        argv: ["{{ ansible_playbook_python }}", "{{ playbook_dir }}/make_fixture.py", "{{ w }}"]
+      changed_when: true
+
+    - name: Is the fixture's WAL present
+      ansible.builtin.stat:
+        path: "{{ w }}/src/state.db-wal"
+      register: _wal
+
+    - name: HARD GATE — the fixture really keeps its newest rows only in the WAL
+      ansible.builtin.assert:
+        that: [_wal.stat.exists, _wal.stat.size | int > 0]
+        fail_msg: "the fixture has no WAL content, so the WAL-capture proof would be vacuous."
+        quiet: true
+
+    - name: The mirror's remote
+      ansible.builtin.command:
+        argv: [git, init, --bare, -b, main, "{{ w }}/remote.git"]
+      changed_when: true
+
+    - name: Public key for the recipient
+      ansible.builtin.command:
+        argv: [age-keygen, -y, "{{ w }}/keys/age.txt"]
+      register: _pub
+      changed_when: false
+
+    - name: Install the role
+      ansible.builtin.include_role:
+        name: config_agent_state
+      vars:
+        <<: *as_common
+        agent_state_backup_recipient: "{{ _pub.stdout | trim }}"
+        agent_state_deploy_key: "{{ lookup('ansible.builtin.file', w ~ '/keys/deploy') }}"
+
+    - name: Take the backup the converge restores from
+      ansible.builtin.include_role:
+        name: config_agent_state
+        tasks_from: backup
+      vars:
+        <<: *as_common
+        agent_state_backup_recipient: "{{ _pub.stdout | trim }}"
+        agent_state_backup_label: molecule

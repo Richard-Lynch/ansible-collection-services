@@ -1,0 +1,9 @@
+# Rendered by config_agent_state - do not edit.
+[Unit]
+Description=agent-state {{ item.what }} ({{ agent_state_product }})
+
+[Service]
+Type=oneshot
+ExecStart={{ agent_state_install_dir }}/{{ item.job }}.sh
+Nice=10
+IOSchedulingClass=idle

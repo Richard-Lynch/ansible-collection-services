@@ -1,0 +1,43 @@
+# Copyright: (c) 2026, Richard Lynch
+# GNU General Public License v3.0+ (see https://www.gnu.org/licenses/gpl-3.0.txt)
+---
+DOCUMENTATION:
+  name: hermes_cron_argv
+  short_description: Build the hermes cron create or edit argv for one seeded job
+  author: Richard Lynch (@Richard-Lynch)
+  description:
+    - Returns the argument vector (list form, no shell quoting) of C(hermes cron create) or C(hermes cron
+      edit) for one seed entry.
+    - C(create) installs the whole job PAUSED with an auditable paused reason; the converge never enables
+      a job. C(edit) changes only the drifted fields, by job id.
+  options:
+    _input:
+      description: One seed entry, as accepted by hermes_cron_seed_plan.
+      type: dict
+      required: true
+    action:
+      description: C(create) or C(edit).
+      type: str
+      required: true
+    provider:
+      description: Provider name passed with C(--provider) alongside the pinned model.
+      type: str
+    job_id:
+      description: The job id to edit (required for C(edit)).
+      type: str
+    fields:
+      description: The drifted fields to change (the C(fields) of a plan's edit entry; required for C(edit)).
+      type: dict
+    paused_reason:
+      description: Paused reason recorded on a created job. Empty uses a generic reason.
+      type: str
+EXAMPLES: |
+  - name: Create argv for a seeded job
+    ansible.builtin.set_fact:
+      argv: "{{ job | richard_lynch.services.hermes_cron_argv('create', provider='gateway') }}"
+    vars:
+      job: {name: nightly-report, schedule: "0 6 * * *", prompt: Summarise yesterday, model: small-model}
+RETURN:
+  _value:
+    description: The argv, a list of strings starting with C(hermes).
+    type: list

@@ -1,0 +1,22 @@
+---
+dependency: { name: galaxy }
+driver: { name: default }
+platforms: [{ name: localhost }]
+provisioner:
+  name: ansible
+  # Molecule runs from the scenario directory, so the repo's ansible.cfg roles_path (./roles) does
+  # not resolve. Pointed at the roles directory so converge.yml can include the role's REAL
+  # _gates.yml, _resolve_defaults.yml and _derive.yml: re-deriving them in the scenario would test
+  # the copy against itself (MOLMIRROR-02).
+  env:
+    ANSIBLE_ROLES_PATH: "${MOLECULE_PROJECT_DIRECTORY}/../"
+    ANSIBLE_COLLECTIONS_PATH: "${MOLECULE_PROJECT_DIRECTORY}/../../collections.galaxy:${MOLECULE_PROJECT_DIRECTORY}/../../../../.."
+  inventory: { host_vars: { localhost: { ansible_connection: local } } }
+  playbooks: { converge: converge.yml, verify: verify.yml }
+verifier: { name: ansible }
+scenario:
+  # No idempotence step: converge starts by DELETING the render root so every run renders from a
+  # known-clean state, which makes a second converge "changed" by construction. The role's own
+  # idempotence (npm/get_url/unarchive creates, template change detection) is asserted on the
+  # live guest by the read-backs in tasks/main.yml, not by a render-only scenario.
+  test_sequence: [syntax, converge, verify]

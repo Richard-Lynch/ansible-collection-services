@@ -1,0 +1,66 @@
+---
+# The /v1/models read-back classifier. Takes the registered result of GET /v1/models (`hermes__models`) and
+# reduces it to ONE verdict - matches / drift / cannot-tell - plus the status and the error class
+# (a bare "failed" hides whether the key was refused, the server was down or the reply was
+# garbage). It lives in its own file so molecule can feed it canned results and prove every
+# verdict is reachable; it never makes a request itself and never asserts (the caller does).
+#
+#   matches      the API answered 200 with a parseable, non-empty model list
+#   drift        the daemon ANSWERED and what it said disagrees with the converge: 401/403 (the key
+#                it enforces is not the one rendered), any other 4xx, or a 200 with no models
+#   cannot-tell  no usable answer: no response/timeout (status -1), 5xx, a non-JSON or non-mapping
+#                body. An unreadable reply must never present as "no drift".
+#
+# Sets: hermes__rb_status, hermes__rb_class, hermes__rb_models, hermes__rb_verdict.
+- name: Parse the /v1/models read-back
+  # `content | from_json` explicitly: `uri` fills `.json` only when the response declares a JSON
+  # content-type. `from_json` RAISES on a non-JSON body (it has no `default=`; verified), so the
+  # parse sits in a block whose rescue records "not parsed" - a garbage or absent body becomes
+  # `unparseable`/`no-response`, never "no models" and never a failed play.
+  block:
+    - name: Status and parse of the body
+      ansible.builtin.set_fact:
+        hermes__rb_status: "{{ hermes__models.status | default(-1) | int }}"
+        hermes__rb_json: "{{ hermes__models.content | default('') | from_json }}"
+      no_log: true
+    - name: Count the advertised models when the body is a JSON object whose `data` is a LIST
+      # `data` must be a non-string sequence: a string has a length too, so `{"data":"abc"}`
+      # would otherwise count as 3 models and read as `matches`. A wrong-typed `data` is a body
+      # this classifier cannot read, i.e. unparseable, never a model count.
+      ansible.builtin.set_fact:
+        hermes__rb_parsed: >-
+          {{ hermes__rb_json is mapping
+             and (hermes__rb_json.get('data', []) is sequence)
+             and (hermes__rb_json.get('data', []) is not string)
+             and (hermes__rb_json.get('data', []) is not mapping) }}
+        hermes__rb_models: >-
+          {{ (hermes__rb_json.get('data', []) | length)
+             if (hermes__rb_json is mapping
+                 and (hermes__rb_json.get('data', []) is sequence)
+                 and (hermes__rb_json.get('data', []) is not string)
+                 and (hermes__rb_json.get('data', []) is not mapping))
+             else 0 }}
+      no_log: true
+  rescue:
+    - name: The body did not parse - record that, not an empty list
+      ansible.builtin.set_fact:
+        hermes__rb_status: "{{ hermes__models.status | default(-1) | int }}"
+        hermes__rb_parsed: false
+        hermes__rb_models: 0
+      no_log: true
+
+- name: Derive the error class and verdict
+  ansible.builtin.set_fact:
+    hermes__rb_class: >-
+      {{ 'ok' if (hermes__rb_status | int == 200 and hermes__rb_parsed | bool and hermes__rb_models | int > 0)
+         else 'empty-list' if (hermes__rb_status | int == 200 and hermes__rb_parsed | bool)
+         else 'unparseable' if hermes__rb_status | int == 200
+         else 'auth-refused' if hermes__rb_status | int in [401, 403]
+         else 'client-error' if (hermes__rb_status | int >= 400 and hermes__rb_status | int < 500)
+         else 'server-error' if hermes__rb_status | int >= 500
+         else 'no-response' }}
+    hermes__rb_verdict: >-
+      {{ 'matches' if (hermes__rb_status | int == 200 and hermes__rb_parsed | bool and hermes__rb_models | int > 0)
+         else 'drift' if (hermes__rb_status | int == 200 and hermes__rb_parsed | bool)
+         else 'drift' if (hermes__rb_status | int >= 400 and hermes__rb_status | int < 500)
+         else 'cannot-tell' }}

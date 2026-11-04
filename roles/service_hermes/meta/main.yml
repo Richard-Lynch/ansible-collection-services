@@ -1,0 +1,14 @@
+---
+galaxy_info:
+  role_name: service_hermes
+  namespace: richard_lynch
+  author: Richard Lynch
+  description: >-
+    Deploy Hermes Agent, Nous Research's self-hosted AI agent, as one supervised container with its
+    web dashboard: a pinned image, an owned-leaf merge of its config, an OpenAI-compatible gateway
+    as the only model provider, and optional policy and audit hooks, a managed scope checked before
+    start, a settings service, webhook routes, seeded cron jobs and Slack.
+  license: GPL-3.0-or-later
+  min_ansible_version: "2.19"
+  galaxy_tags: [hermes, agent, llm, docker, nousresearch]
+dependencies: []

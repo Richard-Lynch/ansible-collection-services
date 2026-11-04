@@ -1,0 +1,12 @@
+---
+# The anchor of every confined read and write in the profile (see _files.yml): the data directory's
+# PARENT, which must be root-owned (hermes_profile_anchor_uid) and not group/other-writable.
+- name: Derive the anchor and the profile's path below it
+  ansible.builtin.set_fact:
+    _hp_anchor: "{{ hermes_profile_data_dir | regex_replace('/+$', '') | dirname }}"
+    _hp_rel: "{{ hermes_profile_data_dir | regex_replace('/+$', '') | basename }}/profiles/{{ hermes_profile_name }}"
+    _hp_helper: >-
+      {{ role_path }}/files/agent_dir.py
+      --anchor {{ hermes_profile_data_dir | regex_replace('/+$', '') | dirname | quote }}
+      --anchor-uid {{ hermes_profile_anchor_uid | int }}
+      --uid {{ hermes_profile_uid | int }} --gid {{ hermes_profile_gid | int }}

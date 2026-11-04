@@ -1,0 +1,135 @@
+---
+# AUTO-GENERATED defaults resolver — DO NOT EDIT.
+#
+# Source of truth: roles/config_agent_state/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate config_agent_state
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+
+# Binds every declared option to its generated default, so a caller-supplied value
+# wins and an unsupplied one falls back rather than evaluating Undefined.
+#
+# Include this FIRST from every entrypoint:
+#   - ansible.builtin.include_tasks: _resolve_defaults.yml
+#
+# Role-specific setup logic belongs in tasks/setup_vars.yml, NOT here — this file is
+# overwritten on every generation.
+#
+# TWO BRANCHES, because `set_fact` persists for the whole play. A role invoked twice in
+# one play would otherwise see its OWN leftover facts on the second call, so a later
+# caller that omitted an option silently inherited the earlier caller's value instead of
+# the declared default. On a repeat call this ignores the role's own facts and rebinds
+# the defaults; an include-level `vars:` shadows the fact, so a value the caller DID
+# supply this time still wins. Roles called once per play only ever run the first branch.
+
+- name: Resolve declared options over their generated defaults
+  ansible.builtin.set_fact:
+    agent_state_product: "{{ agent_state_product | default(agent_state_product__default) if agent_state_product__default is defined else agent_state_product | default(omit) }}"
+    agent_state_python: "{{ agent_state_python | default(agent_state_python__default) if agent_state_python__default is defined else agent_state_python | default(omit) }}"
+    agent_state_install_dir: "{{ agent_state_install_dir | default(agent_state_install_dir__default) if agent_state_install_dir__default is defined else agent_state_install_dir | default(omit) }}"
+    agent_state_mirror_exclude: "{{ agent_state_mirror_exclude | default(agent_state_mirror_exclude__default) if agent_state_mirror_exclude__default is defined else agent_state_mirror_exclude | default(omit) }}"
+    agent_state_mirror_skip_names_file: "{{ agent_state_mirror_skip_names_file | default(agent_state_mirror_skip_names_file__default) if agent_state_mirror_skip_names_file__default is defined else agent_state_mirror_skip_names_file | default(omit) }}"
+    agent_state_config_file: "{{ agent_state_config_file | default(agent_state_config_file__default) if agent_state_config_file__default is defined else agent_state_config_file | default(omit) }}"
+    agent_state_mask_patterns: "{{ agent_state_mask_patterns | default(agent_state_mask_patterns__default) if agent_state_mask_patterns__default is defined else agent_state_mask_patterns | default(omit) }}"
+    agent_state_scan_patterns: "{{ agent_state_scan_patterns | default(agent_state_scan_patterns__default) if agent_state_scan_patterns__default is defined else agent_state_scan_patterns | default(omit) }}"
+    agent_state_repo_branch: "{{ agent_state_repo_branch | default(agent_state_repo_branch__default) if agent_state_repo_branch__default is defined else agent_state_repo_branch | default(omit) }}"
+    agent_state_key_dir: "{{ agent_state_key_dir | default(agent_state_key_dir__default) if agent_state_key_dir__default is defined else agent_state_key_dir | default(omit) }}"
+    agent_state_mirror_dir: "{{ agent_state_mirror_dir | default(agent_state_mirror_dir__default) if agent_state_mirror_dir__default is defined else agent_state_mirror_dir | default(omit) }}"
+    agent_state_git_author_name: "{{ agent_state_git_author_name | default(agent_state_git_author_name__default) if agent_state_git_author_name__default is defined else agent_state_git_author_name | default(omit) }}"
+    agent_state_git_author_email: "{{ agent_state_git_author_email | default(agent_state_git_author_email__default) if agent_state_git_author_email__default is defined else agent_state_git_author_email | default(omit) }}"
+    agent_state_backup_keep: "{{ agent_state_backup_keep | default(agent_state_backup_keep__default) if agent_state_backup_keep__default is defined else agent_state_backup_keep | default(omit) }}"
+    agent_state_backup_keep_monthly: "{{ agent_state_backup_keep_monthly | default(agent_state_backup_keep_monthly__default) if agent_state_backup_keep_monthly__default is defined else agent_state_backup_keep_monthly | default(omit) }}"
+    agent_state_backup_exclude: "{{ agent_state_backup_exclude | default(agent_state_backup_exclude__default) if agent_state_backup_exclude__default is defined else agent_state_backup_exclude | default(omit) }}"
+    agent_state_sqlite_files: "{{ agent_state_sqlite_files | default(agent_state_sqlite_files__default) if agent_state_sqlite_files__default is defined else agent_state_sqlite_files | default(omit) }}"
+    agent_state_packages: "{{ agent_state_packages | default(agent_state_packages__default) if agent_state_packages__default is defined else agent_state_packages | default(omit) }}"
+    agent_state_enable_timers: "{{ agent_state_enable_timers | default(agent_state_enable_timers__default) if agent_state_enable_timers__default is defined else agent_state_enable_timers | default(omit) }}"
+    agent_state_unit_dir: "{{ agent_state_unit_dir | default(agent_state_unit_dir__default) if agent_state_unit_dir__default is defined else agent_state_unit_dir | default(omit) }}"
+    agent_state_backup_oncalendar: "{{ agent_state_backup_oncalendar | default(agent_state_backup_oncalendar__default) if agent_state_backup_oncalendar__default is defined else agent_state_backup_oncalendar | default(omit) }}"
+    agent_state_mirror_oncalendar: "{{ agent_state_mirror_oncalendar | default(agent_state_mirror_oncalendar__default) if agent_state_mirror_oncalendar__default is defined else agent_state_mirror_oncalendar | default(omit) }}"
+    agent_state_backup_label: "{{ agent_state_backup_label | default(agent_state_backup_label__default) if agent_state_backup_label__default is defined else agent_state_backup_label | default(omit) }}"
+    agent_state_restore_scope: "{{ agent_state_restore_scope | default(agent_state_restore_scope__default) if agent_state_restore_scope__default is defined else agent_state_restore_scope | default(omit) }}"
+    agent_state_restore_ref: "{{ agent_state_restore_ref | default(agent_state_restore_ref__default) if agent_state_restore_ref__default is defined else agent_state_restore_ref | default(omit) }}"
+    agent_state_restore_quiet_start: "{{ agent_state_restore_quiet_start | default(agent_state_restore_quiet_start__default) if agent_state_restore_quiet_start__default is defined else agent_state_restore_quiet_start | default(omit) }}"
+    agent_state_quiet_start_env: "{{ agent_state_quiet_start_env | default(agent_state_quiet_start_env__default) if agent_state_quiet_start_env__default is defined else agent_state_quiet_start_env | default(omit) }}"
+    agent_state_required_paths: "{{ agent_state_required_paths | default(agent_state_required_paths__default) if agent_state_required_paths__default is defined else agent_state_required_paths | default(omit) }}"
+    agent_state_stack_managed: "{{ agent_state_stack_managed | default(agent_state_stack_managed__default) if agent_state_stack_managed__default is defined else agent_state_stack_managed | default(omit) }}"
+    agent_state_stack_project_dir: "{{ agent_state_stack_project_dir | default(agent_state_stack_project_dir__default) if agent_state_stack_project_dir__default is defined else agent_state_stack_project_dir | default(omit) }}"
+    agent_state_stack_service: "{{ agent_state_stack_service | default(agent_state_stack_service__default) if agent_state_stack_service__default is defined else agent_state_stack_service | default(omit) }}"
+    agent_state_stack_compose_file: "{{ agent_state_stack_compose_file | default(agent_state_stack_compose_file__default) if agent_state_stack_compose_file__default is defined else agent_state_stack_compose_file | default(omit) }}"
+    agent_state_health_url: "{{ agent_state_health_url | default(agent_state_health_url__default) if agent_state_health_url__default is defined else agent_state_health_url | default(omit) }}"
+    agent_state_health_retries: "{{ agent_state_health_retries | default(agent_state_health_retries__default) if agent_state_health_retries__default is defined else agent_state_health_retries | default(omit) }}"
+    agent_state_readback_checks: "{{ agent_state_readback_checks | default(agent_state_readback_checks__default) if agent_state_readback_checks__default is defined else agent_state_readback_checks | default(omit) }}"
+    agent_state_readback_api_key: "{{ agent_state_readback_api_key | default(agent_state_readback_api_key__default) if agent_state_readback_api_key__default is defined else agent_state_readback_api_key | default(omit) }}"
+    agent_state_drill_dir: "{{ agent_state_drill_dir | default(agent_state_drill_dir__default) if agent_state_drill_dir__default is defined else agent_state_drill_dir | default(omit) }}"
+    agent_state_drill_env: "{{ agent_state_drill_env | default(agent_state_drill_env__default) if agent_state_drill_env__default is defined else agent_state_drill_env | default(omit) }}"
+    agent_state_drill_command: "{{ agent_state_drill_command | default(agent_state_drill_command__default) if agent_state_drill_command__default is defined else agent_state_drill_command | default(omit) }}"
+    agent_state_drill_scratch_secrets: "{{ agent_state_drill_scratch_secrets | default(agent_state_drill_scratch_secrets__default) if agent_state_drill_scratch_secrets__default is defined else agent_state_drill_scratch_secrets | default(omit) }}"
+    agent_state_drill_readback_key_env: "{{ agent_state_drill_readback_key_env | default(agent_state_drill_readback_key_env__default) if agent_state_drill_readback_key_env__default is defined else agent_state_drill_readback_key_env | default(omit) }}"
+    agent_state_drill_data_path: "{{ agent_state_drill_data_path | default(agent_state_drill_data_path__default) if agent_state_drill_data_path__default is defined else agent_state_drill_data_path | default(omit) }}"
+    agent_state_drill_health_path: "{{ agent_state_drill_health_path | default(agent_state_drill_health_path__default) if agent_state_drill_health_path__default is defined else agent_state_drill_health_path | default(omit) }}"
+    agent_state_drill_archive: "{{ agent_state_drill_archive | default(agent_state_drill_archive__default) if agent_state_drill_archive__default is defined else agent_state_drill_archive | default(omit) }}"
+    agent_state_drill_readbacks: "{{ agent_state_drill_readbacks | default(agent_state_drill_readbacks__default) if agent_state_drill_readbacks__default is defined else agent_state_drill_readbacks | default(omit) }}"
+    agent_state_verify_max_age_seconds: "{{ agent_state_verify_max_age_seconds | default(agent_state_verify_max_age_seconds__default) if agent_state_verify_max_age_seconds__default is defined else agent_state_verify_max_age_seconds | default(omit) }}"
+  when: not (_config_agent_state__argspec_resolved | default(false))
+  # At least one option carries no_log, and set_fact would otherwise print every
+  # resolved value — including that one — in the task result.
+  no_log: true
+
+- name: Rebind the defaults on a repeat call, ignoring this role's own leftover facts
+  ansible.builtin.set_fact:
+    agent_state_product: "{{ agent_state_product__default if agent_state_product__default is defined else agent_state_product | default(omit) }}"
+    agent_state_python: "{{ agent_state_python__default if agent_state_python__default is defined else agent_state_python | default(omit) }}"
+    agent_state_install_dir: "{{ agent_state_install_dir__default if agent_state_install_dir__default is defined else agent_state_install_dir | default(omit) }}"
+    agent_state_mirror_exclude: "{{ agent_state_mirror_exclude__default if agent_state_mirror_exclude__default is defined else agent_state_mirror_exclude | default(omit) }}"
+    agent_state_mirror_skip_names_file: "{{ agent_state_mirror_skip_names_file__default if agent_state_mirror_skip_names_file__default is defined else agent_state_mirror_skip_names_file | default(omit) }}"
+    agent_state_config_file: "{{ agent_state_config_file__default if agent_state_config_file__default is defined else agent_state_config_file | default(omit) }}"
+    agent_state_mask_patterns: "{{ agent_state_mask_patterns__default if agent_state_mask_patterns__default is defined else agent_state_mask_patterns | default(omit) }}"
+    agent_state_scan_patterns: "{{ agent_state_scan_patterns__default if agent_state_scan_patterns__default is defined else agent_state_scan_patterns | default(omit) }}"
+    agent_state_repo_branch: "{{ agent_state_repo_branch__default if agent_state_repo_branch__default is defined else agent_state_repo_branch | default(omit) }}"
+    agent_state_key_dir: "{{ agent_state_key_dir__default if agent_state_key_dir__default is defined else agent_state_key_dir | default(omit) }}"
+    agent_state_mirror_dir: "{{ agent_state_mirror_dir__default if agent_state_mirror_dir__default is defined else agent_state_mirror_dir | default(omit) }}"
+    agent_state_git_author_name: "{{ agent_state_git_author_name__default if agent_state_git_author_name__default is defined else agent_state_git_author_name | default(omit) }}"
+    agent_state_git_author_email: "{{ agent_state_git_author_email__default if agent_state_git_author_email__default is defined else agent_state_git_author_email | default(omit) }}"
+    agent_state_backup_keep: "{{ agent_state_backup_keep__default if agent_state_backup_keep__default is defined else agent_state_backup_keep | default(omit) }}"
+    agent_state_backup_keep_monthly: "{{ agent_state_backup_keep_monthly__default if agent_state_backup_keep_monthly__default is defined else agent_state_backup_keep_monthly | default(omit) }}"
+    agent_state_backup_exclude: "{{ agent_state_backup_exclude__default if agent_state_backup_exclude__default is defined else agent_state_backup_exclude | default(omit) }}"
+    agent_state_sqlite_files: "{{ agent_state_sqlite_files__default if agent_state_sqlite_files__default is defined else agent_state_sqlite_files | default(omit) }}"
+    agent_state_packages: "{{ agent_state_packages__default if agent_state_packages__default is defined else agent_state_packages | default(omit) }}"
+    agent_state_enable_timers: "{{ agent_state_enable_timers__default if agent_state_enable_timers__default is defined else agent_state_enable_timers | default(omit) }}"
+    agent_state_unit_dir: "{{ agent_state_unit_dir__default if agent_state_unit_dir__default is defined else agent_state_unit_dir | default(omit) }}"
+    agent_state_backup_oncalendar: "{{ agent_state_backup_oncalendar__default if agent_state_backup_oncalendar__default is defined else agent_state_backup_oncalendar | default(omit) }}"
+    agent_state_mirror_oncalendar: "{{ agent_state_mirror_oncalendar__default if agent_state_mirror_oncalendar__default is defined else agent_state_mirror_oncalendar | default(omit) }}"
+    agent_state_backup_label: "{{ agent_state_backup_label__default if agent_state_backup_label__default is defined else agent_state_backup_label | default(omit) }}"
+    agent_state_restore_scope: "{{ agent_state_restore_scope__default if agent_state_restore_scope__default is defined else agent_state_restore_scope | default(omit) }}"
+    agent_state_restore_ref: "{{ agent_state_restore_ref__default if agent_state_restore_ref__default is defined else agent_state_restore_ref | default(omit) }}"
+    agent_state_restore_quiet_start: "{{ agent_state_restore_quiet_start__default if agent_state_restore_quiet_start__default is defined else agent_state_restore_quiet_start | default(omit) }}"
+    agent_state_quiet_start_env: "{{ agent_state_quiet_start_env__default if agent_state_quiet_start_env__default is defined else agent_state_quiet_start_env | default(omit) }}"
+    agent_state_required_paths: "{{ agent_state_required_paths__default if agent_state_required_paths__default is defined else agent_state_required_paths | default(omit) }}"
+    agent_state_stack_managed: "{{ agent_state_stack_managed__default if agent_state_stack_managed__default is defined else agent_state_stack_managed | default(omit) }}"
+    agent_state_stack_project_dir: "{{ agent_state_stack_project_dir__default if agent_state_stack_project_dir__default is defined else agent_state_stack_project_dir | default(omit) }}"
+    agent_state_stack_service: "{{ agent_state_stack_service__default if agent_state_stack_service__default is defined else agent_state_stack_service | default(omit) }}"
+    agent_state_stack_compose_file: "{{ agent_state_stack_compose_file__default if agent_state_stack_compose_file__default is defined else agent_state_stack_compose_file | default(omit) }}"
+    agent_state_health_url: "{{ agent_state_health_url__default if agent_state_health_url__default is defined else agent_state_health_url | default(omit) }}"
+    agent_state_health_retries: "{{ agent_state_health_retries__default if agent_state_health_retries__default is defined else agent_state_health_retries | default(omit) }}"
+    agent_state_readback_checks: "{{ agent_state_readback_checks__default if agent_state_readback_checks__default is defined else agent_state_readback_checks | default(omit) }}"
+    agent_state_readback_api_key: "{{ agent_state_readback_api_key__default if agent_state_readback_api_key__default is defined else agent_state_readback_api_key | default(omit) }}"
+    agent_state_drill_dir: "{{ agent_state_drill_dir__default if agent_state_drill_dir__default is defined else agent_state_drill_dir | default(omit) }}"
+    agent_state_drill_env: "{{ agent_state_drill_env__default if agent_state_drill_env__default is defined else agent_state_drill_env | default(omit) }}"
+    agent_state_drill_command: "{{ agent_state_drill_command__default if agent_state_drill_command__default is defined else agent_state_drill_command | default(omit) }}"
+    agent_state_drill_scratch_secrets: "{{ agent_state_drill_scratch_secrets__default if agent_state_drill_scratch_secrets__default is defined else agent_state_drill_scratch_secrets | default(omit) }}"
+    agent_state_drill_readback_key_env: "{{ agent_state_drill_readback_key_env__default if agent_state_drill_readback_key_env__default is defined else agent_state_drill_readback_key_env | default(omit) }}"
+    agent_state_drill_data_path: "{{ agent_state_drill_data_path__default if agent_state_drill_data_path__default is defined else agent_state_drill_data_path | default(omit) }}"
+    agent_state_drill_health_path: "{{ agent_state_drill_health_path__default if agent_state_drill_health_path__default is defined else agent_state_drill_health_path | default(omit) }}"
+    agent_state_drill_archive: "{{ agent_state_drill_archive__default if agent_state_drill_archive__default is defined else agent_state_drill_archive | default(omit) }}"
+    agent_state_drill_readbacks: "{{ agent_state_drill_readbacks__default if agent_state_drill_readbacks__default is defined else agent_state_drill_readbacks | default(omit) }}"
+    agent_state_verify_max_age_seconds: "{{ agent_state_verify_max_age_seconds__default if agent_state_verify_max_age_seconds__default is defined else agent_state_verify_max_age_seconds | default(omit) }}"
+  when: _config_agent_state__argspec_resolved | default(false)
+  # At least one option carries no_log, and set_fact would otherwise print every
+  # resolved value — including that one — in the task result.
+  no_log: true
+
+- name: Record that this role has resolved its options in this play
+  ansible.builtin.set_fact:
+    _config_agent_state__argspec_resolved: true

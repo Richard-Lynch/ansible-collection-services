@@ -1,0 +1,170 @@
+---
+# Reconcile, AFTER the stack is up and read back: the dynamic webhook subscriptions and the
+# seeded cron jobs. Both stores are the DAEMON's (it writes them by atomic rename), so this file
+# reads them from disk and changes them only through the daemon's own CLI -- with one exception,
+# the toolsets repair, which has no CLI because the CLI cannot set toolsets in the first place.
+
+# ---- the webhook listener answers (read-back from the adapter, not the compose file) ---------
+- name: Read back the webhook listener's own health route
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ hermes_webhook_port }}/health"
+    return_content: true
+    timeout: 5
+  register: hermes__webhook_health
+  until: (hermes__webhook_health.status | default(-1)) == 200
+  retries: 12
+  delay: 5
+  failed_when: false
+  changed_when: false
+  when: hermes_webhook_enabled | bool
+
+- name: HARD GATE - the webhook adapter is listening
+  ansible.builtin.assert:
+    that:
+      - (hermes__webhook_health.status | default(-1)) == 200
+      - (hermes__webhook_health.json | default({})).platform | default('') == 'webhook'
+    fail_msg: >-
+      GET 127.0.0.1:{{ hermes_webhook_port }}/health answered {{ hermes__webhook_health.status | default('nothing') }}
+      ({{ (hermes__webhook_health.content | default(''))[:200] }}). The adapter refuses to start when a route has no
+      secret or a deliver_only route delivers to log; the gateway log names the route.
+    quiet: true
+  when: hermes_webhook_enabled | bool
+
+# ---- dynamic subscriptions: a planted `toolsets` is removed ---------------------------------
+# Audit the file the DAEMON reads: under hermes_webhook_subscriptions_readonly that is the staged,
+# read-only one mounted over data/ (the data/ copy is shadowed and never read).
+- name: Choose the subscription store the daemon actually reads
+  ansible.builtin.set_fact:
+    hermes__subs_path: >-
+      {{ hermes_config_dir ~ ('/subscriptions' if (hermes_webhook_enabled | bool and hermes_webhook_subscriptions_readonly | bool)
+                              else '/data') ~ '/webhook_subscriptions.json' }}
+
+- name: Is there a dynamic subscription store
+  ansible.builtin.stat:
+    path: "{{ hermes__subs_path }}"
+  register: hermes__subs_stat
+
+# Root reads and rewrites this file. On the data/ fallback (read-only store off) the agent owns the
+# directory, so a planted symlink would turn the slurp and the copy below against any host path.
+# stat does not follow links by default, so islnk is the property that matters.
+- name: HARD GATE — the subscription store is a regular file, not a link
+  ansible.builtin.assert:
+    that:
+      - not (hermes__subs_stat.stat.islnk | default(false))
+      - not hermes__subs_stat.stat.exists or (hermes__subs_stat.stat.isreg | default(false))
+    fail_msg: >-
+      {{ hermes__subs_path }} is a symlink or not a regular file. Refusing to read or rewrite it as
+      root. Inspect it on the guest; with hermes_webhook_subscriptions_readonly the daemon reads the
+      root-owned copy instead.
+    quiet: true
+
+- name: Read the dynamic subscriptions
+  ansible.builtin.slurp:
+    src: "{{ hermes__subs_path }}"
+  register: hermes__subs_raw
+  when: hermes__subs_stat.stat.exists
+  no_log: true # route secrets live in this file
+
+- name: Audit them for a toolsets key
+  ansible.builtin.set_fact:
+    hermes__subs_audit: >-
+      {{ (hermes__subs_raw.content | b64decode | from_json) | richard_lynch.services.hermes_dynamic_routes_audit
+         if hermes__subs_stat.stat.exists else {'flagged': [], 'readable': true, 'count': 0} }}
+  no_log: true
+
+- name: Report flagged subscriptions (names and toolsets only)
+  ansible.builtin.debug:
+    msg: >-
+      dynamic subscriptions: {{ hermes__subs_audit.count }};
+      carrying toolsets (removed now): {{ hermes__subs_audit.flagged | map(attribute='name') | list }}
+
+# Not a `copy` into the store: the agent can swap it for a link after the gate above, and copy
+# writes through a link to a directory even with follow=false. _subs_repair_write.yml says why.
+- name: Remove toolsets from every dynamic subscription that carries it
+  ansible.builtin.include_tasks: _subs_repair_write.yml
+  when: hermes__subs_audit.flagged | length > 0
+
+# ---- the seeded cron jobs --------------------------------------------------------------------
+- name: Read the cron store and plan the seed
+  when: hermes_cron_seed | length > 0
+  block:
+    - name: Is there a cron store yet
+      ansible.builtin.stat:
+        path: "{{ hermes_config_dir }}/data/cron/jobs.json"
+      register: hermes__jobs_stat
+
+    - name: Read the cron store
+      ansible.builtin.slurp:
+        src: "{{ hermes_config_dir }}/data/cron/jobs.json"
+      register: hermes__jobs_raw
+      when: hermes__jobs_stat.stat.exists
+
+    - name: Plan the seed against it
+      ansible.builtin.set_fact:
+        hermes__cron_plan: >-
+          {{ ((hermes__jobs_raw.content | b64decode | from_json) if hermes__jobs_stat.stat.exists else {})
+             | richard_lynch.services.hermes_cron_seed_plan(hermes_cron_seed) }}
+
+    - name: HARD GATE - the cron store must be readable before anything is created in it
+      ansible.builtin.assert:
+        that:
+          - hermes__cron_plan.rows | selectattr('verdict', 'equalto', 'cannot-tell') | list | length == 0
+          - hermes__cron_plan.duplicates | length == 0
+        fail_msg: >-
+          The cron store did not parse ({{ hermes__cron_plan.rows | selectattr('verdict', 'equalto', 'cannot-tell') | list | length }}
+          cannot-tell rows) or holds duplicate seeded names {{ hermes__cron_plan.duplicates }}. Creating
+          jobs into it would duplicate them; fix the store first (remove the extra by id with `hermes cron remove`).
+        quiet: true
+
+    # Created PAUSED, always: the converge never enables a job (a separate, explicit step does),
+    # so a new seed entry cannot start spending or posting on merge.
+    - name: Create each absent seeded job, paused
+      community.docker.docker_container_exec:
+        container: "{{ hermes_container_name }}"
+        user: hermes
+        argv: >-
+          {{ item | richard_lynch.services.hermes_cron_argv('create', hermes_gateway_provider_name, '', none,
+                                              hermes_cron_paused_reason) }}
+      loop: "{{ hermes__cron_plan.create }}"
+      loop_control: { label: "{{ item.name }}" }
+      register: hermes__cron_created
+
+    - name: Edit each seeded job whose owned fields drifted
+      community.docker.docker_container_exec:
+        container: "{{ hermes_container_name }}"
+        user: hermes
+        argv: >-
+          {{ (hermes_cron_seed | selectattr('name', 'equalto', item.name) | first)
+             | richard_lynch.services.hermes_cron_argv('edit', hermes_gateway_provider_name, item.id, item.fields) }}
+      loop: "{{ hermes__cron_plan.edit }}"
+      loop_control:
+        { label: "{{ item.name }}: {{ item.fields.keys() | list }}" }
+      register: hermes__cron_edited
+
+    # READ-BACK from the daemon's own store, not from the CLI's exit code: rc=0 says the command
+    # ran, the store says the job exists with the declared fields.
+    - name: Re-read the cron store
+      ansible.builtin.slurp:
+        src: "{{ hermes_config_dir }}/data/cron/jobs.json"
+      register: hermes__jobs_after
+      when: hermes__cron_plan.create | length > 0 or hermes__cron_plan.edit | length > 0
+
+    - name: Re-plan against what the daemon now holds
+      ansible.builtin.set_fact:
+        hermes__cron_after: >-
+          {{ (hermes__jobs_after.content | b64decode | from_json) | richard_lynch.services.hermes_cron_seed_plan(hermes_cron_seed)
+             if hermes__jobs_after is not skipped else hermes__cron_plan }}
+
+    - name: HARD GATE - every seeded job exists with its declared fields
+      ansible.builtin.assert:
+        that:
+          - hermes__cron_after.create | length == 0
+          - hermes__cron_after.edit | length == 0
+        fail_msg: >-
+          After the converge the cron store still lacks {{ hermes__cron_after.create | map(attribute='name') | list }}
+          and still differs on {{ hermes__cron_after.edit | map(attribute='name') | list }}.
+        quiet: true
+
+    - name: Report the seed (a paused job stays paused until the operator enables it)
+      ansible.builtin.debug:
+        msg: "{{ hermes__cron_after.rows | map(attribute='check') | zip(hermes__cron_after.rows | map(attribute='detail')) | map('join', ': ') | list }}"

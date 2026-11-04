@@ -1,0 +1,288 @@
+---
+# drill - restore the newest (or a named) backup into a scratch directory under a container that
+# cannot reach anything, read it back, and tear it down. It never touches the live stack or tree.
+# Ansible loads ONLY defaults/main.yml on its own. This entrypoint's generated defaults are in
+# defaults/drill.yml, so without this the resolver would find no `__default` for any option declared
+# only here and leave it undefined.
+- name: Load this entrypoint's generated defaults
+  ansible.builtin.include_vars:
+    file: "{{ role_path }}/defaults/drill.yml"
+
+- name: Resolve declared options over their generated defaults
+  ansible.builtin.include_tasks: _resolve_defaults.yml
+
+- name: Apply the generated argspec guards
+  ansible.builtin.include_tasks: _argspec_guards.yml
+
+- name: The role is installed
+  ansible.builtin.include_tasks: _installed.yml
+
+- name: HARD GATE — confirmed, with the inputs a drill cannot guess
+  ansible.builtin.assert:
+    that:
+      - agent_state_drill_confirm | bool
+      - agent_state_restore_identity | length > 0
+      - agent_state_drill_image is search('@sha256:[0-9a-f]{64}\Z')
+      - agent_state_drill_dir is match('/')
+      - "'..' not in agent_state_drill_dir.split('/')"
+    fail_msg: >-
+      drill refused: it needs agent_state_drill_confirm=true, the age identity, an image pinned by
+      digest (repo:tag@sha256:...) and an absolute scratch directory.
+    quiet: true
+
+- name: Pick the archive
+  ansible.builtin.command:
+    argv: ["{{ agent_state_python }}", "{{ agent_state_install_dir }}/agent_state.py", latest,
+           --target, "{{ agent_state_backup_target }}", --product, "{{ agent_state_product }}"]
+  register: _as_dlatest
+  changed_when: false
+  when: agent_state_drill_archive == 'latest'
+
+- name: Settle on the archive name
+  ansible.builtin.set_fact:
+    _as_drill_archive: "{{ (_as_dlatest.stdout_lines[-1] | from_json).archive if agent_state_drill_archive == 'latest' else agent_state_drill_archive }}"
+
+- name: The mirror's work clone exists (a drill is run AFTER the first mirror)
+  # Without a clone the "no mirror commit" gate below would compare '' with '' and pass having
+  # compared nothing. A first mirror that BLOCKED still leaves the clone.
+  ansible.builtin.command:
+    argv: [git, -C, "{{ agent_state_mirror_dir }}", rev-parse, --is-inside-work-tree]
+  register: _as_mirror_repo
+  failed_when: false
+  changed_when: false
+
+- name: HARD GATE — the drill can only prove "no mirror commit" against an existing clone
+  ansible.builtin.assert:
+    that:
+      - _as_mirror_repo.rc == 0
+      - _as_mirror_repo.stdout | trim == 'true'
+    fail_msg: >-
+      {{ agent_state_mirror_dir }} is not a git work tree (rc {{ _as_mirror_repo.rc }}), so the
+      drill cannot tell whether it committed anything. Run the mirror first (the role's mirror
+      entrypoint); a blocked first mirror is fine, the clone is still created.
+    quiet: true
+
+- name: Mirror HEAD before the drill (a drill must not commit anything)
+  # `--verify -q HEAD`: exit 1 with EMPTY output when the clone has no commit yet (a blocked first
+  # mirror), a sha when it has. Both are compared below, so "no commit before, no commit after"
+  # is provable and distinct from "could not read".
+  ansible.builtin.command:
+    argv: [git, -C, "{{ agent_state_mirror_dir }}", rev-parse, --verify, -q, HEAD]
+  register: _as_head_before
+  failed_when: _as_head_before.rc not in [0, 1]
+  changed_when: false
+
+- name: The probe the drill runs inside its container
+  ansible.builtin.set_fact:
+    _as_probe_py: |-
+      import os, sys, urllib.request, urllib.error
+      req = urllib.request.Request(sys.argv[1])
+      key = os.environ.get("PROBE_KEY", "")
+      if key:
+          req.add_header("Authorization", "Bearer " + key)
+      try:
+          resp = urllib.request.urlopen(req, timeout=5)
+          code, body = resp.status, resp.read().decode("utf-8", "replace")
+      except urllib.error.HTTPError as exc:
+          code, body = exc.code, exc.read().decode("utf-8", "replace")
+      except Exception as exc:
+          code, body = 0, repr(exc)
+      print(code)
+      print(body)
+
+- name: The drill
+  block:
+    - name: Start from an empty scratch directory
+      ansible.builtin.file:
+        path: "{{ agent_state_drill_dir }}"
+        state: absent
+
+    - name: Render the isolated compose project (refuses a credential-shaped env key)
+      ansible.builtin.include_tasks: _render_drill.yml
+
+    - name: Private scratch directory for the identity
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: agent-state-id-
+      register: _as_idir
+      changed_when: false
+
+    - name: Identity file (0600)
+      ansible.builtin.copy:
+        dest: "{{ _as_idir.path }}/identity.txt"
+        content: "{{ agent_state_restore_identity | trim }}\n"
+        mode: "0600"
+      no_log: true
+      changed_when: false
+
+    - name: Restore into the scratch tree (full validation, same code as a real restore)
+      ansible.builtin.command:
+        argv: >-
+          {{ [agent_state_python, agent_state_install_dir ~ '/agent_state.py', 'restore',
+              '--archive', agent_state_backup_target ~ '/' ~ _as_drill_archive,
+              '--identity', _as_idir.path ~ '/identity.txt',
+              '--root', agent_state_drill_dir ~ '/data']
+             + (['--required'] | product(agent_state_required_paths) | list | flatten)
+             + (['--exclude'] | product(agent_state_backup_exclude) | list | flatten) }}
+      register: _as_drestore
+      changed_when: true
+
+    # The restored tree carries the LIVE .env, which a product may load with override (Hermes does:
+    # "API_SERVER_KEY is set in both the container environment and /opt/data/.env -- the .env value
+    # wins"). When the live .env carries API_SERVER_KEY, the drill's throwaway key would lose to
+    # the restored live key and every read-back would answer 401. So
+    # each scratch secret is written into the SCRATCH tree's .env too; the live file is never read
+    # here, and the drill never presents a live credential.
+    - name: Is there a restored .env in the scratch tree
+      ansible.builtin.stat:
+        path: "{{ agent_state_drill_dir }}/data/.env"
+      register: _as_drill_dotenv
+
+    - name: The scratch secrets win over the restored .env (scratch tree only)
+      ansible.builtin.lineinfile:
+        path: "{{ agent_state_drill_dir }}/data/.env"
+        regexp: "^\\s*(export\\s+)?{{ item.key }}\\s*="
+        line: "{{ item.key }}={{ item.value }}"
+      loop: "{{ _as_drill_scratch | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+      no_log: true
+      when: _as_drill_dotenv.stat.exists
+
+    - name: Report what the drill container is handed (keys only)
+      ansible.builtin.debug:
+        msg: "drill env keys: {{ agent_state_drill_env_keys }}; archive {{ _as_drill_archive }}"
+
+    - name: Start the drill container
+      community.docker.docker_compose_v2:
+        project_src: "{{ agent_state_drill_dir }}"
+        state: present
+      when: agent_state_stack_managed | bool
+
+    # The drill network is `internal: true`, and this host CANNOT reach a container on it: a GET
+    # from the host to the container's address answers "No route to host" (Errno 113) with the
+    # container up. Docker drops
+    # host-to-internal-network traffic, which is part of what makes the network internal. So the
+    # probes run INSIDE the container (docker exec), which keeps the isolation claim intact; the
+    # alternative (publishing a port, or adding a routable network) would have weakened it.
+    - name: Wait for the drill container to answer (probed from inside it)
+      community.docker.docker_container_exec:
+        container: agent-state-drill
+        argv: [python3, -c, "{{ _as_probe_py }}", "http://127.0.0.1:{{ agent_state_drill_port }}{{ agent_state_drill_health_path }}"]
+        env:
+          PROBE_KEY: ""
+      register: _as_dhealth
+      until: _as_dhealth.rc | default(1) == 0 and (_as_dhealth.stdout_lines | default([''])) | first == '200'
+      retries: "{{ agent_state_health_retries | int }}"
+      delay: 5
+      failed_when: false
+      changed_when: false
+      when: agent_state_stack_managed | bool
+
+    - name: HARD GATE — the restored state started
+      ansible.builtin.assert:
+        that:
+          - _as_dhealth.rc | default(1) == 0
+          - (_as_dhealth.stdout_lines | default(['']) | first) == '200'
+        fail_msg: >-
+          the drill container did not become healthy on restored state (last probe: rc
+          {{ _as_dhealth.rc | default('n/a') }}, '{{ (_as_dhealth.stdout | default(_as_dhealth.msg | default(''))) | truncate(300) }}',
+          stderr '{{ _as_dhealth.stderr | default('') | truncate(300) }}').
+        quiet: true
+      when: agent_state_stack_managed | bool
+
+    - name: Drill read-backs (each probed from inside the container, with the throwaway key)
+      community.docker.docker_container_exec:
+        container: agent-state-drill
+        argv: [python3, -c, "{{ _as_probe_py }}", "http://127.0.0.1:{{ agent_state_drill_port }}{{ item.path | default(item.url) }}"]
+        env:
+          PROBE_KEY: "{{ _as_drill_scratch[agent_state_drill_readback_key_env] | default('') }}"
+      register: _as_drb
+      loop: "{{ agent_state_drill_readbacks }}"
+      loop_control:
+        label: "{{ item.name }}"
+      changed_when: false
+      failed_when: false
+      no_log: true
+      when: agent_state_stack_managed | bool and agent_state_drill_readbacks | length > 0
+
+    - name: HARD GATE (drill) - each read-back answered with the expected status and body
+      ansible.builtin.assert:
+        that:
+          - item.rc | default(1) == 0
+          - (item.stdout_lines | default(['']) | first) == (item.item.status | default(200)) | string
+          - (item.item.contains | default('')) in (item.stdout | default(''))
+        fail_msg: >-
+          drill read-back {{ item.item.name }} failed: rc {{ item.rc | default('n/a') }}, status
+          '{{ (item.stdout_lines | default(['']) | first) }}' (wanted {{ item.item.status | default(200) }}),
+          body lacks '{{ item.item.contains | default('') }}'. Body: {{ (item.stdout_lines | default([]))[1:] | join(' ') | truncate(400) }}
+        quiet: true
+      loop: "{{ _as_drb.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+      when: agent_state_stack_managed | bool and agent_state_drill_readbacks | length > 0
+
+    - name: Mirror HEAD after the drill
+      ansible.builtin.command:
+        argv: [git, -C, "{{ agent_state_mirror_dir }}", rev-parse, --verify, -q, HEAD]
+      register: _as_head_after
+      failed_when: _as_head_after.rc not in [0, 1]
+      changed_when: false
+
+    - name: HARD GATE — zero external side effects visible to this host (no mirror commit)
+      # The outbound halves of that claim (chat, model spend, mail) are not observable from here:
+      # they hold by construction (no network route, no credential), and a caller that wants them
+      # read back does so from its own telemetry, which this role does not own. Both reads must have the SAME
+      # rc and the same output: (1,'') before and (1,'') after is "still no commit".
+      ansible.builtin.assert:
+        that:
+          - _as_head_before.rc == _as_head_after.rc
+          - _as_head_before.stdout | trim == _as_head_after.stdout | trim
+        fail_msg: >-
+          the mirror's HEAD moved during the drill (before: rc {{ _as_head_before.rc }}
+          '{{ _as_head_before.stdout | trim }}', after: rc {{ _as_head_after.rc }}
+          '{{ _as_head_after.stdout | trim }}') - something committed.
+        quiet: true
+    - name: Mark the drill body complete (the logs below are shown only when this did not run)
+      ansible.builtin.set_fact:
+        _as_drill_done: true
+  always:
+    - name: What the drill container said (kept on failure so the next run is not blind)
+      ansible.builtin.command:
+        argv: [docker, logs, --tail, "80", agent-state-drill]
+      register: _as_dlogs
+      changed_when: false
+      failed_when: false
+      when: agent_state_stack_managed | bool
+
+    - name: Show the drill container's last lines
+      ansible.builtin.debug:
+        msg: "{{ (_as_dlogs.stdout_lines | default([])) + (_as_dlogs.stderr_lines | default([])) }}"
+      when:
+        - _as_dlogs is defined
+        - (_as_dlogs.rc | default(1)) == 0
+        - _as_drill_done is not defined
+
+    - name: Is there a drill project to tear down
+      ansible.builtin.stat:
+        path: "{{ agent_state_drill_dir }}/docker-compose.yml"
+      register: _as_dproj
+
+    - name: Tear the drill container down
+      community.docker.docker_compose_v2:
+        project_src: "{{ agent_state_drill_dir }}"
+        state: absent
+        remove_volumes: true
+      when: agent_state_stack_managed | bool and _as_dproj.stat.exists
+
+    - name: Remove the scratch directory
+      ansible.builtin.file:
+        path: "{{ agent_state_drill_dir }}"
+        state: absent
+
+    - name: Remove the identity file
+      ansible.builtin.file:
+        path: "{{ _as_idir.path }}"
+        state: absent
+      changed_when: false
+      when: _as_idir is defined and _as_idir.path is defined

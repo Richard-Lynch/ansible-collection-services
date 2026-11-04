@@ -1,0 +1,76 @@
+---
+# Stage the managed scope: the tier-C leaves as a config.yaml the container will read from
+# $HERMES_MANAGED_DIR, the sha256 the preflight compares it against, and the preflight itself.
+#
+# Needs hermes__owned_all, so it runs after _config_merge.yml (main.yml includes them in that
+# order; a molecule scenario includes them in the same order). Only WRITES happen here; the
+# document is built and gated in _managed_gate.yml before the merge's quiesce.
+#
+# ENFORCED when hermes_managed_enforce is true: compose mounts managed/ at
+# hermes_managed_mount_dir (a DIRECTORY mount, so a rename by `copy` is seen and no file inode is
+# pinned), pins HERMES_MANAGED_DIR to it, mounts policy/ read-only, and makes
+# policy/preflight-entry.sh the main program, so the gateway does not start unless this preflight
+# passes. With the flag off the files are STAGED, NOT ENFORCED.
+#
+# STAGED IS NOT ENFORCED, and the difference matters. Upstream treats a missing or unparseable
+# managed file as an empty overlay, so the pin only holds once the container runs the preflight
+# before the gateway starts and mounts the managed file at the pinned path. That wiring needs the
+# uid remap (HERMES_UID, so the image's /init stays PID 1), and a mount over /etc/hermes would hide
+# the files the image keeps there (agent-browser-executable-path, image-provenance.json), which is
+# why the scope is mounted at its own directory instead. A staged-but-unmounted pin should be
+# reported as exactly that by whatever reads the preflight.
+#
+# The pinned-key list is ours: every owned leaf of tier C (upstream ships none). A tier-C leaf that
+# is a secret is refused by the filter -- the managed file is world-readable.
+# The document and its two refusals live in _managed_gate.yml, which _config_merge.yml already ran
+# before the quiesce (so a refusal leaves the stack up). Re-run here so this
+# entrypoint cannot write an empty or secret-bearing pin when included on its own.
+- name: Build the managed-scope document and refuse an empty or secret-bearing pin
+  ansible.builtin.include_tasks: _managed_gate.yml
+
+- name: Ensure the managed staging directory exists
+  ansible.builtin.file:
+    path: "{{ hermes_config_dir }}/managed"
+    state: directory
+    mode: "0755"
+
+# sort_keys so a re-render is byte-stable; the recorded hash is of exactly these bytes.
+# guard-check: ignore DIFFLEAK-01 — hermes__managed_doc is built by richard_lynch.services.hermes_managed_document, which REFUSES a secret leaf (_managed_gate.yml); the file is world-readable by design, so its diff discloses nothing the file does not
+- name: Render the managed config.yaml (root-owned on the guest, 0644)
+  ansible.builtin.copy:
+    dest: "{{ hermes_config_dir }}/managed/config.yaml"
+    mode: "0644"
+    content: "{{ hermes__managed_doc | to_nice_yaml(indent=2, sort_keys=true) }}"
+  register: hermes__managed_file
+
+- name: Record the sha256 the preflight will require
+  ansible.builtin.copy:
+    dest: "{{ hermes_config_dir }}/policy/managed.sha256"
+    mode: "0644"
+    content: "{{ hermes__managed_doc | to_nice_yaml(indent=2, sort_keys=true) | hash('sha256') }}  managed/config.yaml\n"
+  register: hermes__managed_sha
+
+- name: Stage the preflight script
+  ansible.builtin.copy:
+    dest: "{{ hermes_config_dir }}/policy/policy_preflight.py"
+    mode: "0644"
+    content: "{{ lookup('ansible.builtin.file', role_path ~ '/scripts/policy_preflight.py', rstrip=False) }}"
+  register: hermes__preflight_py
+
+# The container's entrypoint when hermes_managed_enforce is on: it runs the preflight before
+# main-wrapper.sh may start the gateway. 0755 because the read-only mount keeps the mode.
+- name: Stage the preflight entry wrapper
+  ansible.builtin.copy:
+    dest: "{{ hermes_config_dir }}/policy/preflight-entry.sh"
+    mode: "0755"
+    content: "{{ lookup('ansible.builtin.file', role_path ~ '/scripts/preflight-entry.sh', rstrip=False) }}"
+  register: hermes__preflight_entry
+
+# The preflight runs only at container start, so a changed pin, hash or check must restart the
+# stack for the new state to be VERIFIED (not merely written). main.yml reads this fact.
+- name: Note whether the enforced policy changed
+  ansible.builtin.set_fact:
+    hermes__policy_changed: >-
+      {{ (hermes_managed_enforce | default(false) | bool)
+         and (hermes__managed_file.changed or hermes__managed_sha.changed
+              or hermes__preflight_py.changed or hermes__preflight_entry.changed) }}

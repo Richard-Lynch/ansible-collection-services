@@ -1,0 +1,12 @@
+---
+# Cleanup - the same directory prepare.yml removes, removed BEFORE prepare and AFTER verify (see the
+# test_sequence in molecule.yml), so a run starts from nothing and leaves nothing whatever the
+# previous run did and whatever molecule's "already prepared" flag says.
+- name: Cleanup - remove the scratch data directory
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Remove the scratch data directory
+      ansible.builtin.file:
+        path: /tmp/molecule-hermes-profile
+        state: absent

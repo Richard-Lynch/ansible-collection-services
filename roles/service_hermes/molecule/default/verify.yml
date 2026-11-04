@@ -1,0 +1,1833 @@
+---
+# Asserts against the RENDERED artifacts from converge.yml, parsed as real YAML — never against
+# a hand-typed copy of the role's own filter expressions (MOLMIRROR-01: a scenario that
+# re-derives the role's logic over a stub list asserts the copy against itself and stays green
+# through a real regression).
+#
+# Every assertion here is on a property that would be SILENTLY wrong rather than loudly broken:
+# a floating image tag, a published port with no listener behind it, a credential rendered into
+# the group-readable compose file instead of the 0600 env file, or a conditional block that is
+# present when it should be absent.
+- name: Verify — the rendered hermes artifacts
+  hosts: localhost
+  gather_facts: false
+  vars:
+    render_root: /tmp/molecule-hermes
+  tasks:
+    - name: Slurp each rendered compose file
+      ansible.builtin.slurp:
+        src: "{{ render_root }}/{{ item }}/docker-compose.yml"
+      register: _compose
+      loop: [full, minimal, headless]
+
+    - name: Slurp each rendered app.env
+      ansible.builtin.slurp:
+        src: "{{ render_root }}/{{ item }}/app.env"
+      register: _env
+      loop: [full, minimal, headless]
+
+    # Parsed with from_yaml so the assertions below are about STRUCTURE, not about text that
+    # happens to appear. A grep-style check would pass on a value inside a comment.
+    - name: Slurp each rendered config.yaml
+      ansible.builtin.slurp:
+        src: "{{ render_root }}/{{ item }}/config.yaml"
+      register: _cfg
+      loop: [full, minimal, headless]
+
+    - name: Parse the artifacts
+      ansible.builtin.set_fact:
+        compose: >-
+          {{ dict(_compose.results | map(attribute='item')
+                  | zip(_compose.results | map(attribute='content')
+                        | map('b64decode') | map('from_yaml'))) }}
+        envtext: >-
+          {{ dict(_env.results | map(attribute='item')
+                  | zip(_env.results | map(attribute='content') | map('b64decode'))) }}
+        cfg: >-
+          {{ dict(_cfg.results | map(attribute='item')
+                  | zip(_cfg.results | map(attribute='content')
+                        | map('b64decode') | map('from_yaml'))) }}
+
+    # ---- the image pin ------------------------------------------------------------------
+    - name: Every variant must pin the image to tag AND digest
+      # A floating tag makes the deployed version a function of WHEN the play ran, and a tag
+      # with no digest can be retagged under a running deployment. The reference is parsed apart
+      # rather than compared whole, so a template that dropped the digest, or fell back to
+      # `latest`, fails here and not on the guest.
+      ansible.builtin.assert:
+        that:
+          - compose[item].services.hermes.image is match('^[a-z0-9./-]+:v[0-9][0-9.]*@sha256:[0-9a-f]{64}$')
+          - compose[item].services.hermes.image.split('@')[0].split(':')[-1] not in ['latest', 'stable', 'main', 'edge', 'canary']
+          - >-
+            compose[item].services.hermes.image ==
+            'nousresearch/hermes-agent:v0.21.6@sha256:55e192fba0cd4fde61142abbff5adeacff40efdb482ccd0ff877924bd274f909'
+        fail_msg: >-
+          {{ item }}: image is '{{ compose[item].services.hermes.image | default('(absent)') }}',
+          expected repo:tag@sha256:<64 hex>.
+        quiet: true
+      loop: [full, minimal, headless]
+
+    # ---- the state mount ----------------------------------------------------------------
+    - name: Every variant must mount the agent's state directory at /opt/data
+      # The ENTIRE mutable state (config, .env, sessions, skills, memories) lives there. A
+      # missing or mistyped mount makes docker create an empty directory, Hermes re-run its
+      # first-boot seeding, and every session silently disappear — with no error.
+      ansible.builtin.assert:
+        that:
+          - >-
+            compose[item].services.hermes.volumes
+            | select('search', ':/opt/data:rw$') | list | length == 1
+        fail_msg: >-
+          {{ item }}: expected exactly one read-write bind mount onto /opt/data, got
+          {{ compose[item].services.hermes.volumes | default('(none)') }}.
+        quiet: true
+      loop: [full, minimal, headless]
+
+    - name: The entrypoint must keep s6's /init as PID 1
+      # `/init` is s6-overlay's PID 1: it runs the cont-init.d scripts and builds the
+      # supervision tree before any service starts, and it reaps the orphaned grandchildren the
+      # agent's tools spawn (headless browsers, MCP servers). Upstream warns that bypassing it
+      # leaves the gateway not working correctly. With the managed scope enforced the entrypoint
+      # IS overridden, but only to swap main-wrapper.sh for the preflight: /init stays first.
+      ansible.builtin.assert:
+        that:
+          - >-
+            'entrypoint' not in compose[item].services.hermes
+            or compose[item].services.hermes.entrypoint[0] == '/init'
+        fail_msg: >-
+          {{ item }}: the compose `entrypoint` does not start with s6-overlay's /init, which
+          bypasses it.
+        quiet: true
+      loop: [full, minimal, headless]
+
+    - name: The policy preflight entrypoint is rendered exactly where the managed scope is enforced
+      ansible.builtin.assert:
+        that:
+          - compose.full.services.hermes.entrypoint == ['/init', '/opt/hermes-policy/preflight-entry.sh']
+          - compose.headless.services.hermes.entrypoint == ['/init', '/opt/hermes-policy/preflight-entry.sh']
+          - "'entrypoint' not in compose.minimal.services.hermes"
+        fail_msg: >-
+          the preflight entrypoint is present where enforcement is off, or absent where it is on.
+        quiet: true
+
+    - name: The managed scope and policy are mounted read-only only when enforced
+      ansible.builtin.assert:
+        that:
+          - "(render_root ~ '/full/managed:/etc/hermes-managed:ro') in compose.full.services.hermes.volumes"
+          - "(render_root ~ '/full/policy:/opt/hermes-policy:ro') in compose.full.services.hermes.volumes"
+          - "(render_root ~ '/headless/managed:/etc/hermes-managed:ro') in compose.headless.services.hermes.volumes"
+          - compose.minimal.services.hermes.volumes | select('search', '/managed:|/policy:') | list | length == 0
+          - compose.full.services.hermes.environment.HERMES_MANAGED_DIR == '/etc/hermes-managed'
+          - "'HERMES_MANAGED_DIR' not in compose.minimal.services.hermes.environment"
+        fail_msg: >-
+          the managed/policy mounts or HERMES_MANAGED_DIR do not follow hermes_managed_enforce.
+        quiet: true
+
+    - name: The preflight textfile mount needs BOTH enforcement and a textfile dir
+      # headless is enforced with an EMPTY dir: it proves the second half of the guard.
+      ansible.builtin.assert:
+        that:
+          - compose.full.services.hermes.volumes | select('search', ':/run/hermes-textfile:rw$') | list | length == 1
+          - compose.headless.services.hermes.volumes | select('search', ':/run/hermes-textfile') | list | length == 0
+          - compose.minimal.services.hermes.volumes | select('search', ':/run/hermes-textfile') | list | length == 0
+        fail_msg: the preflight textfile mount does not follow its two-part guard.
+        quiet: true
+
+    # The hook commands have spaces in them. The rendered ExecStart is split the way systemd
+    # splits it (and must agree with shlex), then the argv goes through the probe's REAL argparse
+    # (build_parser) and --hooks-expect must come back as the two whole commands. An unquoted
+    # render makes argparse exit 2, which fails this task (proved red 2026-11-04).
+    - name: The health unit hands each multi-word hook command to the probe as ONE argument
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_playbook_python }}"
+          - -I
+          - "{{ playbook_dir }}/health_unit_argv.py"
+          - "{{ render_root }}/full/hermes-health-textfile.service"
+          - "{{ playbook_dir }}/../../scripts"
+          - /opt/hermes/.venv/bin/python -I -B /opt/hermes-policy/hermes_policy_hook.py
+          - /opt/hermes/.venv/bin/python -I -B /opt/hermes-policy/hermes_audit_hook.py
+      register: _health_unit_argv
+      changed_when: false
+
+    - name: The health unit check printed its verdict
+      ansible.builtin.assert:
+        that:
+          - _health_unit_argv.stdout is search('^OK. 2 hook command')
+        fail_msg: "health_unit_argv.py did not report OK: {{ _health_unit_argv.stdout }}"
+        quiet: true
+
+    # ---- conditional ports: the headless variant is the one that matters ----------------
+    - name: The dashboard port is published only when the dashboard is enabled
+      ansible.builtin.assert:
+        that:
+          # loopback by default; the minimal variant sets "" (every interface)
+          - compose.full.services.hermes.ports | select('equalto', '127.0.0.1:9119:9119') | list | length == 1
+          - compose.minimal.services.hermes.ports | select('equalto', '9119:9119') | list | length == 1
+          # Dashboard disabled -> no dashboard port at all. Publishing a port whose listener is
+          # off looks like a working endpoint and refuses every connection.
+          - compose.headless.services.hermes.ports | select('search', '9119') | list | length == 0
+        fail_msg: >-
+          The dashboard port is published in the wrong variants. full/minimal must publish 9119
+          and headless must not.
+        quiet: true
+
+    - name: The API port is published only when the API server is enabled
+      ansible.builtin.assert:
+        that:
+          - compose.full.services.hermes.ports | select('equalto', '127.0.0.1:8642:8642') | list | length == 1
+          - compose.headless.services.hermes.ports | select('equalto', '127.0.0.1:8642:8642') | list | length == 1
+          - compose.minimal.services.hermes.ports | select('search', '8642') | list | length == 0
+        fail_msg: >-
+          The API server port is published in the wrong variants. full/headless must publish
+          8642 and minimal must not.
+        quiet: true
+
+    - name: The Webapp port is published, and its config block rendered, only when the Webapp is on
+      # `enabled` is owned in both states (a stale true must not survive turning it off), so the
+      # off variants carry webapp.enabled false and nothing else; full carries the whole block.
+      ansible.builtin.assert:
+        that:
+          - compose.full.services.hermes.ports | select('equalto', '127.0.0.1:9120:9120') | list | length == 1
+          - compose.minimal.services.hermes.ports | select('search', '9120') | list | length == 0
+          - compose.headless.services.hermes.ports | select('search', '9120') | list | length == 0
+          - "cfg.full.webapp == {'enabled': true, 'host': '0.0.0.0', 'port': 9120, 'public_url': 'https://agent.example.com'}"
+          - "cfg.minimal.webapp == {'enabled': false}"
+          - "cfg.headless.webapp == {'enabled': false}"
+        fail_msg: >-
+          Webapp rendering is wrong: full must publish 9120 and render the whole webapp block;
+          minimal/headless must publish nothing and render only webapp.enabled false. Got
+          full={{ cfg.full.webapp | default('MISSING') }}, minimal={{ cfg.minimal.webapp | default('MISSING') }}.
+        quiet: true
+
+    - name: The healthcheck exists only when there is a dashboard to probe
+      # The healthcheck probes the dashboard's port. With the dashboard off there is nothing
+      # listening, so a retained healthcheck would mark a correctly-running container unhealthy
+      # forever — a guard that always fails, which is as useless as one that always passes.
+      ansible.builtin.assert:
+        that:
+          - "'healthcheck' in compose.full.services.hermes"
+          - "'healthcheck' in compose.minimal.services.hermes"
+          - "'healthcheck' not in compose.headless.services.hermes"
+        fail_msg: >-
+          The healthcheck is present in the wrong variants: it probes the dashboard port, so it
+          must be absent exactly when the dashboard is disabled.
+        quiet: true
+
+    # ---- credentials must not reach the compose file -------------------------------------
+    - name: No credential may be rendered into the compose file
+      # The compose file is written 0640 (group-readable) by deployment_config, while app.env is
+      # 0600. A credential that drifted from the env file into compose would be a real exposure
+      # on the guest, and nothing else would report it.
+      ansible.builtin.assert:
+        that:
+          - "'molecule-dashboard-password' not in (compose[item] | to_json)"
+          - "'molecule-api-server-key' not in (compose[item] | to_json)"
+        fail_msg: >-
+          {{ item }}: a credential placeholder appears in docker-compose.yml. Credentials belong
+          only in app.env, which is rendered 0600.
+        quiet: true
+      loop: [full, minimal, headless]
+
+    - name: The compose file must reference app.env rather than inlining the environment
+      ansible.builtin.assert:
+        that:
+          - >-
+            compose[item].services.hermes.env_file
+            | select('search', '/app\.env$') | list | length == 1
+        fail_msg: >-
+          {{ item }}: expected the service to read its credentials from app.env via env_file.
+        quiet: true
+      loop: [full, minimal, headless]
+
+    # ---- app.env conditionals -----------------------------------------------------------
+    - name: The dashboard block is rendered only when the dashboard is enabled
+      ansible.builtin.assert:
+        that:
+          - "'HERMES_DASHBOARD=1' in envtext.full"
+          - "'HERMES_DASHBOARD=1' in envtext.minimal"
+          - "'HERMES_DASHBOARD=1' not in envtext.headless"
+          # The bind must be 0.0.0.0 wherever the dashboard IS enabled: a 127.0.0.1 bind makes
+          # the published port silently unreachable.
+          - "'HERMES_DASHBOARD_HOST=0.0.0.0' in envtext.full"
+          - "'HERMES_DASHBOARD_HOST=0.0.0.0' in envtext.minimal"
+        fail_msg: "The dashboard env block is rendered in the wrong variants."
+        quiet: true
+
+    - name: The API server block is rendered only when it is enabled
+      ansible.builtin.assert:
+        that:
+          - "'API_SERVER_ENABLED=true' in envtext.full"
+          - "'API_SERVER_ENABLED=true' in envtext.headless"
+          - "'API_SERVER_ENABLED' not in envtext.minimal"
+        fail_msg: "The API server env block is rendered in the wrong variants."
+        quiet: true
+
+    - name: The observability read block is rendered when configured and ABSENT otherwise
+      ansible.builtin.assert:
+        that:
+          - "'PROMETHEUS_URL=http://prom.example.com:9090' in envtext.full"
+          - "'LOKI_URL=http://loki.example.com:3100' in envtext.full"
+          - "'GRAFANA_URL=https://grafana.example.com' in envtext.full"
+          - "'GRAFANA_TOKEN=glsa_' in envtext.full"
+          # the near-miss: variants that configure nothing must not carry any of it, or the
+          # conditional is decoration
+          - "'PROMETHEUS_URL' not in envtext.minimal and 'GRAFANA_TOKEN' not in envtext.minimal"
+          - "'LOKI_URL' not in envtext.headless and 'GRAFANA_URL' not in envtext.headless"
+        fail_msg: "The observability env block is rendered in the wrong variants."
+        quiet: true
+      no_log: true
+
+    - name: The Slack block is rendered when enabled, with a comma-joined allowlist, and ABSENT otherwise
+      ansible.builtin.assert:
+        that:
+          - "'SLACK_BOT_TOKEN=xoxb-' in envtext.full"
+          - "'SLACK_APP_TOKEN=xapp-' in envtext.full"
+          - "'SLACK_ALLOWED_USERS=U0MOLECULE1,U0MOLECULE2' in envtext.full"
+          # SLACK_HOME_CHANNEL is blank in full, so it must not be rendered as an empty variable
+          - "'SLACK_HOME_CHANNEL' not in envtext.full"
+          - "'SLACK_' not in envtext.minimal and 'SLACK_' not in envtext.headless"
+        fail_msg: "The Slack env block is rendered in the wrong variants."
+        quiet: true
+
+    - name: The gateway key is in app.env under key_env's name, and only there
+      ansible.builtin.assert:
+        that:
+          - "'HERMES_LITELLM_API_KEY=sk-molecule-virtual-key-placeholder' in envtext[item]"
+          - "'sk-molecule-virtual-key-placeholder' not in (cfg[item] | to_json)"
+        quiet: true
+      no_log: true
+      loop: [full, minimal, headless]
+
+    - name: No provider credential may appear in app.env at all
+      # Hermes holds NO provider key: all model traffic routes through the gateway, configured
+      # in config.yaml. A provider variable reappearing here would mean the agent had acquired
+      # its own spending credential — the exact thing routing through the gateway prevents.
+      ansible.builtin.assert:
+        that:
+          - "'OPENROUTER_API_KEY' not in envtext[item]"
+          - "'ANTHROPIC_API_KEY' not in envtext[item]"
+          - "'OPENAI_API_KEY' not in envtext[item]"
+        fail_msg: >-
+          {{ item }}: app.env carries a provider credential variable. All model traffic must go
+          through the gateway instead, so Hermes never holds a provider key.
+        quiet: true
+      loop: [full, minimal, headless]
+
+    # ---- config.yaml: the gateway wiring -------------------------------------------------
+    - name: The gateway must be registered under `api:`, never the legacy `base_url:`
+      # `api:` is the key for the `providers:` DICT form. `base_url:` belongs to the legacy
+      # top-level `custom_providers:` LIST. Using the wrong one is SILENT — the entry parses and
+      # the endpoint is simply never used — so this asserts the right key is present AND the
+      # wrong one absent.
+      ansible.builtin.assert:
+        that:
+          - cfg[item].providers['example-gateway'].api == 'http://litellm.example.com:4000/v1'
+          - "'base_url' not in cfg[item].providers['example-gateway']"
+          - cfg[item].providers['example-gateway'].key_env == 'HERMES_LITELLM_API_KEY'
+          - "'api_key' not in cfg[item].providers['example-gateway']"
+        fail_msg: >-
+          {{ item }}: the gateway provider entry is wrong —
+          {{ cfg[item].providers | default('(no providers block)') }}
+        quiet: true
+      loop: [full, minimal, headless]
+
+    - name: model.provider must point at the gateway entry, with a non-empty default
+      ansible.builtin.assert:
+        that:
+          - cfg[item].model.provider == 'example-gateway'
+          - cfg[item].model.default | length > 0
+          - cfg[item].model.api_mode == 'chat_completions'
+        fail_msg: >-
+          {{ item }}: model is wired to '{{ cfg[item].model | default('(absent)') }}', expected
+          provider=example-gateway with a declared default.
+        quiet: true
+      loop: [full, minimal, headless]
+
+    - name: The session-affinity header must be set for a LiteLLM gateway
+      # Without it a session-aware proxy treats nearly every agent turn as a new conversation
+      # and re-sends the whole history upstream — a real token cost on an agent loop.
+      ansible.builtin.assert:
+        that:
+          - >-
+            cfg[item].providers['example-gateway'].session_affinity_header
+            == 'x-litellm-session-id'
+        fail_msg: "{{ item }}: session_affinity_header is not set to LiteLLM's header name."
+        quiet: true
+      loop: [full, minimal, headless]
+
+    - name: discover_models is rendered ONLY where discovery is disabled
+      # The conditional's both directions. `minimal` sets it false; the others leave discovery
+      # on and must therefore omit the key entirely rather than render `true`.
+      ansible.builtin.assert:
+        that:
+          - cfg.minimal.providers['example-gateway'].discover_models is false
+          - "'discover_models' not in cfg.full.providers['example-gateway']"
+          - "'discover_models' not in cfg.headless.providers['example-gateway']"
+        fail_msg: >-
+          discover_models is rendered in the wrong variants: it must appear only when discovery
+          is disabled.
+        quiet: true
+
+    - name: The runaway-tool-loop guardrail must stay enabled
+      # This agent runs unattended and spends real money per request, so a runaway tool loop
+      # should STOP rather than warn.
+      ansible.builtin.assert:
+        that:
+          - cfg[item].tool_loop_guardrails.non_interactive_hard_stop_enabled is true
+        fail_msg: "{{ item }}: the non-interactive tool-loop hard stop is not enabled."
+        quiet: true
+      loop: [full, minimal, headless]
+
+    - name: Every rendered app.env line must be a comment, a blank, or KEY=VALUE
+      # A stray templating artifact (a bare Jinja remnant, a dangling conditional) produces a
+      # line docker silently ignores, so the variable it was meant to set is simply absent.
+      ansible.builtin.assert:
+        that:
+          - >-
+            envtext[item].splitlines()
+            | reject('match', '^\s*#') | reject('match', '^\s*$')
+            | reject('match', '^[A-Z][A-Z0-9_]*=') | list | length == 0
+        fail_msg: >-
+          {{ item }}: app.env contains a line that is neither a comment nor KEY=VALUE:
+          {{ envtext[item].splitlines() | reject('match', '^\s*#') | reject('match', '^\s*$')
+             | reject('match', '^[A-Z][A-Z0-9_]*=') | list }}
+        quiet: true
+      loop: [full, minimal, headless]
+
+    # ---- the webhook listener ------------------------------------------------------------
+    - name: The webhook port is published only when the listener is on, and on the bind address when given
+      ansible.builtin.assert:
+        that:
+          - compose.full.services.hermes.ports | select('equalto', '8644:8644') | list | length == 1
+          - compose.headless.services.hermes.ports | select('equalto', '192.0.2.5:8644:8644') | list | length == 1
+          - compose.headless.services.hermes.ports | select('equalto', '8644:8644') | list | length == 0
+          - compose.minimal.services.hermes.ports | select('search', '8644') | list | length == 0
+        fail_msg: "8644 publish: full {{ compose.full.services.hermes.ports }}, headless {{ compose.headless.services.hermes.ports }}, minimal {{ compose.minimal.services.hermes.ports }}"
+        quiet: true
+
+    - name: The subscription store is mounted read-only only where the listener is on and the option is
+      ansible.builtin.assert:
+        that:
+          - compose.full.services.hermes.volumes | select('search', '/subscriptions/webhook_subscriptions[.]json:/opt/data/webhook_subscriptions[.]json:ro$') | list | length == 1
+          - compose.headless.services.hermes.volumes | select('search', 'webhook_subscriptions') | list | length == 0
+          - compose.minimal.services.hermes.volumes | select('search', 'webhook_subscriptions') | list | length == 0
+        fail_msg: "store mount: full {{ compose.full.services.hermes.volumes }}, headless {{ compose.headless.services.hermes.volumes }}"
+        quiet: true
+
+    - name: The agent mailbox is rendered only where the adapter is on, allowlisted and pinned
+      ansible.builtin.assert:
+        that:
+          - "'EMAIL_ALLOWED_USERS=owner@example.com,other@example.com' in envtext.full"
+          - "'EMAIL_AUTHSERV_ID=mx.example.com' in envtext.full"
+          - "'EMAIL_PASSWORD=molecule-mailbox-app-password' in envtext.full"
+          - "'EMAIL_' not in envtext.minimal"
+          - "'EMAIL_' not in envtext.headless"
+          - "'molecule-mailbox-app-password' not in (compose | to_json) and 'molecule-mailbox-app-password' not in (cfg | to_json)"
+        quiet: true
+      no_log: true
+
+    - name: The webhook secrets are in app.env only where the listener is on, and never in compose or config
+      ansible.builtin.assert:
+        that:
+          - "'WEBHOOK_SECRET=molecule-webhook-global-secret-0123456789' in envtext.full"
+          - "'HERMES_WEBHOOK_HA_SECRET=molecule-ha-route-placeholder-value' in envtext.full"
+          - "'EXAMPLE_POLL_TOKEN=ghp_molecule_placeholder_token' in envtext.full"
+          - "'WEBHOOK_SECRET=' in envtext.headless"
+          - "'WEBHOOK_SECRET' not in envtext.minimal"
+          - "'EXAMPLE_POLL_TOKEN' not in envtext.minimal"
+          - "'molecule-webhook-global-secret' not in (compose | to_json)"
+          - "'molecule-webhook-global-secret' not in (cfg | to_json)"
+        quiet: true
+      no_log: true
+
+# ---------------------------------------------------------------------------------------------
+# Play 2 - the owned-leaf merge and the pin gate. Assertions are on the PARSED files and on the
+# merge's own verdict, never on a copy of the role's logic (MOLMIRROR-01). Each "must change" case
+# has a near-miss "must not".
+- name: Verify - the merge keeps what it does not own and restores what it does
+  hosts: localhost
+  gather_facts: false
+  vars_files: [vars/merge.yml]
+  tasks:
+    # Facts do not survive from converge.yml to here, so the role's declared defaults are bound
+    # again before the merge is re-run below.
+    - name: Resolve the role's declared options
+      ansible.builtin.include_role:
+        name: service_hermes
+        tasks_from: _resolve_defaults
+        public: true
+
+    - name: Read the merged config
+      ansible.builtin.slurp: { src: "{{ render_root }}/data/config.yaml" }
+      register: _c1
+
+    - name: Parse it
+      ansible.builtin.set_fact:
+        cfg: "{{ _c1.content | b64decode | from_yaml }}"
+
+    # ---- unowned keys survive --------------------------------------------------------------
+    - name: Unowned keys the caller never declared survived the merge
+      ansible.builtin.assert:
+        that:
+          - cfg._config_version == 50
+          - cfg.display.compact is true
+          # a key the agent added UNDER a parent the role also writes to
+          - cfg.model.agent_added == 1
+          # an owned list is replaced whole (was [web, terminal]); the floor itself is asserted in play 3
+          - "'terminal' not in cfg.platform_toolsets.api_server"
+        fail_msg: "an unowned key was lost or an owned list was not replaced whole: {{ cfg }}"
+        quiet: true
+
+    # ---- owned leaves are restored ---------------------------------------------------------
+    - name: Stale and hand-set owned leaves were restored
+      ansible.builtin.assert:
+        that:
+          # the wiring leaf, taken from the template: was 'stale/model'
+          - cfg.model.default == 'example-provider/model-large'
+          - cfg.model.provider == 'example-gateway'
+          # a hand-set tier-B leaf: was false
+          - cfg.sessions.auto_prune is true
+          - cfg.providers['example-gateway'].api == 'http://litellm.example.com:4000/v1'
+          # the legacy inline key seeded in prepare.yml was RETIRED, and key_env took its place
+          - cfg.providers['example-gateway'].key_env == 'HERMES_LITELLM_API_KEY'
+          - "'api_key' not in cfg.providers['example-gateway']"
+          - "'sk-molecule' not in (_c1.content | b64decode)"
+        quiet: true
+
+    - name: An A-range leaf inside its bounds was NOT touched (near-miss)
+      ansible.builtin.assert:
+        that:
+          # seeded 7; the declared default is 14; allowed is 3..30, so 7 is the agent's to keep
+          - cfg.curator.interval_days == 7
+        fail_msg: "the A-range leaf was reset although it was inside its bounds"
+        quiet: true
+
+    # ---- the dashboard theme and its seed -------------------------------------------------
+    # prepare.yml's live file has no `dashboard:` at all, so the converge's merge SEEDED the theme.
+    # The near-miss (a theme the UI set is never replaced) is in the drift case below.
+    - name: The absent dashboard.theme was seeded with the role theme
+      ansible.builtin.assert:
+        that:
+          - cfg.dashboard.theme == 'readable'
+        fail_msg: "dashboard: {{ cfg.dashboard | default('absent') }}"
+        quiet: true
+
+    - name: Read the delivered theme
+      ansible.builtin.slurp: { src: "{{ render_root }}/data/dashboard-themes/readable.yaml" }
+      register: _theme
+
+    - name: Stat the delivered theme
+      ansible.builtin.stat: { path: "{{ render_root }}/data/dashboard-themes/readable.yaml" }
+      register: _theme_stat
+
+    # The conditions the dashboard's own _normalise_theme_definition applies (a mapping with a
+    # name; customCSS clipped at 32768), plus the values that make it the readable look.
+    - name: The theme is valid YAML, named readable, and carries the readable overrides
+      vars:
+        _t: "{{ _theme.content | b64decode | from_yaml }}"
+      ansible.builtin.assert:
+        that:
+          - _t is mapping
+          - _t.name == 'readable'
+          - _t.palette.background.hex == '#041c1c'
+          - _t.palette.midground.hex == '#ffe6cb'
+          - _t.typography.letterSpacing | string == '0'
+          - "'Inter' in _t.typography.fontSans"
+          - _t.customCSS | length <= 32768
+          - "'text-transform: none' in _t.customCSS"
+          - "'--font-rules-expanded: var(--theme-font-sans)' in _t.customCSS"
+          - _theme_stat.stat.islnk is false
+          - _theme_stat.stat.mode == '0644'
+        fail_msg: "{{ _theme.content | b64decode }}"
+        quiet: true
+
+    # ---- owned-keys.json -------------------------------------------------------------------
+    - name: Read owned-keys.json
+      ansible.builtin.slurp: { src: "{{ render_root }}/policy/owned-keys.json" }
+      register: _ok
+
+    - name: Stat it
+      ansible.builtin.stat: { path: "{{ render_root }}/policy/owned-keys.json" }
+      register: _ok_stat
+
+    - name: owned-keys.json is exactly the leaf list, public, and carries no secret
+      vars:
+        _doc: "{{ _ok.content | b64decode | from_json }}"
+        _keys: "{{ _doc.owned | map(attribute='key') | list }}"
+        _range: "{{ _doc.owned | selectattr('key', 'equalto', 'curator.interval_days') | first }}"
+        _keyenv: "{{ _doc.owned | selectattr('key', 'equalto', 'providers.example-gateway.key_env') | first }}"
+      ansible.builtin.assert:
+        that:
+          - _keys == (_keys | sort)
+          - "'sessions.auto_prune' in _keys"
+          - "'platform_toolsets.api_server' in _keys"
+          - "'model.default' in _keys"
+          - "_range.allowed == {'min': 3, 'max': 30}"
+          - _range.tier == 'A-range'
+          # the key_env NAME is public; the key itself is no longer a leaf at all
+          - _keyenv.value == 'HERMES_LITELLM_API_KEY'
+          - "'providers.example-gateway.api_key' not in _keys"
+          # the seeded theme is NOT owned, so nothing refuses the UI's write to it
+          - "'dashboard.theme' not in _keys"
+          - "'sk-molecule' not in (_ok.content | b64decode)"
+          - _ok_stat.stat.mode == '0644'
+        quiet: true
+
+    # ---- drift: hand-edit, then converge again ---------------------------------------------
+    - name: Hand-edit the live file the way an agent and an operator would
+      ansible.builtin.copy:
+        dest: "{{ render_root }}/data/config.yaml"
+        mode: "0640"
+        content: >-
+          {{ cfg | combine({'sessions': {'auto_prune': false},
+                            'curator': {'interval_days': 99},
+                            'display': {'compact': true, 'skin': 'neon'},
+                            'dashboard': {'theme': 'default-large', 'font': 'jetbrains-mono'}}, recursive=true)
+             | to_nice_yaml(sort_keys=false) }}
+
+    - name: Merge again - there is drift this time
+      ansible.builtin.include_tasks: merge_case.yml
+
+    - name: Read the file after the second merge
+      ansible.builtin.slurp: { src: "{{ render_root }}/data/config.yaml" }
+      register: _c2
+
+    - name: Drift was repaired and the hand-set unowned key kept
+      vars:
+        _cfg2: "{{ _c2.content | b64decode | from_yaml }}"
+        _drift: "{{ hermes__merge.diff | map(attribute='key') | sort | list }}"
+      ansible.builtin.assert:
+        that:
+          # the diff names EXACTLY the two owned leaves that were wrong - not the unowned one
+          - hermes__merge.changed is true
+          - _drift == ['curator.interval_days', 'sessions.auto_prune']
+          - _cfg2.sessions.auto_prune is true
+          # 99 is outside 3..30, so the A-range leaf is reset to its declared default
+          - _cfg2.curator.interval_days == 14
+          # a dashboard-style write to an unowned key survived the converge
+          - _cfg2.display.skin == 'neon'
+          # NEAR-MISS for the seed: a theme the UI chose survives, and is not in the drift list above
+          - _cfg2.dashboard.theme == 'default-large'
+          - _cfg2.dashboard.font == 'jetbrains-mono'
+          - _cfg2._config_version == 50
+        quiet: true
+
+    - name: Merge once more - nothing changed since, so nothing may be written
+      ansible.builtin.include_tasks: merge_case.yml
+
+    - name: Read the file after the no-op merge
+      ansible.builtin.slurp: { src: "{{ render_root }}/data/config.yaml" }
+      register: _c3
+
+    - name: A converge with no drift is a no-op
+      ansible.builtin.assert:
+        that:
+          - hermes__merge.changed is false
+          - hermes__merge.diff == []
+          - _c3.content == _c2.content
+        quiet: true
+
+    # ---- a malformed live file STOPS the converge ------------------------------------------
+    - name: Corrupt the live config
+      ansible.builtin.copy:
+        dest: "{{ render_root }}/data/config.yaml"
+        mode: "0640"
+        content: "model: [unclosed\n  - : ::\n"
+
+    - name: Merge against the corrupt file - it must refuse, not read it as empty
+      block:
+        - name: Merge
+          ansible.builtin.include_tasks: merge_case.yml
+        - name: The merge swallowed a corrupt file
+          ansible.builtin.fail:
+            msg: "merge SUCCEEDED against an unparseable config.yaml"
+      rescue:
+        - name: Read the file back
+          ansible.builtin.slurp: { src: "{{ render_root }}/data/config.yaml" }
+          register: _c4
+        - name: The failure was the parse, and the file was not overwritten
+          ansible.builtin.assert:
+            that:
+              - "'merge SUCCEEDED' not in (ansible_failed_result.msg | default(''))"
+              - "(_c4.content | b64decode).startswith('model: [unclosed')"
+            quiet: true
+
+    # ---- an owned leaf declared twice is refused -------------------------------------------
+    - name: Restore a good file
+      ansible.builtin.copy:
+        dest: "{{ render_root }}/data/config.yaml"
+        content: "{{ cfg | to_nice_yaml(sort_keys=false) }}"
+        mode: "0640"
+
+    # set_fact, not task vars: the role's resolver already bound hermes_config_owned as a FACT,
+    # and a fact outranks a task-level var, so a `vars:` override here would test nothing.
+    - name: Remember the resolved owned list, then declare a wiring leaf in it too
+      ansible.builtin.set_fact:
+        _owned_saved: "{{ hermes_config_owned }}"
+        hermes_config_owned:
+          - { key: model.default, value: other/model, tier: B }
+
+    - name: Declaring a wiring leaf in inventory too is refused
+      block:
+        - name: Merge with model.default owned in two places
+          ansible.builtin.include_tasks: merge_case.yml
+        - name: The duplicate was accepted
+          ansible.builtin.fail:
+            msg: "duplicate owned leaf ACCEPTED"
+      rescue:
+        - name: Refused for the right reason
+          ansible.builtin.assert:
+            that:
+              - "'owned twice' in (ansible_failed_result.msg | default(''))"
+            quiet: true
+
+    - name: Put the resolved owned list back
+      ansible.builtin.set_fact:
+        hermes_config_owned: "{{ _owned_saved }}"
+
+    # ---- the image pin gate refuses every malformed pin ------------------------------------
+    - name: Each malformed pin is refused by the gate
+      ansible.builtin.include_tasks: pin_case.yml
+      loop_control: { loop_var: pin_case }
+      loop:
+        - why: a tag with no digest
+          tag: v0.21.6
+          digest: ""
+        - why: a floating tag even with a valid digest
+          tag: latest
+          digest: "sha256:55e192fba0cd4fde61142abbff5adeacff40efdb482ccd0ff877924bd274f909"
+        - why: a digest of the wrong length
+          tag: v0.21.6
+          digest: "sha256:55e192fb"
+        - why: a digest without the sha256 prefix
+          tag: v0.21.6
+          digest: "55e192fba0cd4fde61142abbff5adeacff40efdb482ccd0ff877924bd274f909"
+        - why: an uppercase-hex digest
+          tag: v0.21.6
+          digest: "sha256:55E192FBA0CD4FDE61142ABBFF5ADEACFF40EFDB482CCD0FF877924BD274F909"
+        - why: a tag smuggling a digest of its own
+          tag: "v0.21.6@sha256:55e192fba0cd4fde61142abbff5adeacff40efdb482ccd0ff877924bd274f909"
+          digest: "sha256:55e192fba0cd4fde61142abbff5adeacff40efdb482ccd0ff877924bd274f909"
+        - why: a repo that already carries a tag
+          repo: nousresearch/hermes-agent:v0.1
+          tag: v0.21.6
+          digest: "sha256:55e192fba0cd4fde61142abbff5adeacff40efdb482ccd0ff877924bd274f909"
+
+    - name: The valid pin passes the same gate (near-miss)
+      ansible.builtin.include_role:
+        name: service_hermes
+        tasks_from: _pin_gate
+      vars:
+        hermes_image_repo: nousresearch/hermes-agent
+        hermes_image_tag: v0.21.6
+        hermes_image_digest: "sha256:55e192fba0cd4fde61142abbff5adeacff40efdb482ccd0ff877924bd274f909"
+
+    # ---- the /v1/models read-back classifier: every verdict is reachable, none by accident ----
+    # A clean converge (matches) and the five ways a read-back can go wrong. The two that matter
+    # most are "unparseable 200" and "no response": both must be cannot-tell, never matches.
+    - name: Each canned /v1/models result classifies exactly as declared
+      ansible.builtin.include_tasks: readback_case.yml
+      loop_control: { loop_var: rb_case }
+      loop:
+        - why: 200 with a model list
+          result: { status: 200, content: '{"object":"list","data":[{"id":"hermes-agent"}]}' }
+          verdict: matches
+          class: ok
+          status: 200
+        - why: 200 with an empty list (near-miss of matches)
+          result: { status: 200, content: '{"object":"list","data":[]}' }
+          verdict: drift
+          class: empty-list
+          status: 200
+        - why: 401 key mismatch
+          result: { status: 401, content: '{"error":"invalid api key"}' }
+          verdict: drift
+          class: auth-refused
+          status: 401
+        - why: 404
+          result: { status: 404, content: "" }
+          verdict: drift
+          class: client-error
+          status: 404
+        - why: 503 from the server
+          result: { status: 503, content: "" }
+          verdict: cannot-tell
+          class: server-error
+          status: 503
+        - why: 200 but the body is HTML not JSON
+          result: { status: 200, content: "<html>login</html>" }
+          verdict: cannot-tell
+          class: unparseable
+          status: 200
+        - why: 200 but the body is a JSON list not an object
+          result: { status: 200, content: "[1,2]" }
+          verdict: cannot-tell
+          class: unparseable
+          status: 200
+        - why: 200 but `data` is a STRING (a string has a length; it must not count as models)
+          result: { status: 200, content: '{"object":"list","data":"abc"}' }
+          verdict: cannot-tell
+          class: unparseable
+          status: 200
+        - why: 200 but `data` is a mapping, not a list
+          result: { status: 200, content: '{"object":"list","data":{"id":"x"}}' }
+          verdict: cannot-tell
+          class: unparseable
+          status: 200
+        - why: no response at all (connection refused, status -1)
+          result: { status: -1, msg: "Connection refused" }
+          verdict: cannot-tell
+          class: no-response
+          status: -1
+        - why: no status key at all
+          result: {}
+          verdict: cannot-tell
+          class: no-response
+          status: -1
+
+# ---------------------------------------------------------------------------------------------
+# Play 3 - the toolset floor, the hooks flag, the managed scope and its preflight, the
+# read-only delivered skills, and the concurrent-write fixture. As above, assertions are on parsed
+# files and on the role's own verdicts; every "must refuse" names the reason it must refuse for.
+- name: Verify - floor, managed scope, delivered skills and the concurrent write
+  hosts: localhost
+  gather_facts: false
+  vars_files: [vars/merge.yml]
+  vars:
+    race_dir: /tmp/molecule-hermes-race
+    # The floor, written out. NOT derived from the vars the role reads: a test that recomputes
+    # core-minus-subtract agrees with a broken subtraction by construction.
+    expected_floor: [connections, image_gen, memory, session_search, skills, todo, vision, web]
+    must_be_gone: [terminal, file, code_execution, browser, delegation, cronjob]
+  tasks:
+    # NO second call to the role's resolver here. It is the generated two-branch one (RESOLVE-01):
+    # a repeat call in the same run rebinds every option to its role DEFAULT and a fact outranks
+    # vars_files, so it would silently point hermes_config_dir back at /opt/hermes. Play 2 already
+    # resolved; its facts are still bound, and that is the state this play wants.
+
+    # Rebuilds hermes__owned_all and the floor facts (facts do not cross from converge).
+    - name: Merge once, so the derived facts exist and the file is current
+      ansible.builtin.include_tasks: merge_case.yml
+
+    - name: Read the live config, the owned-keys document and the staged managed config
+      ansible.builtin.slurp: { src: "{{ item }}" }
+      loop:
+        - "{{ render_root }}/data/config.yaml"
+        - "{{ render_root }}/policy/owned-keys.json"
+        - "{{ render_root }}/managed/config.yaml"
+        - "{{ render_root }}/policy/managed.sha256"
+      register: _m1b
+      no_log: true
+
+    - name: Parse them
+      ansible.builtin.set_fact:
+        c3: "{{ _m1b.results[0].content | b64decode | from_yaml }}"
+        okeys: "{{ (_m1b.results[1].content | b64decode | from_json).owned }}"
+        mdoc: "{{ _m1b.results[2].content | b64decode | from_yaml }}"
+        msha: "{{ (_m1b.results[3].content | b64decode).split()[0] }}"
+
+    # ---- the toolset floor ------------------------------------------------------------
+    - name: The API platform's toolsets are the floor, and none of the subtracted ones remain
+      ansible.builtin.assert:
+        that:
+          # seeded [web, terminal]: the hand-set terminal is GONE and the list is the floor
+          - c3.platform_toolsets.api_server == expected_floor
+          - c3.platform_toolsets.api_server | intersect(must_be_gone) | length == 0
+          # and it did not collapse to nothing: web (search) is still there for chat clients
+          - "'web' in c3.platform_toolsets.api_server"
+        fail_msg: "toolset floor wrong: {{ c3.platform_toolsets.api_server }}"
+        quiet: true
+
+    - name: The floor is a tier-C owned leaf, so the managed scope pins it
+      vars:
+        _ts: "{{ okeys | selectattr('key', 'equalto', 'platform_toolsets.api_server') | list }}"
+      ansible.builtin.assert:
+        that:
+          - _ts | length == 1
+          - _ts[0].tier == 'C'
+          - _ts[0].value == expected_floor
+          - mdoc.platform_toolsets.api_server == expected_floor
+        quiet: true
+
+    - name: Each misspelt, widened or empty floor is refused for the right reason
+      ansible.builtin.include_tasks: refuse_case.yml
+      loop_control: { loop_var: refuse_case }
+      loop:
+        - why: a subtracted name that matches nothing (terminall) would leave terminal enabled
+          entry: _config_merge
+          facts: { hermes_toolsets_subtract: { api_server: [terminall, file] } }
+          expect: removes nothing
+        - why: a subtraction from an undeclared (empty) core set
+          entry: _config_merge
+          facts: { hermes_toolsets_core: [] }
+          expect: removes nothing
+        - why: a floor that subtracts every toolset
+          entry: _config_merge
+          facts:
+            hermes_toolsets_core: [web]
+            hermes_toolsets_subtract: { api_server: [web] }
+          expect: no toolset at all
+        # with the API server on, "no floor" and "a floor that keeps a
+        # shell-equivalent toolset" are both refused; the near-miss is the good merge above
+        # (api_server subtracted, the three gone) and the api-off case right after.
+        - why: the API server is on, full control is not chosen, and the floor keeps terminal (an empty subtraction pins the full set)
+          entry: _config_merge
+          facts:
+            hermes_toolsets_subtract: { api_server: [] }
+          expect: shell-equivalent
+
+    # Full control, both directions. (1) flag TRUE: nothing is removed, even with a subtraction declared.
+    # (2) flag ABSENT and no api_server entry: the role's default floor is subtracted, so a forgotten
+    # floor can never read as "full control". (The flag-absent + empty-list case is refused above.)
+    - name: Full control chosen removes nothing; flag absent applies the default floor
+      block:
+        - name: Remember the resolved values
+          ansible.builtin.set_fact:
+            _d23_saved: { subtract: "{{ hermes_toolsets_subtract }}", fc: "{{ hermes_api_server_full_control }}" }
+        - name: Full control chosen on purpose
+          ansible.builtin.set_fact:
+            hermes_api_server_full_control: true
+        - name: The merge accepts it
+          ansible.builtin.include_role:
+            name: service_hermes
+            tasks_from: _config_merge
+            public: true
+        - name: The api_server leaf is the whole core set, nothing subtracted
+          ansible.builtin.assert:
+            that:
+              - >-
+                (hermes__floor_leaves | selectattr('key', 'equalto', ['platform_toolsets', 'api_server'])
+                 | map(attribute='value') | first | sort) == (hermes_toolsets_core | sort)
+            quiet: true
+        - name: Flag absent, no api_server entry
+          ansible.builtin.set_fact:
+            hermes_api_server_full_control: false
+            hermes_toolsets_subtract: {}
+        - name: The merge accepts it
+          ansible.builtin.include_role:
+            name: service_hermes
+            tasks_from: _config_merge
+            public: true
+        - name: The api_server leaf is exactly the floor, written out and not derived
+          ansible.builtin.assert:
+            that:
+              - >-
+                (hermes__floor_leaves | selectattr('key', 'equalto', ['platform_toolsets', 'api_server'])
+                 | map(attribute='value') | first | sort) == (expected_floor | sort)
+            quiet: true
+      always:
+        - name: Put the resolved values back
+          ansible.builtin.set_fact:
+            hermes_toolsets_subtract: "{{ _d23_saved.subtract }}"
+            hermes_api_server_full_control: "{{ _d23_saved.fc }}"
+        - name: Merge once more with the real inputs
+          ansible.builtin.include_tasks: merge_case.yml
+
+    - name: Near-miss for the api_server gate - with the API server OFF, no floor is required
+      block:
+        - name: Remember the resolved values
+          ansible.builtin.set_fact:
+            _nm_saved: { enabled: "{{ hermes_api_server_enabled }}", subtract: "{{ hermes_toolsets_subtract }}" }
+        - name: API off, no api_server subtraction
+          ansible.builtin.set_fact:
+            hermes_api_server_enabled: false
+            hermes_toolsets_subtract: {}
+        - name: The merge accepts it
+          ansible.builtin.include_role:
+            name: service_hermes
+            tasks_from: _config_merge
+            public: true
+      always:
+        - name: Put the resolved values back
+          ansible.builtin.set_fact:
+            hermes_api_server_enabled: "{{ _nm_saved.enabled }}"
+            hermes_toolsets_subtract: "{{ _nm_saved.subtract }}"
+        # That merge wrote a config without the floor leaf; re-merge so the rest of this play reads
+        # the real floor again.
+        - name: Merge once more with the real inputs
+          ansible.builtin.include_tasks: merge_case.yml
+
+    # ---- hooks_auto_accept -------------------------------------------------------------
+    - name: hooks_auto_accept was hand-set false and is true again, pinned tier C
+      vars:
+        _h: "{{ okeys | selectattr('key', 'equalto', 'hooks_auto_accept') | list }}"
+      ansible.builtin.assert:
+        that:
+          - c3.hooks_auto_accept is true
+          - _h | length == 1
+          - _h[0].tier == 'C'
+          - _h[0].value is true
+          - mdoc.hooks_auto_accept is true
+        quiet: true
+
+    # ---- the managed scope --------------------------------------------------------------
+    - name: The managed config carries the tier-C leaves and nothing else
+      ansible.builtin.assert:
+        that:
+          - mdoc.keys() | list | sort == ['hooks_auto_accept', 'platform_toolsets']
+          # skills.external_dirs is tier C in the USER layer: upstream reads skills.* raw, and
+          # save_config strips managed leaves from config.yaml, so a pin there would vanish on
+          # the first save_config writer. It is in the file and marked so in owned-keys.json.
+          - "'skills' not in mdoc"
+          - c3.skills.external_dirs == ['/opt/example-skills']
+          - (okeys | selectattr('key', 'equalto', 'skills.external_dirs') | first).layer == 'user'
+          - (okeys | selectattr('key', 'equalto', 'skills.external_dirs') | first).tier == 'C'
+          # near-misses: tier-B, A-range and wiring leaves are the agent's and the merge's, not pinned
+          - "'sessions' not in mdoc"
+          - "'curator' not in mdoc"
+          - "'model' not in mdoc"
+          - "'providers' not in mdoc"
+          # nothing secret-shaped in a world-readable file
+          - "'sk-molecule' not in (_m1b.results[2].content | b64decode)"
+        quiet: true
+
+    # ---- the enforced scope projects the USER layer only ----------------------
+    # The live shape after any save_config writer under v0.22.5 (the dashboard, plugins install
+    # --enable, tools enable; NOT `hermes config set`, which round-trips the file): it has stripped every
+    # managed leaf (hooks_auto_accept, the floor) from the file. With the scope enforced that is NOT
+    # drift -- the overlay supplies them -- so the merge must leave them out, and the only diff is
+    # the user-layer leaf it must restore (it was a managed pin that vanished the same way).
+    - name: Enforced scope - seed the file upstream leaves after a tier-A write
+      ansible.builtin.copy:
+        dest: "{{ render_root }}/data/config.yaml"
+        content: >-
+          {{ c3 | dict2items | rejectattr('key', 'in', ['hooks_auto_accept', 'platform_toolsets', 'skills'])
+             | items2dict | to_nice_yaml(indent=2) }}
+        mode: "0640"
+
+    - name: Enforced scope - turn enforcement on for one merge
+      ansible.builtin.set_fact:
+        hermes_managed_enforce: true
+
+    - name: Enforced scope - merge
+      ansible.builtin.include_tasks: merge_case.yml
+
+    - name: Enforced scope - read the merged file
+      ansible.builtin.slurp:
+        src: "{{ render_root }}/data/config.yaml"
+      register: _enf
+
+    - name: Enforced scope - only the user-layer leaf was restored; the managed ones were not drift
+      vars:
+        c4: "{{ _enf.content | b64decode | from_yaml }}"
+      ansible.builtin.assert:
+        that:
+          - hermes__merge.diff | map(attribute='key') | list == ['skills.external_dirs']
+          - c4.skills.external_dirs == ['/opt/example-skills']
+          - "'hooks_auto_accept' not in c4"
+          - "'platform_toolsets' not in c4"
+        fail_msg: "diff {{ hermes__merge.diff | map(attribute='key') | list }}; keys {{ c4.keys() | list }}"
+        quiet: true
+
+    - name: Enforced scope - restore enforcement off and the file the rest of this play reads
+      ansible.builtin.set_fact:
+        hermes_managed_enforce: false
+
+    - name: Enforced scope - put the merged file back
+      ansible.builtin.copy:
+        dest: "{{ render_root }}/data/config.yaml"
+        content: "{{ _m1b.results[0].content | b64decode }}"
+        mode: "0640"
+
+    - name: Stat the staged files and the script the role ships
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        checksum_algorithm: sha256
+      loop:
+        - "{{ render_root }}/managed/config.yaml"
+        - "{{ render_root }}/policy/policy_preflight.py"
+        - "{{ playbook_dir }}/../../scripts/policy_preflight.py"
+      register: _st
+      loop_control: { label: "{{ item | basename }}" }
+
+    - name: The recorded hash is the real file's hash, and the staged script is the shipped one
+      ansible.builtin.assert:
+        that:
+          - _st.results[0].stat.mode == '0644'
+          - _st.results[0].stat.checksum == msha
+          - _st.results[1].stat.checksum == _st.results[2].stat.checksum
+        quiet: true
+
+    - name: Run the staged preflight through every case it claims to refuse
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_playbook_python }}"
+          - "{{ playbook_dir }}/preflight_cases.py"
+          - "{{ render_root }}"
+          - "{{ render_root }}/policy/policy_preflight.py"
+          - "{{ playbook_dir }}/../../scripts/preflight_grammar_cases.py"
+      register: _pf
+      changed_when: false
+
+    - name: Show the cases
+      ansible.builtin.debug:
+        msg: "{{ _pf.stdout_lines }}"
+
+    - name: Every case behaved, none was skipped silently
+      ansible.builtin.assert:
+        that:
+          - "'all preflight cases behaved' in _pf.stdout"
+          - _pf.stdout_lines | select('match', '^ok ') | list | length >= 11
+          - _pf.stdout_lines | select('match', '^FAIL') | list | length == 0
+        quiet: true
+
+    - name: A managed set with nothing pinned is refused at staging, and a secret is refused
+      ansible.builtin.include_tasks: refuse_case.yml
+      loop_control: { loop_var: refuse_case }
+      loop:
+        - why: no tier-C leaf at all (an empty pin is the fail-open state)
+          entry: _managed_scope
+          facts:
+            hermes__owned_all: "{{ hermes__owned_all | rejectattr('tier', 'equalto', 'C') | list }}"
+          expect: pin nothing
+        - why: a secret leaf at tier C would land in a world-readable file
+          entry: _managed_scope
+          facts:
+            hermes__owned_all: "{{ hermes__owned_all + [{'key': 'x.api_key', 'value': 'sk-nope', 'tier': 'C', 'secret': true}] }}"
+          expect: world-readable
+
+    # ---- delivered skills, read-only ------------------------------------------------------
+    - name: List what was delivered
+      ansible.builtin.find:
+        paths: "{{ render_root }}/estate-skills"
+        recurse: true
+        file_type: any
+      register: _sk
+
+    - name: Exactly the source skills are there, the stale one is gone, files are 0444
+      vars:
+        _rel: "{{ _sk.files | rejectattr('isdir') | map(attribute='path') | map('relpath', render_root ~ '/estate-skills') | sort | list }}"
+      ansible.builtin.assert:
+        that:
+          - _rel == ['alpha/SKILL.md', 'alpha/refs/notes.md', 'beta/SKILL.md'] | sort
+          - _sk.files | rejectattr('isdir') | map(attribute='mode') | unique | list == ['0444']
+          - _sk.files | selectattr('isdir') | map(attribute='mode') | unique | list == ['0755']
+        fail_msg: "delivered: {{ _rel }}"
+        quiet: true
+
+    - name: Who am I (a root runner can write anywhere, so the write attempt would prove nothing)
+      ansible.builtin.command: id -u
+      register: _uid
+      changed_when: false
+
+    - name: Try to patch a delivered skill the way skill_manage would
+      ansible.builtin.shell: 'echo "injected" >> "{{ render_root }}/estate-skills/alpha/SKILL.md"'
+      register: _patch
+      changed_when: false
+      failed_when: false
+
+    - name: The patch is refused by the file mode (or reported CANNOT-TELL, never passed)
+      ansible.builtin.assert:
+        that:
+          - _patch.rc != 0
+        fail_msg: "a delivered skill was WRITABLE (rc={{ _patch.rc }})"
+        quiet: true
+      when: _uid.stdout | int != 0
+
+    - name: Say plainly when the runner is root
+      ansible.builtin.debug:
+        msg: "CANNOT-TELL: runner is uid 0, so 0444 does not stop a write here. The mount's ':ro' is the other half and needs docker (lab)."
+      when: _uid.stdout | int == 0
+
+    - name: The delivered skill file is byte-identical to the source after that attempt
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        checksum_algorithm: sha256
+      loop:
+        - "{{ render_root }}/estate-skills/alpha/SKILL.md"
+        - "{{ playbook_dir }}/fixtures/skills/alpha/SKILL.md"
+      register: _skst
+      loop_control: { label: "{{ item | basename }}" }
+      when: _uid.stdout | int != 0
+
+    - name: Unchanged
+      ansible.builtin.assert:
+        that: _skst.results[0].stat.checksum == _skst.results[1].stat.checksum
+        quiet: true
+      when: _uid.stdout | int != 0
+
+    - name: The compose files mount the skills read-only, only when delivered, and never bind a single file
+      ansible.builtin.slurp: { src: "/tmp/molecule-hermes/{{ item }}/docker-compose.yml" }
+      loop: [full, minimal, headless]
+      register: _cmp
+      no_log: true
+
+    - name: Parse the three compose files
+      ansible.builtin.set_fact:
+        cmp: "{{ dict(['full', 'minimal', 'headless'] | zip(_cmp.results | map(attribute='content') | map('b64decode') | map('from_yaml') | map(attribute='services.hermes.volumes') | list)) }}"
+      no_log: true
+
+    - name: Mount assertions
+      ansible.builtin.assert:
+        that:
+          - "'/tmp/molecule-hermes/full/estate-skills:/opt/example-skills:ro' in cmp.full"
+          # the agent's own state is still the one rw mount
+          - cmp.full | select('search', ':/opt/data:rw$') | list | length == 1
+          # not delivered -> not mounted (the near-miss for the always-true guard)
+          - cmp.minimal | select('search', 'estate-skills') | list | length == 0
+          - cmp.headless | select('search', 'estate-skills') | list | length == 0
+          # a single-file bind of config.yaml would turn the dashboard's rename into EBUSY
+          - (cmp.full + cmp.minimal + cmp.headless) | select('search', 'config[.]yaml') | list | length == 0
+          # and the read-only source is not under the writable data directory
+          - "'/data/' not in (cmp.full | select('search', 'estate-skills') | first).split(':')[0]"
+        quiet: true
+
+    # The gh CLI for the Kanban PR completion contract: a read-only FILE mount at a path on the
+    # image's PATH, whose source carries the version (an upgrade recreates; no stale inode) and sits
+    # outside the agent's writable data/. Absent when no version is declared (the near-miss).
+    - name: Mount assertions - the gh CLI
+      ansible.builtin.assert:
+        that:
+          - "'/tmp/molecule-hermes/full/tools/gh_2.103.3_linux_amd64/bin/gh:/usr/local/bin/gh:ro' in cmp.full"
+          - (cmp.minimal + cmp.headless) | select('search', '/usr/local/bin/gh') | list | length == 0
+          - "'/data/' not in (cmp.full | select('search', '/usr/local/bin/gh') | first).split(':')[0]"
+        quiet: true
+
+    - name: Prune - a skill removed from the source leaves the guest
+      block:
+        - name: Make a source without beta
+          ansible.builtin.copy:
+            src: "{{ playbook_dir }}/fixtures/skills/"
+            dest: /tmp/molecule-hermes-skills-src/
+            mode: "0755"
+        - name: Remove beta from that copy
+          ansible.builtin.file: { path: /tmp/molecule-hermes-skills-src/beta, state: absent }
+        - name: Deliver from the smaller source
+          ansible.builtin.set_fact: { hermes_skills_source: /tmp/molecule-hermes-skills-src }
+        - name: Run the delivery
+          ansible.builtin.include_role: { name: service_hermes, tasks_from: _estate_skills, public: true }
+        - name: Look
+          ansible.builtin.find: { paths: "{{ render_root }}/estate-skills", recurse: true, file_type: file }
+          register: _pr
+        - name: beta is gone, alpha stayed
+          vars: { _rel: "{{ _pr.files | map(attribute='path') | map('relpath', render_root ~ '/estate-skills') | sort | list }}" }
+          ansible.builtin.assert:
+            that: _rel == ['alpha/SKILL.md', 'alpha/refs/notes.md'] | sort
+            fail_msg: "{{ _rel }}"
+            quiet: true
+      always:
+        - name: Back to the real source, and deliver it again
+          ansible.builtin.set_fact: { hermes_skills_source: "{{ playbook_dir }}/fixtures/skills" }
+        - name: Deliver
+          ansible.builtin.include_role: { name: service_hermes, tasks_from: _estate_skills, public: true }
+
+    - name: An empty directory to use as a bad source
+      ansible.builtin.file: { path: /tmp/molecule-hermes-empty-src, state: directory, mode: "0755" }
+
+    - name: An empty or missing source is refused and deletes nothing
+      ansible.builtin.include_tasks: refuse_case.yml
+      loop_control: { loop_var: refuse_case }
+      loop:
+        - why: a source directory holding no SKILL.md (would prune every delivered skill)
+          entry: _estate_skills
+          facts: { hermes_skills_source: /tmp/molecule-hermes-empty-src }
+          expect: contains no SKILL.md
+        - why: a source directory that does not exist
+          entry: _estate_skills
+          facts: { hermes_skills_source: /tmp/molecule-hermes-no-such-dir }
+          expect: contains no SKILL.md
+
+    - name: Both bad sources left the delivered skills in place
+      ansible.builtin.find: { paths: "{{ render_root }}/estate-skills", recurse: true, file_type: file }
+      register: _after_bad
+
+    - name: Still three files
+      ansible.builtin.assert:
+        that: _after_bad.matched == 3
+        quiet: true
+
+    # ---- the concurrent-write fixture --------------------------------------------------
+    - name: WITH the quiesce - a dashboard-style writer runs through the real merge
+      ansible.builtin.include_tasks: race_case.yml
+      vars: { race_quiesce: true }
+
+    - name: What the writer and the merge did (numbers only)
+      ansible.builtin.debug:
+        msg: >-
+          writer committed {{ race_result.writes_before_merge }} writes before the merge started and
+          {{ race_result.final.last }} in all; lost updates it saw: {{ race_result.final.anomalies }};
+          file after the merge holds writes={{ race_result.config.display.writes }}
+
+    - name: The write the writer committed last survived the merge, and the merge still repaired its leaf
+      vars:
+        r: "{{ race_result }}"
+        _norm: { sessions: { auto_prune: 0 } }
+      ansible.builtin.assert:
+        that:
+          # the writer was genuinely active DURING the merge: it kept committing after the merge began
+          - r.final.last > r.writes_before_merge | int
+          # nothing it committed was overwritten, from its own point of view
+          - r.final.anomalies == 0
+          # the counter in the file after the merge is the writer's last commit, and is the snapshot's
+          - r.config.display.writes == r.final.last
+          - r.snapshot.display.writes == r.final.last
+          # the merge did its job: the one stale owned leaf, and only that one, was repaired
+          - r.diff_keys == ['sessions.auto_prune']
+          - r.config.sessions.auto_prune is true
+          # every OTHER key is byte-for-byte what the quiesced writer left
+          - (r.config | combine(_norm, recursive=true)) == (r.snapshot | combine(_norm, recursive=true))
+        fail_msg: "{{ race_result | to_json }}"
+        quiet: true
+
+    - name: The CONTROL - the same run with nothing stopping the writer
+      ansible.builtin.include_tasks: race_case.yml
+      vars: { race_quiesce: false }
+
+    - name: What the control saw (numbers only)
+      ansible.builtin.debug:
+        msg: >-
+          control: writer committed {{ race_result.final.last }} writes; it saw
+          {{ race_result.final.anomalies }} of its own commits overwritten by the merge; the merge's
+          repaired leaf is {{ 'GONE (the writer overwrote the merge)' if race_result.config.sessions.auto_prune is false else 'present' }}
+
+    # A race has TWO losers and which one loses depends on where the writer was when the merge's
+    # rename landed. If the writer had already read, it writes its stale copy over the merge (the
+    # converge's repair is lost); if it was asleep, its next read sees the merge's OLDER counter
+    # (its own commits were lost, which it detects). Either is a lost update, and the quiesced case
+    # above can have neither, so the control passes on EITHER.
+    - name: The fixture can see a lost update when there is one
+      vars:
+        _dashboard_lost: "{{ race_result.final.anomalies | int >= 1 }}"
+        _merge_lost: "{{ race_result.config.sessions.auto_prune is false }}"
+      ansible.builtin.assert:
+        that:
+          - _dashboard_lost or _merge_lost
+        fail_msg: >-
+          The control saw no lost update in either direction, so the fixture is incapable of
+          detecting one and the passing case above proves nothing: {{ race_result.final }}
+        quiet: true
+
+# ---------------------------------------------------------------------------------------------
+# The settings sidecar renders only when enabled, loopback-only; the hook and the catalogue
+# are staged; the hook gate refuses an unenforced scope (and passes the near-miss).
+- name: Verify - policy files and the settings sidecar
+  hosts: localhost
+  gather_facts: false
+  vars:
+    render_root: /tmp/molecule-hermes
+    hub_root: /tmp/molecule-hermes-hub
+  tasks:
+    - name: Read the full and minimal compose files
+      ansible.builtin.slurp:
+        src: "{{ render_root }}/{{ item }}/docker-compose.yml"
+      loop: [full, minimal, headless]
+      register: m4_compose
+
+    - name: Parse them
+      ansible.builtin.set_fact:
+        m4_full: "{{ (m4_compose.results[0].content | b64decode | from_yaml).services }}"
+        m4_minimal: "{{ (m4_compose.results[1].content | b64decode | from_yaml).services }}"
+        m4_headless: "{{ (m4_compose.results[2].content | b64decode | from_yaml).services }}"
+
+    - name: The sidecar exists only where enabled, on loopback only, with its secrets mounted read-only
+      vars:
+        _s: "{{ m4_full['hermes-settings'] }}"
+      ansible.builtin.assert:
+        that:
+          - "'hermes-settings' not in m4_minimal"
+          - "'hermes-settings' not in m4_headless"
+          - _s.ports == ['127.0.0.1:8650:8650']
+          - _s.user == '10000:10000'
+          - "(render_root ~ '/full/settings-secrets:/run/hub-settings:ro') in _s.volumes"
+          - "(render_root ~ '/full/policy:/opt/hermes-policy:ro') in _s.volumes"
+          - "(render_root ~ '/full/settings-service:/opt/hub-settings:ro') in _s.volumes"
+          - _s.environment.SETTINGS_PROFILES == 'default,settings,coder'
+          # The full variant enforces the managed scope , so the
+          # sidecar carries it too -- read-only, so its own `config set` refuses a managed key.
+          - _s.environment.HERMES_MANAGED_DIR == '/etc/hermes-managed'
+          - "(render_root ~ '/full/managed:/etc/hermes-managed:ro') in _s.volumes"
+          - _s.image == m4_full.hermes.image
+          # The agent container must NOT see the service's secrets.
+          - m4_full.hermes.volumes | select('search', 'settings-secrets') | list | length == 0
+        quiet: true
+
+    - name: Stat the staged hook
+      ansible.builtin.stat:
+        path: "{{ hub_root }}/policy/{{ item }}"
+        checksum_algorithm: sha256
+      loop: [hermes_policy_hook.py]
+      register: m4_staged
+
+    - name: The hook is executable and byte-identical to the shipped script
+      ansible.builtin.assert:
+        that:
+          - m4_staged.results[0].stat.exists
+          - m4_staged.results[0].stat.mode == '0755'
+          - m4_staged.results[0].stat.checksum == (lookup('ansible.builtin.file', playbook_dir ~ '/../../scripts/hermes_policy_hook.py', rstrip=False) | hash('sha256'))
+        quiet: true
+
+    - name: Resolve the role's declared options
+      ansible.builtin.include_role:
+        name: service_hermes
+        tasks_from: _resolve_defaults
+        public: true
+
+    - name: MUST FAIL - the hook gate refuses an unenforced managed scope
+      block:
+        - name: Stage with the scope not enforced
+          ansible.builtin.include_role:
+            name: service_hermes
+            tasks_from: _hub_policy
+          vars:
+            hermes_config_dir: "{{ hub_root }}"
+            hermes_managed_enforce: false
+            hermes_policy_hook_enabled: true
+            hermes__owned_all: [{key: hooks_auto_accept, value: true, tier: C}]
+        - name: Not reached
+          ansible.builtin.set_fact:
+            m4_gate_unenforced: passed
+      rescue:
+        - name: Record the refusal
+          ansible.builtin.set_fact:
+            m4_gate_unenforced: refused
+
+    - name: MUST FAIL - the hook gate refuses hooks_auto_accept missing
+      block:
+        - name: Stage with no hooks_auto_accept leaf
+          ansible.builtin.include_role:
+            name: service_hermes
+            tasks_from: _hub_policy
+          vars:
+            hermes_config_dir: "{{ hub_root }}"
+            hermes_managed_enforce: true
+            hermes_policy_hook_enabled: true
+            hermes__owned_all: [{key: approvals.mode, value: smart, tier: C}]
+        - name: Not reached
+          ansible.builtin.set_fact:
+            m4_gate_noauto: passed
+      rescue:
+        - name: Record the refusal
+          ansible.builtin.set_fact:
+            m4_gate_noauto: refused
+
+    - name: Both bad inputs were refused by the gate
+      ansible.builtin.assert:
+        that:
+          - m4_gate_unenforced == 'refused'
+          - m4_gate_noauto == 'refused'
+        quiet: true
+
+# ---------------------------------------------------------------------------------------------
+# Play 3 - routes, send gate and cron env as TIER-C leaves through the real merge and the real
+# managed-scope staging; the gate and the cron scripts through the real delivery; and the
+# refusals, each with the near-miss that passes. Assertions are on the files the role wrote.
+# The merge play before this one ran the resolver on localhost, and set_fact persists across
+# plays: its facts would outrank this play's vars_files, and the resolver's re-entry branch would
+# rebind defaults over them (meta: clear_facts does not clear set_fact facts -- measured). So this
+# play runs on its OWN host, a local-connection alias with no facts at all.
+- name: Add a fact-free local host for the automations play
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Add m5-local
+      ansible.builtin.add_host:
+        name: m5-local
+        ansible_connection: local
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+      changed_when: false
+
+- name: Verify - automations
+  hosts: m5-local
+  gather_facts: false
+  vars_files: [vars/automations.yml]
+  tasks:
+    - name: Resolve the role's declared options
+      ansible.builtin.include_role:
+        name: service_hermes
+        tasks_from: _resolve_defaults
+        public: true
+
+    - name: Read the merged config, the managed copy and owned-keys.json
+      ansible.builtin.slurp: { src: "{{ render_root }}/{{ item }}" }
+      loop: [data/config.yaml, managed/config.yaml, policy/owned-keys.json, policy/hub_gate.json]
+      register: _m5_files
+
+    - name: Parse them
+      ansible.builtin.set_fact:
+        _m5_live: "{{ _m5_files.results[0].content | b64decode | from_yaml }}"
+        _m5_managed: "{{ _m5_files.results[1].content | b64decode | from_yaml }}"
+        _m5_owned: "{{ (_m5_files.results[2].content | b64decode | from_json).owned }}"
+        _m5_gatecfg: "{{ _m5_files.results[3].content | b64decode | from_json }}"
+
+    # Pinned in the managed scope, which is where the gateway reads them from (its loader,
+    # gateway/config_loader.read_yaml_layers, applies the overlay). Under the enforced scope the merge
+    # no longer projects managed tier-C leaves into the user file (upstream's save_config strips
+    # them from it anyway), so the file is not where a route is required to be; a live probe reads
+    # the routes through upstream's own loader.
+    - name: The routes are pinned in the managed scope, with secret_env turned into an env reference
+      ansible.builtin.assert:
+        that:
+          - _m5_managed.platforms.webhook.enabled is sameas true
+          - _m5_managed.platforms.webhook.extra.port == 8644
+          - _m5_managed.platforms.webhook.extra.routes | list | sort == ['gone-route', 'ha', 'hub-test']
+          - _m5_managed.platforms.webhook.extra.routes.ha.secret == '${env:HERMES_WEBHOOK_HA_SECRET}'
+          - "'secret_env' not in _m5_managed.platforms.webhook.extra.routes.ha"
+          - "'secret' not in _m5_managed.platforms.webhook.extra.routes['hub-test']"
+          - _m5_managed.platforms.webhook.extra.routes.ha.toolsets == ['web']
+          - _m5_managed.platforms.webhook.extra.routes['hub-test'].deliver == 'slack'
+        fail_msg: "{{ _m5_live.platforms | default({}) | to_json }} MANAGED {{ _m5_managed | to_json }}"
+        quiet: true
+
+    - name: No secret VALUE is in the live config, the managed copy or owned-keys.json
+      ansible.builtin.assert:
+        that:
+          - "'molecule-webhook-global-secret' not in (_m5_files.results | map(attribute='content') | map('b64decode') | join)"
+          - "'molecule-ha-route-placeholder-value' not in (_m5_files.results | map(attribute='content') | map('b64decode') | join)"
+        quiet: true
+      no_log: true
+
+    - name: The hook and the env passthrough are tier-C, and every webhook leaf is tier C
+      ansible.builtin.assert:
+        that:
+          - _m5_managed.hooks.pre_tool_call | length == 1
+          - _m5_managed.hooks.pre_tool_call[0].fail_closed is sameas true
+          - _m5_managed.hooks.pre_tool_call[0].command is search('/opt/hermes-policy/hub_gate[.]py$')
+          - _m5_managed.terminal.env_passthrough == ['EXAMPLE_POLL_TOKEN']
+          - _m5_owned | selectattr('key', 'search', '^(platforms[.]webhook|hooks[.]|terminal[.]env_passthrough)')
+              | rejectattr('tier', 'equalto', 'C') | list | length == 0
+          - _m5_owned | selectattr('key', 'search', '^platforms[.]webhook[.]extra[.]routes[.]') | list | length >= 7
+        fail_msg: "{{ _m5_owned | selectattr('key', 'search', '^(platforms|hooks|terminal)') | list | to_json }}"
+        quiet: true
+
+    - name: The gate is staged as shipped, with a lower-cased allowlist
+      ansible.builtin.stat: { path: "{{ render_root }}/policy/hub_gate.py", checksum_algorithm: sha256 }
+      register: _m5_gate
+
+    - name: Stat the shipped gate
+      ansible.builtin.stat: { path: "{{ playbook_dir }}/../../scripts/hub_gate.py", checksum_algorithm: sha256 }
+      register: _m5_gate_src
+
+    - name: Gate assertions
+      ansible.builtin.assert:
+        that:
+          - _m5_gate.stat.exists and _m5_gate.stat.checksum == _m5_gate_src.stat.checksum
+          - _m5_gatecfg.allowed_recipients == ['owner@example.com']
+          - _m5_gatecfg.protected_paths == ['webhook_subscriptions.json']
+        quiet: true
+
+    - name: List the staged cron scripts and everything under the agent's scripts dir
+      ansible.builtin.find:
+        paths: ["{{ render_root }}/estate-scripts", "{{ render_root }}/data/scripts"]
+        file_type: any
+        recurse: true
+        hidden: true
+      register: _m5_scripts
+
+    - name: Read automations.json
+      ansible.builtin.slurp: { src: "{{ render_root }}/estate-scripts/automations.json" }
+      register: _m5_auto
+
+    - name: Stat the staging dir and the agent's scripts dir without following them
+      ansible.builtin.stat: { path: "{{ item }}", follow: false }
+      loop: ["{{ render_root }}/estate-scripts", "{{ render_root }}/data/scripts", "{{ render_root }}/data/scripts/estate"]
+      register: _m5_dirs
+
+    - name: Exactly the source scripts are STAGED outside data/, the stale one pruned there, nothing in data/ touched
+      vars:
+        _names: "{{ _m5_scripts.files | map(attribute='path') | map('relpath', render_root) | sort }}"
+        _auto: "{{ _m5_auto.content | b64decode | from_json }}"
+      ansible.builtin.assert:
+        that:
+          - _names == ['data/scripts/estate', 'data/scripts/estate/legacy_copy.py', 'data/scripts/my_own_watchdog.py',
+                       'estate-scripts/alertmanager_pull.py', 'estate-scripts/automations.json']
+          - _auto.alertmanager_url == 'http://am.example.com:9093'
+          - _auto.estate_job_names == ['alertmanager-pull']
+          - _m5_dirs.results | map(attribute='stat.isdir') | list == [true, true, true]
+          - _m5_dirs.results | map(attribute='stat.islnk') | list == [false, false, false]
+          - _m5_dirs.results[0].stat.mode == '0755'
+        fail_msg: "{{ _names | to_json }} / {{ _auto | to_json }}"
+        quiet: true
+
+    - name: The rendered compose file mounts the staging dir read-only at the agent's scripts/estate
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../files/docker-compose.yml.j2"
+        dest: "{{ render_root }}/m5-compose.yml"
+        mode: "0644"
+      vars:
+        hermes_image_repo: nousresearch/hermes-agent
+        hermes_image_tag: v0.0.0
+        hermes_image_digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+        hermes_skills_source: ""
+        hermes_preflight_textfile_dir: ""
+        hermes_network: hermes
+      changed_when: false
+
+    - name: Read the rendered compose file
+      ansible.builtin.slurp: { src: "{{ render_root }}/m5-compose.yml" }
+      register: _m5_compose
+
+    - name: The cron scripts are mounted read-only, and nothing mounts data/scripts/estate from data/
+      vars:
+        _vols: "{{ (_m5_compose.content | b64decode | from_yaml).services[hermes_container_name].volumes }}"
+      ansible.builtin.assert:
+        that:
+          - (render_root ~ '/estate-scripts:/opt/data/scripts/estate:ro') in _vols
+          - (_vols | select('search', ':/opt/data:rw$') | list | length) == 1
+          - _vols.index(render_root ~ '/data:/opt/data:rw') < _vols.index(render_root ~ '/estate-scripts:/opt/data/scripts/estate:ro')
+        fail_msg: "{{ _vols | to_json }}"
+        quiet: true
+
+    # ---- a planted symlink is refused, and nothing outside the tree changes ---------------------
+    # Each case plants what the agent (or anything that can write data/) could plant, re-runs the
+    # REAL delivery, and then checks the link's target byte for byte. The earlier delivery wrote
+    # its scripts into, and pruned the sentinel out of, exactly these targets.
+    - name: Planted symlinks are refused or have no effect outside the tree
+      ansible.builtin.include_tasks: m5_symlink_case.yml
+      loop:
+        - why: data/scripts/estate (the old delivery target) pointing outside
+          link: data/scripts/estate
+          expect: "REFUSED"
+        - why: data/scripts itself pointing outside
+          link: data/scripts
+          expect: "REFUSED"
+        - why: the staging dir pointing outside
+          link: estate-scripts
+          expect: "is not a real directory owned by"
+        - why: NEAR-MISS - the agent's own link INSIDE scripts/ (its business, never walked)
+          link: data/scripts/my_link
+          expect: ""
+      loop_control: { loop_var: m5_link, label: "{{ m5_link.why }}" }
+
+    # ---- retiring a route removes it; dropping it alone would not (near-miss) ----------------
+    # Under the enforced scope a route lives in the MANAGED document, which is rebuilt from the
+    # declared routes on every converge -- so dropping one takes it out of force there at once. The
+    # user file can still hold a STALE copy (written by an older converge that also projected managed
+    # leaves into it), and that copy is only ever removed by retiring it: the
+    # merge keeps what it does not own. Both halves are checked: the managed doc, and the stale copy.
+    - name: Plant a stale copy of every route in the user file (the older shape)
+      vars:
+        _cfg: "{{ lookup('ansible.builtin.file', render_root ~ '/data/config.yaml') | from_yaml | default({}, true) }}"
+      ansible.builtin.copy:
+        dest: "{{ render_root }}/data/config.yaml"
+        content: >-
+          {{ _cfg | combine({'platforms': {'webhook': {'extra': {'routes':
+               _m5_managed.platforms.webhook.extra.routes}}}}, recursive=true) | to_nice_yaml(indent=2) }}
+        mode: "0640"
+
+    - name: Drop gone-route from the declared routes WITHOUT retiring it
+      ansible.builtin.set_fact:
+        hermes_webhook_routes: "{{ hermes_webhook_routes | dict2items | rejectattr('key', 'equalto', 'gone-route') | items2dict }}"
+
+    - name: Merge
+      ansible.builtin.include_tasks: merge_case.yml
+
+    - name: Read the config
+      ansible.builtin.slurp: { src: "{{ render_root }}/data/config.yaml" }
+      register: _m5_r1
+
+    - name: Dropped from the managed doc at once; near-miss - the unretired stale copy stays in the file
+      ansible.builtin.assert:
+        that:
+          - hermes__managed_doc.platforms.webhook.extra.routes | list | sort == ['ha', 'hub-test']
+          - "'gone-route' in (_m5_r1.content | b64decode | from_yaml).platforms.webhook.extra.routes"
+        quiet: true
+
+    - name: Now retire it
+      ansible.builtin.set_fact:
+        hermes_webhook_retired_routes: [gone-route]
+
+    - name: Merge again
+      ansible.builtin.include_tasks: merge_case.yml
+
+    - name: Read the config again
+      ansible.builtin.slurp: { src: "{{ render_root }}/data/config.yaml" }
+      register: _m5_r2
+
+    - name: A retired route's stale copy is gone and the others are untouched
+      ansible.builtin.assert:
+        that:
+          - "(_m5_r2.content | b64decode | from_yaml).platforms.webhook.extra.routes | list | sort == ['ha', 'hub-test']"
+          - hermes__managed_doc.platforms.webhook.extra.routes | list | sort == ['ha', 'hub-test']
+        quiet: true
+
+    # ---- refusals, each with the exact reason ----------------------------------------------
+    - name: Each bad automation input is refused for the stated reason
+      ansible.builtin.include_tasks: m5_refuse_case.yml
+      loop:
+        - why: a short global secret
+          facts: {hermes_webhook_secret: short}
+          expect: "hermes_webhook_secret is 5"
+        - why: an inline route secret
+          facts: {hermes_webhook_routes: {r1: {secret: inline-secret-value, prompt: x}}}
+          expect: "inline secret"
+        - why: a secret_env with no value
+          facts: {hermes_webhook_routes: {r1: {secret_env: NOPE_SECRET, prompt: x}}}
+          expect: "no value in hermes_webhook_route_secrets"
+        - why: a route name that is not a slug
+          facts: {hermes_webhook_routes: {Bad.Name: {prompt: x}}}
+          expect: "lowercase slugs"
+        - why: a deliver_only route delivering to log
+          facts: {hermes_webhook_routes: {r1: {deliver_only: true, deliver: log, prompt: x}}}
+          expect: "need a deliver target other than log"
+        - why: the email adapter with no allowlist and no authserv-id
+          facts: {hermes_email_enabled: true}
+          expect: "hermes_email_allowed_users"
+        - why: the send gate without the enforced managed scope
+          facts: {hermes_managed_enforce: false}
+          expect: "needs hermes_managed_enforce"
+      loop_control: { loop_var: m5_case, label: "{{ m5_case.why }}" }
+
+    - name: Near-miss - the valid inputs pass the same gates
+      ansible.builtin.include_role:
+        name: service_hermes
+        tasks_from: _automations_leaves
+        public: true
+
+    # ---- the read-only subscription store -----------------------
+    - name: Read the staged subscription store
+      ansible.builtin.stat: { path: "{{ render_root }}/subscriptions/webhook_subscriptions.json", follow: false }
+      register: _m5_subs_stage
+
+    - name: Slurp it
+      ansible.builtin.slurp: { src: "{{ render_root }}/subscriptions/webhook_subscriptions.json" }
+      register: _m5_subs_body
+
+    - name: The staged store is a plain, empty, 0644 file outside data/
+      ansible.builtin.assert:
+        that:
+          - _m5_subs_stage.stat.exists and _m5_subs_stage.stat.isreg
+          - _m5_subs_stage.stat.mode == '0644'
+          - (_m5_subs_body.content | b64decode | from_json) == {}
+        fail_msg: "staged store: {{ _m5_subs_stage.stat | default({}) | to_json }}"
+        quiet: true
+
+    # MUST FAIL: mounting the empty store over an agent file that still holds a route would drop
+    # it silently, so the delivery refuses and names the route. Then the same for a symlink.
+    - name: Each agent-side store the delivery must refuse
+      ansible.builtin.include_tasks: m5_subs_refuse_case.yml
+      loop:
+        - why: the agent's store still holds a dynamic route
+          kind: file
+          body: '{"planted": {"prompt": "x", "toolsets": ["terminal"]}}'
+          expect: "still holds dynamic routes ['planted']"
+        - why: the agent's store is a symlink
+          kind: link
+          body: ""
+          expect: "is not a regular file"
+      loop_control: { loop_var: subs_case, label: "{{ subs_case.why }}" }
+
+    # NEAR-MISS: an empty dict (what `hermes webhook remove` leaves) and the 0-byte mountpoint
+    # docker creates both pass.
+    - name: Near-miss - an emptied store and a bare mountpoint pass
+      ansible.builtin.include_tasks: m5_subs_pass_case.yml
+      loop: ["{}", ""]
+      loop_control: { loop_var: subs_body }
+
+    # The reconcile's toolsets repair, raced: the store swapped for a link after its stat gate.
+    # MUST HOLD: a link to a directory or a file is replaced, never written through (the copy it
+    # replaced wrote INTO a linked directory despite follow=false). NEAR-MISS: a regular store.
+    - name: The toolsets repair never writes outside the tree
+      ansible.builtin.include_tasks: m5_subs_repair_case.yml
+      loop: [link to a directory, link to a file, regular file]
+      loop_control: { loop_var: repair_case }
+
+    # ---- the policy hook and the send gate share hooks.pre_tool_call----------------------------
+    # Both hooks are entries of ONE tier-C leaf. Run the pure combine step directly: with both
+    # enabled the leaf carries both commands, policy hook first; with only the gate, one entry.
+    - name: Both hooks enabled - combine the leaves (set_fact, so they outrank the resolver)
+      ansible.builtin.set_fact:
+        hermes_policy_hook_enabled: true
+        hermes_hub_gate_enabled: true
+        hermes__hook_leaves:
+          - {key: hooks.pre_tool_call, tier: C, value: [{matcher: x, command: /opt/hermes/.venv/bin/python -I -B /opt/hermes-policy/hermes_policy_hook.py, timeout: 5, fail_closed: true}]}
+        hermes__automation_leaves:
+          - {key: [hooks, pre_tool_call], tier: C, value: [{matcher: y, command: /opt/hermes/.venv/bin/python -I -B /opt/hermes-policy/hub_gate.py, timeout: 10, fail_closed: true}]}
+          - {key: [terminal, env_passthrough], tier: C, value: [EXAMPLE_POLL_TOKEN]}
+
+    - name: Run the combine step with both hooks
+      ansible.builtin.include_role:
+        name: service_hermes
+        tasks_from: _pre_tool_call_combine
+        public: true
+
+    - name: ONE leaf carries BOTH hooks, policy hook first, and the other automation leaf survives
+      vars:
+        _owned: "{{ hermes__automation_leaves_nohook + hermes__pre_tool_call_leaves }}"
+        _doc: "{{ _owned | richard_lynch.services.hermes_managed_document }}"
+      ansible.builtin.assert:
+        that:
+          - hermes__pre_tool_call_leaves | length == 1
+          - _doc.hooks.pre_tool_call | map(attribute='command') | list
+              == ['/opt/hermes/.venv/bin/python -I -B /opt/hermes-policy/hermes_policy_hook.py', '/opt/hermes/.venv/bin/python -I -B /opt/hermes-policy/hub_gate.py']
+          - _doc.terminal.env_passthrough == ['EXAMPLE_POLL_TOKEN']
+        fail_msg: "{{ hermes__pre_tool_call_leaves | to_json }}"
+        quiet: true
+
+    - name: Near-miss - only the gate enabled
+      ansible.builtin.set_fact:
+        hermes_policy_hook_enabled: false
+        hermes__hook_leaves: []
+
+    - name: Run the combine step with the gate only
+      ansible.builtin.include_role:
+        name: service_hermes
+        tasks_from: _pre_tool_call_combine
+        public: true
+
+    - name: The leaf carries the gate alone
+      ansible.builtin.assert:
+        that:
+          - hermes__pre_tool_call_leaves[0].value | length == 1
+          - hermes__pre_tool_call_leaves[0].value[0].command is search('hub_gate[.]py$')
+        quiet: true
+
+    - name: MUST FAIL - the policy hook is enabled but its leaf never reached the combine step
+      block:
+        - name: Set the broken input
+          ansible.builtin.set_fact:
+            hermes_policy_hook_enabled: true
+            hermes__hook_leaves: []
+        - name: Combine
+          ansible.builtin.include_role:
+            name: service_hermes
+            tasks_from: _pre_tool_call_combine
+        - name: Not reached
+          ansible.builtin.set_fact:
+            _m45_lost_hook: passed
+      rescue:
+        - name: Record the refusal
+          ansible.builtin.set_fact:
+            _m45_lost_hook: refused
+
+    - name: The gate refused a combined leaf that lost an enabled hook
+      ansible.builtin.assert:
+        that: [_m45_lost_hook == 'refused']
+        quiet: true
+
+    # ---- the post_tool_call audit hook is its own tier-C leaf ----------------------
+    - name: Audit hook enabled (set_fact, so it outranks the resolver)
+      ansible.builtin.set_fact:
+        hermes_audit_hook_enabled: true
+        hermes_audit_hook_timeout: 5
+
+    - name: Derive the audit leaf
+      ansible.builtin.include_role:
+        name: service_hermes
+        tasks_from: _audit_hook_leaf
+        public: true
+
+    - name: The managed document carries the audit hook under post_tool_call, beside pre_tool_call
+      vars:
+        _doc: "{{ (hermes__pre_tool_call_leaves + hermes__audit_hook_leaves) | richard_lynch.services.hermes_managed_document }}"
+      ansible.builtin.assert:
+        that:
+          - "_doc.hooks.post_tool_call == [{'command': '/opt/hermes/.venv/bin/python -I -B /opt/hermes-policy/hermes_audit_hook.py', 'timeout': 5}]"
+          - _doc.hooks.pre_tool_call | length >= 1
+        fail_msg: "{{ _doc | to_json }}"
+        quiet: true
+
+    - name: Near-miss - audit hook disabled
+      ansible.builtin.set_fact:
+        hermes_audit_hook_enabled: false
+
+    - name: Derive the audit leaf (disabled)
+      ansible.builtin.include_role:
+        name: service_hermes
+        tasks_from: _audit_hook_leaf
+        public: true
+
+    - name: No audit leaf when disabled
+      ansible.builtin.assert:
+        that: ["hermes__audit_hook_leaves | length == 0"]
+        quiet: true

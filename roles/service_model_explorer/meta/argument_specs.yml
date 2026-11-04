@@ -1,0 +1,78 @@
+---
+# AUTO-GENERATED argument spec — DO NOT EDIT.
+#
+# Source of truth: roles/service_model_explorer/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate service_model_explorer
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+argument_specs:
+  main:
+    short_description: Serve the model-discovery app as static files behind nginx
+    description:
+      - 'Builds nothing at converge time: the app is a Vite bundle built on the'
+      - controller from files/app; the built output and the caller's catalogue
+      - snapshot are copied to the host and served by a pinned nginx image.
+      - The app is READ-ONLY and holds NO credential. It reads one JSON snapshot
+      - of the gateway's models; adding a model to Open WebUI's picker is staged
+      - in the UI and applied by an Ansible play, never by the browser.
+    version_added: '1.0'
+    author: Collection maintainers
+    options:
+      model_explorer_catalogue_src:
+        description:
+          - Path ON THE CONTROLLER of the catalogue snapshot (catalogue.json) the
+          - app serves. It is the caller's data — produced by reading the
+          - gateway's GET /v1/models and OpenRouter's public catalogue — and is
+          - copied to the host on its own, so refreshing it needs no rebuild.
+        type: str
+        required: true
+      model_explorer_dist_dir:
+        description:
+          - Path ON THE CONTROLLER of the built bundle (the output of
+          - npm ci and npm run build in the role's files/app). Empty means the
+          - role's own files/app/dist.
+        type: str
+        required: false
+        default: ''
+      model_explorer_container_name:
+        description:
+          - Container name.
+        type: str
+        required: false
+        default: model-explorer
+      model_explorer_image:
+        description:
+          - 'nginx image serving the built bundle. Pinned -- never a floating tag:'
+          - a minor-only tag such as 1.27-alpine floats and would silently change
+          - what is deployed.
+        type: str
+        required: false
+        default: nginx:1.29.3-alpine
+      model_explorer_config_dir:
+        description:
+          - Host directory holding the compose project and the served bundle.
+        type: str
+        required: false
+        default: /opt/model-explorer
+      model_explorer_network:
+        description:
+          - External Docker network the container joins (for example one shared
+          - with a reverse proxy). Created by the role if absent.
+        type: str
+        required: false
+        default: model-explorer
+      model_explorer_host_port:
+        description:
+          - Host port mapped to the container's 80. A reverse proxy in front of it
+          - is the caller's to configure.
+        type: int
+        required: false
+        default: 8092
+      model_explorer_timezone:
+        description:
+          - Container timezone.
+        type: str
+        required: false
+        default: Etc/UTC

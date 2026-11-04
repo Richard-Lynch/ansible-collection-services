@@ -1,0 +1,86 @@
+---
+# GENERATED from roles/service_coding_worker/meta/argument_specs.py — DO NOT EDIT.
+# Regenerate with: venv/bin/python tools/argspec/cli.py x generate service_coding_worker
+#
+# These are the constraints Ansible's role-argspec validator CANNOT enforce. It handles
+# type/required/choices/no_log, but has no numeric-range, length or pattern checking, so
+# without this file those declarations would be decorative.
+#
+# Include from the role's entrypoints:  - ansible.builtin.include_tasks: _argspec_guards.yml
+
+- name: "GUARD (generated) — worker_acpx_mcp_port must be >= 1024; <= 65535"
+  ansible.builtin.assert:
+    that:
+      - "worker_acpx_mcp_port | int >= 1024"
+      - "worker_acpx_mcp_port | int <= 65535"
+    fail_msg: "worker_acpx_mcp_port violates a constraint declared in meta/argument_specs.py: must be >= 1024; <= 65535. Got: {{ worker_acpx_mcp_port | default('(unset)') }}"
+    quiet: true
+  when: worker_acpx_mcp_port is defined
+
+- name: "GUARD (generated) — worker_card_image_name must be matching '\\A[a-z0-9][a-z0-9._/-]*\\Z'"
+  ansible.builtin.assert:
+    that:
+      - "worker_card_image_name | default('') is match('\\A[a-z0-9][a-z0-9._/-]*\\Z')"
+    fail_msg: "worker_card_image_name violates a constraint declared in meta/argument_specs.py: must be matching '\\A[a-z0-9][a-z0-9._/-]*\\Z'. Got: {{ worker_card_image_name | default('(unset)') }}"
+    quiet: true
+  when: worker_card_image_name is defined
+
+- name: "GUARD (generated) — worker_pr_poll_seconds must be >= 0; <= 86400"
+  ansible.builtin.assert:
+    that:
+      - "worker_pr_poll_seconds | int >= 0"
+      - "worker_pr_poll_seconds | int <= 86400"
+    fail_msg: "worker_pr_poll_seconds violates a constraint declared in meta/argument_specs.py: must be >= 0; <= 86400. Got: {{ worker_pr_poll_seconds | default('(unset)') }}"
+    quiet: true
+  when: worker_pr_poll_seconds is defined
+
+- name: "GUARD (generated) — worker_repos must be at least 1 long"
+  ansible.builtin.assert:
+    that:
+      - "worker_repos | default('') | length >= 1"
+    fail_msg: "worker_repos violates a constraint declared in meta/argument_specs.py: must be at least 1 long. Got: {{ worker_repos | default('(unset)') }}"
+    quiet: true
+  when: worker_repos is defined
+
+- name: "GUARD (generated) — worker_sessiond_port must be >= 1024; <= 65535"
+  ansible.builtin.assert:
+    that:
+      - "worker_sessiond_port | int >= 1024"
+      - "worker_sessiond_port | int <= 65535"
+    fail_msg: "worker_sessiond_port violates a constraint declared in meta/argument_specs.py: must be >= 1024; <= 65535. Got: {{ worker_sessiond_port | default('(unset)') }}"
+    quiet: true
+  when: worker_sessiond_port is defined
+
+- name: "GUARD (generated) — worker_sessiond_token must be at least 16 long"
+  ansible.builtin.assert:
+    that:
+      - "worker_sessiond_token | default('') | length >= 16"
+    fail_msg: "worker_sessiond_token violates a constraint declared in meta/argument_specs.py: must be at least 16 long. Got: (value suppressed — no_log)"
+    quiet: true
+  when: worker_sessiond_token is defined
+
+- name: "GUARD (generated) — worker_ttyd_credential must be at least 12 long; matching '\\A[^:]+:.+\\Z'"
+  ansible.builtin.assert:
+    that:
+      - "worker_ttyd_credential | default('') | length >= 12"
+      - "worker_ttyd_credential | default('') is match('\\A[^:]+:.+\\Z')"
+    fail_msg: "worker_ttyd_credential violates a constraint declared in meta/argument_specs.py: must be at least 12 long; matching '\\A[^:]+:.+\\Z'. Got: (value suppressed — no_log)"
+    quiet: true
+  when: worker_ttyd_credential is defined
+
+- name: "GUARD (generated) — worker_ttyd_port must be >= 1024; <= 65535"
+  ansible.builtin.assert:
+    that:
+      - "worker_ttyd_port | int >= 1024"
+      - "worker_ttyd_port | int <= 65535"
+    fail_msg: "worker_ttyd_port violates a constraint declared in meta/argument_specs.py: must be >= 1024; <= 65535. Got: {{ worker_ttyd_port | default('(unset)') }}"
+    quiet: true
+  when: worker_ttyd_port is defined
+
+- name: "GUARD (generated) — worker_ttyd_title must be matching '\\A[A-Za-z0-9._-]+\\Z'"
+  ansible.builtin.assert:
+    that:
+      - "worker_ttyd_title | default('') is match('\\A[A-Za-z0-9._-]+\\Z')"
+    fail_msg: "worker_ttyd_title violates a constraint declared in meta/argument_specs.py: must be matching '\\A[A-Za-z0-9._-]+\\Z'. Got: {{ worker_ttyd_title | default('(unset)') }}"
+    quiet: true
+  when: worker_ttyd_title is defined

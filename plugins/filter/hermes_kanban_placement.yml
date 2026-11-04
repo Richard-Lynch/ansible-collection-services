@@ -1,0 +1,32 @@
+# Copyright: (c) 2026, Richard Lynch
+# GNU General Public License v3.0+ (see https://www.gnu.org/licenses/gpl-3.0.txt)
+---
+DOCUMENTATION:
+  name: hermes_kanban_placement
+  short_description: Report on which Hermes platforms the kanban toolset is enabled
+  author: Richard Lynch (@Richard-Lynch)
+  description:
+    - 'Returns a three-outcome verdict: C(ok) when kanban is on exactly the allowed platforms and off
+      on every other platform that was read, C(wrong) when it is missing or unexpected, and C(cannot-tell)
+      when an allowed platform or a platform''s list could not be read.'
+    - A platform whose list could not be read is never counted as off.
+  options:
+    _input:
+      description: Mapping of platform name to its toolset list, or null when it could not be read.
+      type: dict
+      required: true
+    allowed:
+      description: Platforms kanban must be enabled on.
+      type: list
+      required: true
+    unreadable:
+      description: Platforms whose list could not be read.
+      type: list
+EXAMPLES: |
+  - name: Kanban placement
+    ansible.builtin.set_fact:
+      placement: "{{ {'cli': ['kanban'], 'api_server': ['web']} | richard_lynch.services.hermes_kanban_placement(['cli']) }}"
+RETURN:
+  _value:
+    description: A mapping with C(verdict), C(enabled_on), C(unexpected_on), C(missing_on) and C(cannot_tell).
+    type: dict

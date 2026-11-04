@@ -1,0 +1,21 @@
+---
+dependency: { name: galaxy }
+driver: { name: default }
+platforms: [{ name: localhost }]
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: "${MOLECULE_PROJECT_DIRECTORY}/../"
+    ANSIBLE_COLLECTIONS_PATH: "${MOLECULE_PROJECT_DIRECTORY}/../../collections.galaxy:${MOLECULE_PROJECT_DIRECTORY}/../../../../.."
+  inventory: { host_vars: { localhost: { ansible_connection: local } } }
+  playbooks: { converge: converge.yml, verify: verify.yml, cleanup: cleanup.yml }
+verifier: { name: ansible }
+scenario:
+  # idempotence is IN the sequence and is the point: the converge never deletes what it wrote, so the
+  # second run is the proof that the file half of the role writes nothing when nothing differs.
+  #
+  # destroy/create are no-ops for this driver, but destroy RESETS molecule's "already prepared"
+  # flag; without it the run after a PASSING one skips prepare and tests the previous run's
+  # leftovers, so the gate would fail on alternate runs. cleanup removes the scratch roots at both
+  # ends.
+  test_sequence: [destroy, syntax, create, cleanup, prepare, converge, idempotence, verify, cleanup, destroy]

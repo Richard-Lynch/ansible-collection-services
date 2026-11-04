@@ -1,0 +1,79 @@
+---
+# GENERATED from roles/service_hermes/meta/argument_specs.py — DO NOT EDIT.
+# Regenerate with: venv/bin/python tools/argspec/cli.py x generate service_hermes
+#
+# These are the constraints Ansible's role-argspec validator CANNOT enforce. It handles
+# type/required/choices/no_log, but has no numeric-range, length or pattern checking, so
+# without this file those declarations would be decorative.
+#
+# Include from the role's entrypoints:  - ansible.builtin.include_tasks: _argspec_guards.yml
+
+- name: "GUARD (generated) — hermes_api_host_port must be >= 1; <= 65535"
+  ansible.builtin.assert:
+    that:
+      - "hermes_api_host_port | int >= 1"
+      - "hermes_api_host_port | int <= 65535"
+    fail_msg: "hermes_api_host_port violates a constraint declared in meta/argument_specs.py: must be >= 1; <= 65535. Got: {{ hermes_api_host_port | default('(unset)') }}"
+    quiet: true
+  when: hermes_api_host_port is defined
+
+- name: "GUARD (generated) — hermes_audit_hook_timeout must be >= 1; <= 60"
+  ansible.builtin.assert:
+    that:
+      - "hermes_audit_hook_timeout | int >= 1"
+      - "hermes_audit_hook_timeout | int <= 60"
+    fail_msg: "hermes_audit_hook_timeout violates a constraint declared in meta/argument_specs.py: must be >= 1; <= 60. Got: {{ hermes_audit_hook_timeout | default('(unset)') }}"
+    quiet: true
+  when: hermes_audit_hook_timeout is defined
+
+- name: "GUARD (generated) — hermes_dashboard_host_port must be >= 1; <= 65535"
+  ansible.builtin.assert:
+    that:
+      - "hermes_dashboard_host_port | int >= 1"
+      - "hermes_dashboard_host_port | int <= 65535"
+    fail_msg: "hermes_dashboard_host_port violates a constraint declared in meta/argument_specs.py: must be >= 1; <= 65535. Got: {{ hermes_dashboard_host_port | default('(unset)') }}"
+    quiet: true
+  when: hermes_dashboard_host_port is defined
+
+- name: "GUARD (generated) — hermes_dashboard_theme_name must be at least 1 long"
+  ansible.builtin.assert:
+    that:
+      - "hermes_dashboard_theme_name | default('') | length >= 1"
+    fail_msg: "hermes_dashboard_theme_name violates a constraint declared in meta/argument_specs.py: must be at least 1 long. Got: {{ hermes_dashboard_theme_name | default('(unset)') }}"
+    quiet: true
+  when: hermes_dashboard_theme_name is defined
+
+- name: "GUARD (generated) — hermes_policy_hook_timeout must be >= 1; <= 60"
+  ansible.builtin.assert:
+    that:
+      - "hermes_policy_hook_timeout | int >= 1"
+      - "hermes_policy_hook_timeout | int <= 60"
+    fail_msg: "hermes_policy_hook_timeout violates a constraint declared in meta/argument_specs.py: must be >= 1; <= 60. Got: {{ hermes_policy_hook_timeout | default('(unset)') }}"
+    quiet: true
+  when: hermes_policy_hook_timeout is defined
+
+- name: "GUARD (generated) — hermes_settings_service_container_name must be at least 1 long"
+  ansible.builtin.assert:
+    that:
+      - "hermes_settings_service_container_name | default('') | length >= 1"
+    fail_msg: "hermes_settings_service_container_name violates a constraint declared in meta/argument_specs.py: must be at least 1 long. Got: {{ hermes_settings_service_container_name | default('(unset)') }}"
+    quiet: true
+  when: hermes_settings_service_container_name is defined
+
+- name: "GUARD (generated) — hermes_settings_service_port must be >= 1024; <= 65535"
+  ansible.builtin.assert:
+    that:
+      - "hermes_settings_service_port | int >= 1024"
+      - "hermes_settings_service_port | int <= 65535"
+    fail_msg: "hermes_settings_service_port violates a constraint declared in meta/argument_specs.py: must be >= 1024; <= 65535. Got: {{ hermes_settings_service_port | default('(unset)') }}"
+    quiet: true
+  when: hermes_settings_service_port is defined
+
+- name: "GUARD (generated) — hermes_webapp_host_port must be >= 1; <= 65535"
+  ansible.builtin.assert:
+    that:
+      - "hermes_webapp_host_port | int >= 1"
+      - "hermes_webapp_host_port | int <= 65535"
+    fail_msg: "hermes_webapp_host_port violates a constraint declared in meta/argument_specs.py: must be >= 1; <= 65535. Got: {{ hermes_webapp_host_port | default('(unset)') }}"
+    quiet: true
+  when: hermes_webapp_host_port is defined

@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# worker-attach: the ONE thing ttyd runs. Opens a tmux session by card, or lists the live ones.
+#
+#   worker-attach card-T123      attach to that session
+#   worker-attach T123           same (the prefix is optional)
+#   worker-attach                list live card sessions and pick one
+#
+# ttyd passes `?arg=...` from the URL as $1, so the console's Attach link is
+# https://term.<domain>/?arg=T123 . The argument is validated against the same whitelist
+# worker-sessiond uses for card ids BEFORE it reaches tmux, and tmux gets an exact-match target
+# (`=name`) so a card id can never select a different session by prefix.
+set -u
+prefix="${WORKER_TMUX_PREFIX:-card-}"
+id_re='^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$'
+
+refuse() { printf 'worker-attach: %s\n' "$1" >&2; sleep "${WORKER_ATTACH_REFUSE_SLEEP:-4}"; exit 1; }
+
+attach() {
+  local card="${1#"$prefix"}"
+  [[ "$card" =~ $id_re ]] || refuse "not a valid card id"
+  tmux has-session -t "=${prefix}${card}" 2>/dev/null || refuse "no live session for ${card}"
+  exec tmux attach-session -t "=${prefix}${card}"
+}
+
+if [[ $# -ge 1 && -n "${1}" ]]; then
+  attach "$1"
+fi
+
+while true; do
+  mapfile -t sessions < <(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -F -- "$prefix" | sort)
+  if [[ ${#sessions[@]} -eq 0 ]]; then
+    echo "No live card sessions. (Enter to refresh, Ctrl-C to leave)"
+    read -r _ || exit 0
+    continue
+  fi
+  echo "Live card sessions:"
+  i=1
+  for s in "${sessions[@]}"; do
+    printf '  %2d  %s\n' "$i" "$s"
+    i=$((i + 1))
+  done
+  printf 'Number or card id (Enter to refresh): '
+  read -r choice || exit 0
+  [[ -z "$choice" ]] && continue
+  if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#sessions[@]} )); then
+    attach "${sessions[choice-1]}"
+  fi
+  attach "$choice"
+done

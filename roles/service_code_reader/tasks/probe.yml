@@ -1,0 +1,29 @@
+---
+# Read-only. Sets nothing, requests no code (a GET /code would CONSUME one), needs no token.
+
+- name: Resolve declared options over their generated defaults
+  ansible.builtin.include_tasks: _resolve_defaults.yml
+
+- name: Apply the generated argspec guards
+  ansible.builtin.include_tasks: _argspec_guards.yml
+
+- name: Read the sidecar's health
+  ansible.builtin.uri:
+    url: "http://{{ code_reader_bind }}:{{ code_reader_port }}/healthz"
+    status_code: [200, 503]
+    return_content: true
+  register: code_reader__probe
+  failed_when: false
+  changed_when: false
+
+# Three outcomes, never two: an unreachable endpoint and an unhealthy one are different facts, and
+# folding both into "not ok" is how a broken read presents as a clean one.
+- name: Report
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'CANNOT TELL: no answer from /healthz (container down, or wrong bind/port)'
+         if (code_reader__probe.status | default(-1)) == -1
+         else ('HEALTHY: last poll ' ~ code_reader__probe.json.last_poll_age_s ~ 's ago, '
+               ~ code_reader__probe.json.pending ~ ' code(s) pending')
+         if (code_reader__probe.status | default(0)) == 200
+         else ('UNHEALTHY: ' ~ (code_reader__probe.json.last_error | default('unknown'))) }}

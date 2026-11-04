@@ -1,0 +1,86 @@
+---
+# The drill's isolation, as rendered artifacts and the refusals that guard them. Split out so the
+# molecule scenario can exercise the REAL refusals without a docker daemon.
+#
+# NO resolver include here. drill.yml has already run _resolve_defaults.yml, and a SECOND run in
+# the same call takes the generated repeat branch, which rebinds every option to its `__default`
+# and throws away the inventory's values: that renders an EMPTY drill env with no scratch key, and
+# the credential gate below then checks `{}`. A caller that uses this file directly (the scenario does) resolves first, or
+# passes every option it needs in its own `vars:`.
+- name: HARD GATE — the drill environment holds no credential-shaped key
+  # By NAME: a drill container must carry no Slack, mail or API token and no spendable key,
+  # whatever its value happens to be. Names are matched case-insensitively.
+  ansible.builtin.assert:
+    that:
+      - item.key is not search('(?i)(pass|secret|token|key|credential|webhook|slack|smtp|imap)')
+    fail_msg: >-
+      drill env key {{ item.key }} looks like a credential. The drill is isolated by holding
+      none; declare only non-secret scratch settings in agent_state_drill_env.
+    quiet: true
+  loop: "{{ agent_state_drill_env | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: HARD GATE — a scratch secret does not shadow a declared env key, and the read-back key is one of them
+  ansible.builtin.assert:
+    that:
+      - agent_state_drill_scratch_secrets | intersect(agent_state_drill_env.keys() | list) | length == 0
+      - agent_state_drill_readback_key_env == '' or agent_state_drill_readback_key_env in agent_state_drill_scratch_secrets
+    fail_msg: >-
+      agent_state_drill_scratch_secrets overlaps agent_state_drill_env, or
+      agent_state_drill_readback_key_env names something that is not a scratch secret.
+    quiet: true
+
+- name: Start the per-run scratch values empty
+  ansible.builtin.set_fact:
+    _as_drill_scratch: {}
+
+- name: A throwaway value per scratch secret (generated here, for this run, held nowhere else)
+  ansible.builtin.set_fact:
+    _as_drill_scratch: "{{ _as_drill_scratch | combine({item: lookup('ansible.builtin.password', '/dev/null length=32 chars=ascii_letters,digits')}) }}"
+  loop: "{{ agent_state_drill_scratch_secrets }}"
+  no_log: true
+
+- name: Drill directory (0700)
+  ansible.builtin.file:
+    path: "{{ agent_state_drill_dir }}"
+    state: directory
+    mode: "0700"
+
+- name: Drill compose file
+  ansible.builtin.template:
+    src: drill-compose.yml.j2
+    dest: "{{ agent_state_drill_dir }}/docker-compose.yml"
+    mode: "0600"
+
+- name: Drill scratch env (0600)
+  ansible.builtin.template:
+    src: drill.env.j2
+    dest: "{{ agent_state_drill_dir }}/drill.env"
+    mode: "0600"
+  no_log: true
+
+- name: Read the rendered env's KEY names back from the file (never its values)
+  # What the container will actually be handed, read from the artifact rather than from the
+  # variables that were meant to produce it: this is how an emptied agent_state_drill_env is seen.
+  ansible.builtin.command:
+    argv: [awk, "-F=", "/^[A-Za-z_][A-Za-z0-9_]*=/ {print $1}", "{{ agent_state_drill_dir }}/drill.env"]
+  register: _as_drill_env_read
+  changed_when: false
+
+- name: Record the rendered env keys
+  ansible.builtin.set_fact:
+    agent_state_drill_env_keys: "{{ _as_drill_env_read.stdout_lines | sort }}"
+
+- name: HARD GATE — the rendered env carries every declared key and every scratch secret
+  # An env rendered from clobbered variables is empty and the drill would "pass" on a container
+  # that was never configured; the keys the inventory declares must be IN the file.
+  ansible.builtin.assert:
+    that:
+      - (agent_state_drill_env.keys() | list) is subset(agent_state_drill_env_keys)
+      - agent_state_drill_scratch_secrets is subset(agent_state_drill_env_keys)
+    fail_msg: >-
+      drill.env holds keys {{ agent_state_drill_env_keys }}, but inventory declares
+      {{ agent_state_drill_env.keys() | list }} plus scratch {{ agent_state_drill_scratch_secrets }}.
+      The drill's variables were not the inventory's.
+    quiet: true

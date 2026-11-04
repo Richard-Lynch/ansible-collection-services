@@ -5,15 +5,24 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 # richard_lynch.services
 
-Application, media and messaging roles: PostgreSQL with an exporter, a two-tier Docker Compose app-hosting platform with a reviewed-definition gate, arr-style media service compose files, Jellyfin hardware-transcode settings and a transcode-cache reaper, and Slack channel reconciliation and messaging.
+Application, media, messaging and AI-agent roles: PostgreSQL with an exporter, a two-tier Docker Compose app-hosting platform with a reviewed-definition gate, arr-style media service compose files, Jellyfin transcode settings and a cache reaper, Slack channel reconciliation and messaging, and a self-hosted AI agent stack: the Hermes agent with policy hooks, profiles, learning jobs, state backup and MCP clients, a LiteLLM gateway with Open WebUI, a sandboxed coding worker, a mailbox code reader and a model catalogue explorer.
 
 ## Roles
 
 | Role | Description |
 | ---- | ----------- |
+| `config_agent_state` | Install the agent-state backup and mirror jobs and their timers |
+| `config_hermes_learning` | Install the Hermes learning loop: ledger, probe set, consolidation, ping |
+| `config_hermes_profile` | One named Hermes profile: config leaves, environment, SOUL |
+| `config_mcp_servers` | The reviewed MCP catalogue and its per-client enablement |
 | `jellyfin_transcode_config` | Configure Jellyfin's hardware transcode settings in encoding.xml |
 | `jellyfin_transcode_reaper` | Install a systemd timer that reaps orphaned Jellyfin transcode segments |
+| `service_code_reader` | Deploy the one-shot verification-code reader sidecar |
+| `service_coding_worker` | Coding worker VM: one sysbox dev container per card, agents inside it |
+| `service_hermes` | Deploy the Hermes Agent gateway and its web dashboard |
 | `service_hosting` | Traefik (docker provider) and the per-tier networks for app hosting |
+| `service_litellm` | Deploy the LiteLLM gateway, Open WebUI and Postgres as one stack |
+| `service_model_explorer` | Serve the model-discovery app as static files behind nginx |
 | `service_postgres` | Deploy Postgres (+exporter) on the shared network with per-service DBs |
 | `slack_channels` | Reconcile a declared list of Slack public channels, as a bot |
 | `slack_message` | Send a Slack message, optionally with a file, as a bot |
@@ -31,7 +40,7 @@ or pin it in `requirements.yml`:
 ```yaml
 collections:
   - name: richard_lynch.services
-    version: "1.0.0"
+    version: "1.1.0"
 ```
 
 Requires ansible-core >=2.19.0.

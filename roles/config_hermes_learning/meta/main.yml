@@ -1,0 +1,13 @@
+---
+galaxy_info:
+  role_name: config_hermes_learning
+  namespace: richard_lynch
+  author: Richard Lynch
+  description: >-
+    A learning loop for a Hermes agent as systemd timers: a ledger of what it learned, a fixed probe
+    set that shows whether it improved, a weekly memory consolidation proposal capped at a maximum
+    loss, a Slack reminder for anything awaiting approval, and an optional pinned memory provider.
+  license: GPL-3.0-or-later
+  min_ansible_version: "2.19"
+  galaxy_tags: [hermes, agent, llm, systemd]
+dependencies: []

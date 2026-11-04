@@ -1,0 +1,27 @@
+---
+dependency: { name: galaxy }
+driver: { name: default }
+platforms: [{ name: localhost }]
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: "${MOLECULE_PROJECT_DIRECTORY}/../"
+    ANSIBLE_COLLECTIONS_PATH: "${MOLECULE_PROJECT_DIRECTORY}/../../collections.galaxy:${MOLECULE_PROJECT_DIRECTORY}/../../../../.."
+  inventory: { host_vars: { localhost: { ansible_connection: local } } }
+  playbooks: { prepare: prepare.yml, converge: converge.yml, verify: verify.yml, cleanup: cleanup.yml }
+verifier: { name: ansible }
+scenario:
+  # IDEMPOTENCE IS NOW IN THE SEQUENCE. It used to be left out because converge began by deleting
+  # the render root, making a second converge "changed" by construction. That teardown moved to
+  # prepare.yml (run once), so converge is a pure function of its inputs and a second run must
+  # report changed=0 - which is the property the owned-leaf merge exists to provide.
+  #
+  # Two plays in converge/verify: the first renders the three template variants (no docker); the
+  # second runs the role's REAL owned-leaf merge and pin gate against real files. The one thing no
+  # scenario here can prove is the quiesce (stopping the stack before the write): that needs a
+  # docker daemon and is the concurrency fixture, on the guest.
+  #
+  # destroy/create are no-ops for this driver, but destroy RESETS molecule's "already prepared"
+  # flag; without it the run after a PASSING one skips prepare and tests the previous run's
+  # leftovers (so a gate would fail on alternate runs). cleanup removes the scratch roots at both ends.
+  test_sequence: [destroy, syntax, create, cleanup, prepare, converge, idempotence, verify, cleanup, destroy]

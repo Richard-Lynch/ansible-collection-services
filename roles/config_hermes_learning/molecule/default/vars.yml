@@ -1,0 +1,18 @@
+---
+_hl_root: /tmp/hl-molecule
+hermes_learning_exec_mode: local
+hermes_learning_enable_timers: false
+hermes_learning_host_home: "{{ _hl_root }}/home"
+hermes_learning_textfile_dir: "{{ _hl_root }}/textfile"
+hermes_learning_install_dir: "{{ _hl_root }}/lib"
+hermes_learning_config_dir: "{{ _hl_root }}/etc"
+hermes_learning_state_dir: "{{ _hl_root }}/state"
+hermes_learning_unit_dir: "{{ _hl_root }}/units"
+hermes_learning_consolidate_gateway_url: http://127.0.0.1:1/v1
+hermes_learning_consolidate_key_env: EXAMPLE_GATEWAY_API_KEY
+hermes_learning_claims_window_s: 0
+hermes_learning_probe_model: example-cheap
+hermes_learning_consolidate_model: example-aux
+hermes_learning_probes:
+  - { id: p-arith, prompt: "What is 17 times 23? Answer with the number only.", expect: { regex: ['\b391\b'] } }
+  - { id: p-canary, prompt: "What is the canary word?", expect: { contains: [periwinkle], tool: [skill_view] } }

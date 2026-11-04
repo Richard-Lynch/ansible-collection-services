@@ -1,0 +1,59 @@
+---
+# AUTO-GENERATED defaults resolver — DO NOT EDIT.
+#
+# Source of truth: roles/config_hermes_profile/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate config_hermes_profile
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+
+# Binds every declared option to its generated default, so a caller-supplied value
+# wins and an unsupplied one falls back rather than evaluating Undefined.
+#
+# Include this FIRST from every entrypoint:
+#   - ansible.builtin.include_tasks: _resolve_defaults.yml
+#
+# Role-specific setup logic belongs in tasks/setup_vars.yml, NOT here — this file is
+# overwritten on every generation.
+#
+# TWO BRANCHES, because `set_fact` persists for the whole play. A role invoked twice in
+# one play would otherwise see its OWN leftover facts on the second call, so a later
+# caller that omitted an option silently inherited the earlier caller's value instead of
+# the declared default. On a repeat call this ignores the role's own facts and rebinds
+# the defaults; an include-level `vars:` shadows the fact, so a value the caller DID
+# supply this time still wins. Roles called once per play only ever run the first branch.
+
+- name: Resolve declared options over their generated defaults
+  ansible.builtin.set_fact:
+    hermes_profile_anchor_uid: "{{ hermes_profile_anchor_uid | default(hermes_profile_anchor_uid__default) if hermes_profile_anchor_uid__default is defined else hermes_profile_anchor_uid | default(omit) }}"
+    hermes_profile_env: "{{ hermes_profile_env | default(hermes_profile_env__default) if hermes_profile_env__default is defined else hermes_profile_env | default(omit) }}"
+    hermes_profile_platform_toolsets: "{{ hermes_profile_platform_toolsets | default(hermes_profile_platform_toolsets__default) if hermes_profile_platform_toolsets__default is defined else hermes_profile_platform_toolsets | default(omit) }}"
+    hermes_profile_compose_dir: "{{ hermes_profile_compose_dir | default(hermes_profile_compose_dir__default) if hermes_profile_compose_dir__default is defined else hermes_profile_compose_dir | default(omit) }}"
+    hermes_profile_soul: "{{ hermes_profile_soul | default(hermes_profile_soul__default) if hermes_profile_soul__default is defined else hermes_profile_soul | default(omit) }}"
+    hermes_profile_create_args: "{{ hermes_profile_create_args | default(hermes_profile_create_args__default) if hermes_profile_create_args__default is defined else hermes_profile_create_args | default(omit) }}"
+    hermes_profile_readbacks: "{{ hermes_profile_readbacks | default(hermes_profile_readbacks__default) if hermes_profile_readbacks__default is defined else hermes_profile_readbacks | default(omit) }}"
+    hermes_profile_apply: "{{ hermes_profile_apply | default(hermes_profile_apply__default) if hermes_profile_apply__default is defined else hermes_profile_apply | default(omit) }}"
+  when: not (_config_hermes_profile__argspec_resolved | default(false))
+  # At least one option carries no_log, and set_fact would otherwise print every
+  # resolved value — including that one — in the task result.
+  no_log: true
+
+- name: Rebind the defaults on a repeat call, ignoring this role's own leftover facts
+  ansible.builtin.set_fact:
+    hermes_profile_anchor_uid: "{{ hermes_profile_anchor_uid__default if hermes_profile_anchor_uid__default is defined else hermes_profile_anchor_uid | default(omit) }}"
+    hermes_profile_env: "{{ hermes_profile_env__default if hermes_profile_env__default is defined else hermes_profile_env | default(omit) }}"
+    hermes_profile_platform_toolsets: "{{ hermes_profile_platform_toolsets__default if hermes_profile_platform_toolsets__default is defined else hermes_profile_platform_toolsets | default(omit) }}"
+    hermes_profile_compose_dir: "{{ hermes_profile_compose_dir__default if hermes_profile_compose_dir__default is defined else hermes_profile_compose_dir | default(omit) }}"
+    hermes_profile_soul: "{{ hermes_profile_soul__default if hermes_profile_soul__default is defined else hermes_profile_soul | default(omit) }}"
+    hermes_profile_create_args: "{{ hermes_profile_create_args__default if hermes_profile_create_args__default is defined else hermes_profile_create_args | default(omit) }}"
+    hermes_profile_readbacks: "{{ hermes_profile_readbacks__default if hermes_profile_readbacks__default is defined else hermes_profile_readbacks | default(omit) }}"
+    hermes_profile_apply: "{{ hermes_profile_apply__default if hermes_profile_apply__default is defined else hermes_profile_apply | default(omit) }}"
+  when: _config_hermes_profile__argspec_resolved | default(false)
+  # At least one option carries no_log, and set_fact would otherwise print every
+  # resolved value — including that one — in the task result.
+  no_log: true
+
+- name: Record that this role has resolved its options in this play
+  ansible.builtin.set_fact:
+    _config_hermes_profile__argspec_resolved: true

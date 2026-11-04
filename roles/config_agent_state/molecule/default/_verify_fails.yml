@@ -1,0 +1,51 @@
+---
+# The verify entrypoint must FAIL when it should. Without these, a verify that always passes is
+# indistinguishable from one that works.
+- name: "{{ vcase.name }} - let the newest archive age past a 1 s limit (the mirror's last success ages too)"
+  ansible.builtin.command:
+    argv: [sleep, "2"]
+  changed_when: false
+  when: vcase.max_age == 1
+
+- name: "{{ vcase.name }}"
+  block:
+    - name: verify
+      ansible.builtin.include_role:
+        name: config_agent_state
+        tasks_from: verify
+      vars:
+        agent_state_product: "{{ as_common.agent_state_product }}"
+        agent_state_python: "{{ as_common.agent_state_python }}"
+        agent_state_install_dir: "{{ as_common.agent_state_install_dir }}"
+        agent_state_key_dir: "{{ as_common.agent_state_key_dir }}"
+        agent_state_unit_dir: "{{ as_common.agent_state_unit_dir }}"
+        agent_state_textfile_dir: "{{ as_common.agent_state_textfile_dir }}"
+        agent_state_packages: "{{ as_common.agent_state_packages }}"
+        agent_state_enable_timers: "{{ as_common.agent_state_enable_timers }}"
+        agent_state_stack_managed: "{{ as_common.agent_state_stack_managed }}"
+        agent_state_restore_quiet_start: "{{ as_common.agent_state_restore_quiet_start }}"
+        agent_state_root: "{{ as_common.agent_state_root }}"
+        agent_state_mirror_dir: "{{ vcase.mirror_dir | default(as_common.agent_state_mirror_dir) }}"
+        agent_state_repo_url: "{{ as_common.agent_state_repo_url }}"
+        agent_state_mirror_paths: "{{ as_common.agent_state_mirror_paths }}"
+        agent_state_config_file: "{{ as_common.agent_state_config_file }}"
+        agent_state_sqlite_files: "{{ as_common.agent_state_sqlite_files }}"
+        agent_state_backup_exclude: "{{ as_common.agent_state_backup_exclude }}"
+        agent_state_required_paths: "{{ as_common.agent_state_required_paths }}"
+        agent_state_backup_target: "{{ vcase.target }}"
+        agent_state_verify_max_age_seconds: "{{ vcase.max_age }}"
+    - name: Accepted
+      ansible.builtin.set_fact:
+        _accepted: true
+        _cause: ""
+  rescue:
+    - name: Refused
+      ansible.builtin.set_fact:
+        _accepted: false
+        _cause: "{{ ansible_failed_result.msg | default('') }}"
+
+- name: "HARD GATE {{ vcase.name }} - verify failed, naming the property"
+  ansible.builtin.assert:
+    that: [not (_accepted | bool), vcase.expect in _cause]
+    fail_msg: "accepted={{ _accepted }} cause={{ _cause }}"
+    quiet: true

@@ -1,0 +1,10 @@
+# Rendered by roles/config_hermes_learning. {{ _job.description }}
+[Unit]
+Description=Hermes learning loop: {{ _job.description }}
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/env python3 {{ hermes_learning_install_dir }}/hermes_learning.py --config {{ hermes_learning_config_dir }}/config.json {{ _job.cmd }}
+TimeoutStartSec={{ _job.timeout }}

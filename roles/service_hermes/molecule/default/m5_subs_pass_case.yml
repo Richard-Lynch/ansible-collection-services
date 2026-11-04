@@ -1,0 +1,20 @@
+---
+# One agent-side subscription store the delivery must ACCEPT (the near-miss of the refusals).
+- name: "Pass: a store holding {{ subs_body | default('', true) | length }} bytes"
+  block:
+    - name: Plant it
+      ansible.builtin.copy:
+        dest: "{{ render_root }}/data/webhook_subscriptions.json"
+        content: "{{ subs_body }}"
+        mode: "0600"
+
+    - name: Run the delivery (must succeed)
+      ansible.builtin.include_role:
+        name: service_hermes
+        tasks_from: _automations_deliver
+        public: true
+  always:
+    - name: Remove it
+      ansible.builtin.file:
+        path: "{{ render_root }}/data/webhook_subscriptions.json"
+        state: absent

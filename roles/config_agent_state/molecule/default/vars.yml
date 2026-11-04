@@ -1,0 +1,11 @@
+---
+# The scenario's scratch tree: ONE definition, read by every play here through `vars_files`.
+#
+# It lives under molecule's own ephemeral directory for this scenario
+# (`~/.ansible/tmp/molecule.<checksum>.default/`, or `$VIRTUAL_ENV/.ansible/tmp/...`), never under
+# a hand-named /tmp path: molecule prunes that directory on `destroy`, so the scratch cannot
+# outlive the run even if cleanup.yml never ran, and no other scenario can be pointed at it by
+# accident. `molecule_ephemeral_directory` is injected into the inventory by molecule itself; the
+# plays that DELETE this tree gate on it first (_scratch_gate.yml), because an empty value would
+# make this `/scratch`.
+w: "{{ molecule_ephemeral_directory }}/scratch"

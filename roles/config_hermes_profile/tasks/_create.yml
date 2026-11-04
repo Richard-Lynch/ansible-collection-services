@@ -1,0 +1,34 @@
+---
+# Create the profile with hermes' own command, as the gateway's uid, so the directory and everything
+# hermes puts in it are owned by the account that will read them. Nothing here guesses the layout:
+# the read-back below asserts the directory exists, owned by that uid.
+- name: Create the profile
+  community.docker.docker_container_exec:
+    container: "{{ hermes_profile_container }}"
+    argv: "{{ ['hermes', 'profile', 'create'] + hermes_profile_create_args + [hermes_profile_name] }}"
+    user: "{{ hermes_profile_uid }}:{{ hermes_profile_gid }}"
+  register: _hp_create
+  changed_when: true
+
+- name: Stat the profile directory again
+  ansible.builtin.stat:
+    path: "{{ _hp_dir }}"
+  register: _hp_stat_after
+
+- name: ASSERT — the directory exists and belongs to the gateway's uid
+  ansible.builtin.assert:
+    that:
+      - _hp_stat_after.stat.exists
+      - _hp_stat_after.stat.isdir
+      - _hp_stat_after.stat.uid == (hermes_profile_uid | int)
+    fail_msg: >-
+      `hermes profile create {{ hermes_profile_name }}` returned rc={{ _hp_create.rc | default('?') }} but
+      {{ _hp_dir }} is {{ 'missing' if not _hp_stat_after.stat.exists else 'owned by uid ' ~ _hp_stat_after.stat.uid }}.
+      The profile layout is not what the role was written against: read
+      `hermes profile create --help` in the running image before retrying.
+    quiet: true
+
+- name: Remember the profile now exists, and that THIS run made it (the file tasks read both)
+  ansible.builtin.set_fact:
+    _hp_stat: "{{ _hp_stat_after }}"
+    _hp_created: true

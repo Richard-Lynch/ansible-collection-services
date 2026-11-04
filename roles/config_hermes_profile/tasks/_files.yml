@@ -1,0 +1,190 @@
+---
+# The file half of the role. Entered directly by the molecule scenario (an underscore entrypoint has
+# no argspec of its own), so it must not depend on anything main.yml derives except `_hp_dir` and
+# `_hp_stat`, which the scenario sets the same way (and hermes_profile_anchor_uid, which it passes).
+# EVERY READ AND WRITE BELOW GOES THROUGH files/agent_dir.py. The profile directory sits under the
+# gateway's data directory, which the agent (the gateway's uid) can write, so any name in it may be
+# a link by the time root looks: `copy` without follow: false writes through a planted link and
+# chowns its target, `lineinfile` always realpath()s its dest, and a read-merge-write by name would
+# copy the text of whatever file the link names into the agent's own config. agent_dir.py walks from
+# the data directory's root-owned PARENT one component at a time with O_NOFOLLOW, refuses a link
+# anywhere on the way, and renames a new file over the name. Values travel in the environment.
+- name: Derive the confined walk's anchor and the profile's path below it
+  ansible.builtin.include_tasks: _anchor.yml
+
+- name: Read the current config.yaml (confined walk; absent is empty, a link is refused)
+  # No failed_when: false. A file that exists and cannot be read must STOP the play; reading it as
+  # "empty" would have the next write replace a config the agent has been building.
+  ansible.builtin.script:
+    cmd: "{{ _hp_helper }} --read-file {{ (_hp_rel ~ '/config.yaml') | quote }}"
+    executable: python3
+  register: _hp_cfg
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Take its text (empty only when there is no file)
+  ansible.builtin.set_fact:
+    _hp_existing: "{{ (_hp_cfg.stdout | from_json).content | default('') }}"
+  no_log: true
+
+# The clone carries the SOURCE's platform_toolsets for every chat platform (a shell on the gateway
+# for slack and the rest). With hermes_profile_platform_toolsets set, every platform key already in
+# the file is swept to that list FIRST; the caller's explicit leaves (which name the platforms it can
+# read back) then apply on top, so a platform the caller did not know about cannot keep the source's
+# wider list. A platform key absent from the file is Hermes's default for that platform: that is why
+# the caller still declares the platforms it knows, and why the read-back covers them.
+- name: Sweep every platform key the file already carries (names only, from the file)
+  ansible.builtin.set_fact:
+    _hp_sweep_leaves: "{{ _hp_existing | richard_lynch.services.hermes_platform_sweep_leaves(hermes_profile_platform_toolsets | default([]), hermes_profile_leaves) }}"
+  no_log: true
+
+- name: Merge the leaves into it (the sweep first, the explicit leaves on top)
+  ansible.builtin.set_fact:
+    _hp_merged: "{{ _hp_existing | richard_lynch.services.hermes_leaf_merge(_hp_sweep_leaves + hermes_profile_leaves) }}"
+  no_log: true
+
+- name: Say what would change
+  vars:
+    _hp_would_change: "{{ _hp_merged != _hp_existing }}"
+  ansible.builtin.debug:
+    msg:
+      - "profile {{ hermes_profile_name }} ({{ _hp_dir }}): exists={{ _hp_stat.stat.exists }}; config.yaml {{ 'WOULD CHANGE' if _hp_would_change else 'already matches the leaves' }}"
+      # A key is a dotted string OR a list of segments; `map('join', '.')` over a string joins its
+      # CHARACTERS ("p.l.a.t.f.o.r.m..."), so join only the list form.
+      - "leaves: {% for k in hermes_profile_leaves | map(attribute='key') %}{{ k if k is string else k | join('.') }}{{ '' if loop.last else ', ' }}{% endfor %}"
+      - "apply={{ hermes_profile_apply | bool }}{{ '' if hermes_profile_apply | bool else ' (nothing written; set hermes_profile_apply to write)' }}"
+
+- name: Refuse to write into a profile directory that does not exist
+  ansible.builtin.assert:
+    that: _hp_stat.stat.exists
+    fail_msg: "{{ _hp_dir }} does not exist, so there is nothing to write into. `hermes profile create` did not run or did not make it."
+    quiet: true
+  when: hermes_profile_apply | bool
+
+- name: Write config.yaml (atomically, only when it differs; confined walk)
+  ansible.builtin.script:
+    cmd: "{{ _hp_helper }} --write-file {{ (_hp_rel ~ '/config.yaml') | quote }} --file-mode 0600"
+    executable: python3
+  environment:
+    AGENT_DIR_CONTENT: "{{ _hp_merged }}"
+  register: _hp_cfg_write
+  changed_when: (_hp_cfg_write.stdout | default('{}', true) | from_json).changed | default(false)
+  when: hermes_profile_apply | bool
+  no_log: true
+
+- name: Read config.yaml back from disk (confined walk)
+  ansible.builtin.script:
+    cmd: "{{ _hp_helper }} --read-file {{ (_hp_rel ~ '/config.yaml') | quote }}"
+    executable: python3
+  register: _hp_cfg_after_raw
+  changed_when: false
+  when: hermes_profile_apply | bool
+  no_log: true
+
+- name: Take the read-back text
+  ansible.builtin.set_fact:
+    _hp_cfg_after_text: "{{ (_hp_cfg_after_raw.stdout | from_json).content | default('') }}"
+  when: hermes_profile_apply | bool
+  no_log: true
+
+- name: ASSERT — every leaf is on disk with the value that was asked for (read by a different code path)
+  ansible.builtin.assert:
+    that:
+      - >-
+        _hp_cfg_after_text
+        | richard_lynch.services.hermes_leaf_get(_leaf.key, '__ABSENT__') == _leaf.value
+    fail_msg: "leaf {{ _leaf.key | join('.') if _leaf.key is not string else _leaf.key }} is not on disk with the requested value"
+    quiet: true
+  loop: "{{ hermes_profile_leaves }}"
+  loop_control:
+    loop_var: _leaf
+    label: "{{ _leaf.key | join('.') if _leaf.key is not string else _leaf.key }}"
+  when: hermes_profile_apply | bool
+
+# ---- .env: one managed line per name, every other line kept -------------------------------------
+- name: Find the environment entries that cannot be written safely (NAMES only)
+  # Computed under no_log and reduced to a list of KEY NAMES, because a loop over the entries puts
+  # each value into a failed task's output however it is labelled. The assert below then carries only
+  # the names, so its message is never censored and never leaks. The predicates are tested both ways
+  # by the molecule scenario: a rejectattr that matches nothing would pass every entry.
+  vars:
+    _items: "{{ hermes_profile_env | dict2items }}"
+  ansible.builtin.set_fact:
+    _hp_env_bad: >-
+      {{ (_items | rejectattr('key', 'match', '^[A-Z][A-Z0-9_]*$') | map(attribute='key') | list)
+         + (_items | rejectattr('value', 'string') | map(attribute='key') | list)
+         + (_items | selectattr('value', 'string') | rejectattr('value', 'match', '[^\x27\r\n]+\Z')
+            | map(attribute='key') | list) }}
+  no_log: true
+
+- name: ASSERT — every environment entry can be written and read back as written
+  ansible.builtin.assert:
+    that: _hp_env_bad | length == 0
+    fail_msg: >-
+      environment entries {{ _hp_env_bad }} are refused: the name must be UPPER_SNAKE and the value a
+      non-empty string with no quote or newline (a dotenv reader would not read it back as written).
+    quiet: true
+
+# A clone copies the SOURCE profile's whole .env: the gateway's API_SERVER_KEY, its chat tokens, its
+# provider keys. A profile must hold only its own lines, so in the run that CREATED it the cloned
+# file is replaced outright by the managed lines; from then on "other lines kept"
+# applies, because the agent and the dashboard may add lines of their own. A profile that needs a
+# provider credential of its own declares it in hermes_profile_env.
+- name: Replace the cloned .env with the managed lines alone (only in the run that created the profile)
+  ansible.builtin.script:
+    cmd: "{{ _hp_helper }} --write-file {{ (_hp_rel ~ '/.env') | quote }} --file-mode 0600"
+    executable: python3
+  environment:
+    # double-quoted scalar on purpose: that is the one YAML style where \n is a newline
+    AGENT_DIR_CONTENT: "{% for k, v in hermes_profile_env | dictsort %}{{ k }}='{{ v }}'\n{% endfor %}"
+  register: _hp_env_replace
+  changed_when: (_hp_env_replace.stdout | default('{}', true) | from_json).changed | default(false)
+  when: hermes_profile_apply | bool and (_hp_created | default(false) | bool)
+  no_log: true
+
+- name: Write each environment line (mode 0600, other lines kept; confined walk, value in the env)
+  # Not lineinfile: it reads and writes the realpath() of its dest and takes no follow: at all.
+  ansible.builtin.script:
+    cmd: "{{ _hp_helper }} --set-line {{ (_hp_rel ~ '/.env') | quote }} --key {{ _env.key | quote }} --file-mode 0600"
+    executable: python3
+  environment:
+    AGENT_DIR_VALUE: "'{{ _env.value }}'"
+  register: _hp_env_line
+  changed_when: (_hp_env_line.stdout | default('{}', true) | from_json).changed | default(false)
+  loop: "{{ hermes_profile_env | dict2items }}"
+  loop_control:
+    loop_var: _env
+    label: "{{ _env.key }}"
+  when: hermes_profile_apply | bool
+  no_log: true
+
+- name: Stat the profile .env
+  ansible.builtin.stat:
+    path: "{{ _hp_dir }}/.env"
+  register: _hp_env_stat
+  when: hermes_profile_apply | bool and (hermes_profile_env | length) > 0
+
+- name: ASSERT — the .env is 0600 and owned by the gateway's uid
+  ansible.builtin.assert:
+    that:
+      - _hp_env_stat.stat.mode == '0600'
+      - _hp_env_stat.stat.uid == (hermes_profile_uid | int)
+    fail_msg: "{{ _hp_dir }}/.env holds credentials and is not 0600 owned by uid {{ hermes_profile_uid }}"
+    quiet: true
+  when: hermes_profile_apply | bool and (hermes_profile_env | length) > 0
+
+# ---- SOUL.md: seeded once ------------------------------------------------------------------------
+- name: Seed SOUL.md (overwrites only in the run that CREATED the profile; confined walk)
+  # A clone brings the source profile's SOUL, which nobody curated for THIS profile; after the first
+  # run the file is curated by its operator and the agent, and --seed leaves an existing one alone.
+  ansible.builtin.script:
+    cmd: >-
+      {{ _hp_helper }} --write-file {{ (_hp_rel ~ '/SOUL.md') | quote }} --file-mode 0644
+      {{ '' if (_hp_created | default(false) | bool) else '--seed' }}
+    executable: python3
+  environment:
+    AGENT_DIR_CONTENT: "{{ hermes_profile_soul }}"
+  register: _hp_soul
+  changed_when: (_hp_soul.stdout | default('{}', true) | from_json).changed | default(false)
+  when: hermes_profile_apply | bool and (hermes_profile_soul | length) > 0

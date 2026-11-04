@@ -1,0 +1,612 @@
+/* Model Explorer — an instrument panel, not a landing page.
+ *
+ * DESIGN INTENT. One engineer reads this to answer "what can this gateway reach, and what can I
+ * actually pick?". So: dark, dense, monospace-forward, and the ENUMERATED/ROUTABLE distinction
+ * carried by colour as the loudest signal on screen, because that distinction is the app's whole
+ * reason to exist. No decoration that costs a row of data.
+ *
+ * Fonts are loaded from the bundle, NOT from Google Fonts: the app is internal-only and the
+ * browser opening it may have no route to the internet, so a webfont CDN would mean a flash of
+ * fallback text or none at all. The stacks below name widely-installed mono/grotesque faces and
+ * degrade honestly.
+ */
+
+:root {
+  /* Instrument-panel palette: near-black ground, cool slate structure, two loud accents. */
+  --ink: #0a0c10;
+  --ink-raised: #12161d;
+  --ink-sunken: #070910;
+  --line: #222933;
+  --line-bright: #2f3846;
+
+  --text: #dbe2ea;
+  --text-dim: #8d99a8;
+  --text-faint: #5d6774;
+
+  /* The two that matter. Amber = enumerated/pickable. Cyan = routable but invisible. */
+  --enumerated: #ffb347;
+  --enumerated-dim: #4a3414;
+  --routable: #4fd6e8;
+  --routable-dim: #123b42;
+
+  --picker: #7ee787;
+  --picker-dim: #16301b;
+  --warn: #ff7b6b;
+  --warn-dim: #3d1a16;
+
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
+  --sans: "Helvetica Neue", Helvetica, "Segoe UI", system-ui, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--ink);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.45;
+  /* A faint scanline texture, so the ground reads as a panel rather than flat black. Cheap:
+   * one repeating gradient, no image request. */
+  background-image: repeating-linear-gradient(
+    to bottom,
+    rgba(255, 255, 255, 0.012) 0px,
+    rgba(255, 255, 255, 0.012) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+}
+
+/* ---- shell ------------------------------------------------------------------------- */
+
+.app {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  height: 100%;
+}
+
+.masthead {
+  border-bottom: 1px solid var(--line-bright);
+  background: linear-gradient(180deg, var(--ink-raised), var(--ink));
+  padding: 14px 20px 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px 28px;
+  align-items: baseline;
+}
+
+.masthead h1 {
+  margin: 0;
+  font-family: var(--sans);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.masthead h1 .accent {
+  color: var(--enumerated);
+}
+
+.masthead .tagline {
+  color: var(--text-dim);
+  font-size: 11.5px;
+  max-width: 62ch;
+}
+
+.provenance {
+  margin-left: auto;
+  text-align: right;
+  color: var(--text-faint);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.provenance b {
+  color: var(--text-dim);
+  font-weight: 600;
+}
+
+/* Tallies: the three counts, as the headline figures they are. */
+.tallies {
+  display: flex;
+  gap: 22px;
+  flex-wrap: wrap;
+}
+
+.tally {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.tally .n {
+  font-size: 21px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+
+.tally .l {
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.tally.is-enumerated .n {
+  color: var(--enumerated);
+}
+.tally.is-routable .n {
+  color: var(--routable);
+}
+.tally.is-picker .n {
+  color: var(--picker);
+}
+
+/* ---- body layout ----------------------------------------------------------------- */
+
+.body {
+  display: grid;
+  grid-template-columns: 268px 1fr;
+  min-height: 0;
+}
+
+@media (max-width: 900px) {
+  .body {
+    grid-template-columns: 1fr;
+  }
+  .filters {
+    border-right: none !important;
+    border-bottom: 1px solid var(--line-bright);
+    max-height: 42vh;
+  }
+}
+
+.filters {
+  border-right: 1px solid var(--line-bright);
+  background: var(--ink-sunken);
+  overflow-y: auto;
+  padding: 4px 0 40px;
+}
+
+.fgroup {
+  border-bottom: 1px solid var(--line);
+  padding: 11px 14px 13px;
+}
+
+.fgroup > h3 {
+  margin: 0 0 8px;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  font-weight: 600;
+}
+
+.fgroup .hint {
+  color: var(--text-faint);
+  font-size: 10.5px;
+  margin: 7px 0 0;
+  line-height: 1.5;
+}
+
+.search-input,
+.num-input,
+select {
+  width: 100%;
+  background: var(--ink);
+  border: 1px solid var(--line-bright);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 6px 8px;
+  border-radius: 2px;
+}
+
+.search-input:focus,
+.num-input:focus,
+select:focus {
+  outline: none;
+  border-color: var(--enumerated);
+}
+
+.row2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+/* Chip toggles — the main filter affordance. Dense, clearly on/off. */
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.chip {
+  background: transparent;
+  border: 1px solid var(--line-bright);
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 3px 7px;
+  border-radius: 2px;
+  cursor: pointer;
+  transition: background 90ms ease, color 90ms ease, border-color 90ms ease;
+}
+
+.chip:hover {
+  border-color: var(--text-faint);
+  color: var(--text);
+}
+
+.chip[aria-pressed="true"] {
+  background: var(--enumerated-dim);
+  border-color: var(--enumerated);
+  color: var(--enumerated);
+}
+
+.chip .count {
+  color: var(--text-faint);
+  margin-left: 4px;
+}
+
+.chip[aria-pressed="true"] .count {
+  color: var(--enumerated);
+  opacity: 0.75;
+}
+
+.chip.tone-routable[aria-pressed="true"] {
+  background: var(--routable-dim);
+  border-color: var(--routable);
+  color: var(--routable);
+}
+.chip.tone-routable[aria-pressed="true"] .count {
+  color: var(--routable);
+}
+
+.clear-all {
+  display: block;
+  width: calc(100% - 28px);
+  margin: 12px 14px 0;
+  background: transparent;
+  border: 1px dashed var(--line-bright);
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 6px;
+  cursor: pointer;
+  border-radius: 2px;
+}
+
+.clear-all:hover {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
+/* ---- results --------------------------------------------------------------------- */
+
+.results {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+
+.results-bar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 9px 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--ink-raised);
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
+.results-bar .shown {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.results-bar .sort {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.results-bar select {
+  width: auto;
+  padding: 3px 6px;
+  font-size: 11px;
+}
+
+.table-scroll {
+  overflow: auto;
+  min-height: 0;
+  flex: 1;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--ink-raised);
+  border-bottom: 1px solid var(--line-bright);
+  color: var(--text-faint);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  font-weight: 600;
+  text-align: left;
+  padding: 7px 10px;
+  white-space: nowrap;
+}
+
+tbody td {
+  border-bottom: 1px solid var(--line);
+  padding: 6px 10px;
+  vertical-align: top;
+}
+
+tbody tr:hover td {
+  background: rgba(255, 255, 255, 0.022);
+}
+
+.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.model-id {
+  color: var(--text);
+  word-break: break-all;
+}
+
+.model-name {
+  color: var(--text-faint);
+  font-size: 10.5px;
+  display: block;
+  margin-top: 1px;
+}
+
+/* The load-bearing badges. */
+.badge {
+  display: inline-block;
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 700;
+  padding: 2px 5px;
+  border-radius: 2px;
+  border: 1px solid;
+  white-space: nowrap;
+}
+
+.badge.enumerated {
+  color: var(--enumerated);
+  border-color: var(--enumerated);
+  background: var(--enumerated-dim);
+}
+
+.badge.routable {
+  color: var(--routable);
+  border-color: var(--routable);
+  background: var(--routable-dim);
+}
+
+.badge.picker {
+  color: var(--picker);
+  border-color: var(--picker);
+  background: var(--picker-dim);
+}
+
+.badge.expiring {
+  color: var(--warn);
+  border-color: var(--warn);
+  background: var(--warn-dim);
+}
+
+.mods {
+  color: var(--text-dim);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.mods .io {
+  color: var(--text-faint);
+}
+
+.unknown {
+  color: var(--text-faint);
+  font-style: italic;
+}
+
+/* Checkbox cell */
+.stage-cell {
+  text-align: center;
+  width: 34px;
+}
+
+.stage-cell input {
+  accent-color: var(--picker);
+  cursor: pointer;
+  width: 14px;
+  height: 14px;
+}
+
+.stage-cell input:disabled {
+  cursor: not-allowed;
+  opacity: 0.3;
+}
+
+/* ---- staging tray ----------------------------------------------------------------- */
+
+.tray {
+  border-top: 2px solid var(--picker);
+  background: var(--ink-raised);
+  padding: 12px 16px 14px;
+  max-height: 46vh;
+  overflow-y: auto;
+}
+
+.tray h2 {
+  margin: 0 0 3px;
+  font-family: var(--sans);
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--picker);
+}
+
+.tray p {
+  margin: 0 0 9px;
+  color: var(--text-dim);
+  font-size: 11px;
+  max-width: 96ch;
+  line-height: 1.55;
+}
+
+.tray pre {
+  margin: 0;
+  background: var(--ink-sunken);
+  border: 1px solid var(--line-bright);
+  border-radius: 2px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text);
+  max-height: 26vh;
+}
+
+.tray-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 9px;
+  flex-wrap: wrap;
+}
+
+.btn {
+  background: var(--picker-dim);
+  border: 1px solid var(--picker);
+  color: var(--picker);
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 5px 11px;
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+.btn:hover {
+  background: var(--picker);
+  color: var(--ink);
+}
+
+.btn.ghost {
+  background: transparent;
+  border-color: var(--line-bright);
+  color: var(--text-dim);
+}
+
+.btn.ghost:hover {
+  border-color: var(--warn);
+  color: var(--warn);
+  background: transparent;
+}
+
+/* ---- states ----------------------------------------------------------------------- */
+
+.state {
+  margin: 48px auto;
+  max-width: 68ch;
+  padding: 22px 26px;
+  border: 1px solid var(--line-bright);
+  border-left: 3px solid var(--text-faint);
+  background: var(--ink-raised);
+  border-radius: 2px;
+}
+
+.state.error {
+  border-left-color: var(--warn);
+}
+
+.state h2 {
+  margin: 0 0 9px;
+  font-family: var(--sans);
+  font-size: 14px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--warn);
+}
+
+.state.loading h2 {
+  color: var(--text-dim);
+}
+
+.state p {
+  margin: 0 0 9px;
+  color: var(--text-dim);
+  line-height: 1.6;
+}
+
+.state pre {
+  background: var(--ink-sunken);
+  border: 1px solid var(--line);
+  padding: 9px 11px;
+  overflow-x: auto;
+  font-size: 11px;
+  color: var(--text-dim);
+  margin: 0 0 9px;
+}
+
+.state code {
+  color: var(--enumerated);
+  background: var(--ink-sunken);
+  padding: 1px 4px;
+  border-radius: 2px;
+}
+
+.empty-rows {
+  padding: 34px 20px;
+  text-align: center;
+  color: var(--text-dim);
+}
+
+.empty-rows b {
+  color: var(--text);
+}
+
+/* Staleness line. The export is run BY HAND, so this is the only thing standing between the
+ * page and a silently-ancient catalogue — it earns colour as it ages. */
+.staleness.is-fresh {
+  color: var(--text-faint);
+}
+
+.staleness.is-aging {
+  color: var(--enumerated);
+}
+
+.staleness.is-stale {
+  color: var(--warn);
+  font-weight: 700;
+}

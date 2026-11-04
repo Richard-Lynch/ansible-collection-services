@@ -1,0 +1,35 @@
+---
+# The policy hook (hermes__hook_leaves) and the send gate (inside hermes__automation_leaves) are
+# BOTH entries of the one tier-C leaf hooks.pre_tool_call. Concatenating the two leaf lists owns
+# that key twice, which hermes_owned_projection refuses ("owned twice"); keeping only one would
+# silently drop the other hook. So the entries are combined into ONE leaf: the policy hook first
+# (it denies), then the gate.
+# Pure: reads the two leaf lists and the enable flags, sets two facts. Molecule (verify)
+# runs it directly with both, one and a broken input.
+
+- name: Combine the pre_tool_call entries into one leaf
+  vars:
+    _hook_key: [hooks, pre_tool_call]
+    _all_hooks: >-
+      {{ (hermes__hook_leaves + hermes__automation_leaves)
+         | selectattr('key', 'in', ['hooks.pre_tool_call', _hook_key]) | list }}
+  ansible.builtin.set_fact:
+    hermes__pre_tool_call_leaves: >-
+      {{ [{'key': 'hooks.pre_tool_call', 'tier': 'C',
+           'value': _all_hooks | map(attribute='value') | flatten(levels=1) | list}]
+         if _all_hooks | length > 0 else [] }}
+    hermes__automation_leaves_nohook: >-
+      {{ hermes__automation_leaves | rejectattr('key', 'in', ['hooks.pre_tool_call', _hook_key]) | list }}
+
+- name: HARD GATE - every enabled hook is in the combined pre_tool_call leaf
+  vars:
+    _cmds: "{{ hermes__pre_tool_call_leaves | map(attribute='value') | flatten(levels=1) | map(attribute='command') | list }}"
+  ansible.builtin.assert:
+    that:
+      - (not (hermes_policy_hook_enabled | bool)) or ('/opt/hermes/.venv/bin/python -I -B /opt/hermes-policy/hermes_policy_hook.py' in _cmds)
+      # every hook runs the image's interpreter in isolated mode, never an `env` shebang
+      - _cmds | reject('match', '/opt/hermes/[.]venv/bin/python -I -B /opt/hermes-policy/[a-z_]+[.]py$') | list | length == 0
+      - (not (hermes_hub_gate_enabled | bool)) or (_cmds | select('search', '/opt/hermes-policy/hub_gate[.]py$') | list | length == 1)
+      - _cmds | length == ([hermes_policy_hook_enabled | bool, hermes_hub_gate_enabled | bool] | select | list | length)
+    fail_msg: "hooks.pre_tool_call carries {{ _cmds }}, which is not exactly the enabled hooks."
+    quiet: true

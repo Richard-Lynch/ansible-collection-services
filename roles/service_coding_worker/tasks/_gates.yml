@@ -1,0 +1,222 @@
+---
+# Preflight gates for service_coding_worker, kept in their own file so the molecule scenario can
+# include THIS file with a good and a bad input and prove each gate can fire. A gate that has only
+# ever seen valid input has never been shown to be a gate.
+#
+- name: HARD GATE — tool versions must be pinned, never floating
+  # A floating version makes the deployed agent a function of WHEN the play ran, so two converges
+  # from one commit produce different software.
+  ansible.builtin.assert:
+    that:
+      - worker_tools.claude_code_version | default('') | length > 0
+      - worker_tools.codex_version | default('') | length > 0
+      - worker_tools.claude_code_version not in ['latest', 'next', 'stable']
+      - worker_tools.codex_version not in ['latest', 'next', 'stable']
+    fail_msg: >-
+      worker_tools needs explicit claude_code_version and codex_version, not a floating tag.
+    quiet: true
+
+- name: HARD GATE — no personal subscription login
+  ansible.builtin.assert:
+    that: [not (worker_subscription_login | bool)]
+    fail_msg: >-
+      worker_subscription_login must stay false. The worker authenticates with its own LiteLLM
+      key so every run is a line in the spend ledger under that key; a personal login would
+      bypass the ledger and become a dependency the plan deliberately does not have.
+    quiet: true
+
+- name: HARD GATE — the card Claude settings never switch the permission layer off
+  # sessiond refuses the same shapes at start; this refuses them before anything is rendered.
+  vars:
+    _settings: "{{ worker_claude_settings | default({}) }}"
+    _perms: "{{ _settings.permissions | default({}) }}"
+    _allow_flat: "{{ _perms.allow | default([]) | map('replace', ' ', '') | list }}"
+  ansible.builtin.assert:
+    that:
+      - _perms.defaultMode | default('') != 'bypassPermissions'
+      - "'skipDangerousModePermissionPrompt' not in _settings"
+      - "'skipDangerousModePermissionPrompt' not in _perms"
+      - _allow_flat | intersect(['Bash', 'Bash(*)', 'Bash(:*)']) | length == 0
+    fail_msg: >-
+      worker_claude_settings may not use bypassPermissions, skip its prompt, or allow every Bash
+      command. Widening what an unattended agent may run is a narrow allow rule in inventory.
+    quiet: true
+
+- name: HARD GATE — every repo entry carries name, url and base_branch
+  ansible.builtin.assert:
+    that:
+      - item.name is defined and item.name is match('\A[A-Za-z0-9][A-Za-z0-9._-]*\Z')
+      - item.url is defined and item.url is match('\Ahttps://')
+      - item.base_branch is defined and item.base_branch | length > 0
+    fail_msg: "worker_repos entry {{ item.name | default('(no name)') }} needs a safe name, an https url and base_branch."
+    quiet: true
+  loop: "{{ worker_repos }}"
+  loop_control:
+    label: "{{ item.name | default('?') }}"
+
+- name: HARD GATE — the MCP catalogue holds only reviewed entries with no literal credential
+  # The catalogue is rendered into per-card MCP files, so a literal token here would be written
+  # into every card's directory. Only ${NAME} references are allowed; the value lives in
+  # worker_extra_env and reaches the agent through its environment.
+  #
+  # The SHAPE of each reference is gated too, because Codex forwards credentials by variable NAME:
+  # a header must be exactly `Bearer ${VAR}` or a bare `${VAR}` (the two forms
+  # `bearer_token_env_var` / `env_http_headers` can express), and a stdio env value must be
+  # `${KEY}` for its OWN key (`env_vars` forwards a variable under its own name, so
+  # `{RUNNER_TOKEN: "${OTHER_TOKEN}"}` would forward a variable that does not exist).
+  ansible.builtin.assert:
+    that:
+      - item.name is defined and item.name is match('\A[a-z0-9][a-z0-9-]*\Z')
+      - item.transport | default('') in ['http', 'stdio']
+      - item.reviewed_by | default('') | length > 0
+      - item.transport != 'http' or (item.url | default('') is match('\Ahttps?://'))
+      - item.transport != 'stdio' or (item.command | default('') | length > 0)
+      - >-
+        (item.headers | default({})).values() | list
+        | reject('match', '\A(Bearer )?\$\{[A-Z][A-Z0-9_]*\}\Z') | list | length == 0
+      # Built as "${KEY}" from each key and compared to the values, with NO regex backreference:
+      # a '\1' inside an assert condition is not a backreference (the same expression matches
+      # under `debug`), so the backreference form refuses the GOOD input.
+      - >-
+        ((item.env | default({})).keys() | map('regex_replace', '\A', '${') | map('regex_replace', '\Z', '}') | list)
+        == ((item.env | default({})).values() | list)
+    fail_msg: >-
+      MCP catalogue entry '{{ item.name | default('?') }}' is not reviewable: it needs a lowercase
+      name, transport http|stdio, reviewed_by, a url or command; every header value must be
+      'Bearer ${VAR}' or a bare '${VAR}' (never a literal secret), and every env value must be
+      '${KEY}' under its own name, because codex forwards variables by name.
+    quiet: true
+  loop: "{{ worker_mcp_catalogue }}"
+  loop_control:
+    label: "{{ item.name | default('?') }}"
+
+- name: HARD GATE — default-enabled MCP names must exist in the catalogue
+  ansible.builtin.assert:
+    that:
+      - worker_mcp_default_enabled | difference(worker_mcp_catalogue | map(attribute='name') | list) | length == 0
+    fail_msg: >-
+      worker_mcp_default_enabled names {{ worker_mcp_default_enabled | difference(worker_mcp_catalogue | map(attribute='name') | list) }},
+      which are not in worker_mcp_catalogue.
+    quiet: true
+
+- name: HARD GATE — Node is installed from a checksummed x86_64 tarball, so refuse any other CPU
+  ansible.builtin.assert:
+    that:
+      - worker_tools.node_version | default('') is match('\A[0-9]+\.[0-9]+\.[0-9]+\Z')
+      - worker_tools.node_sha256_linux_x64 | default('') is match('\A[0-9a-f]{64}\Z')
+      - ansible_architecture == 'x86_64'
+    fail_msg: >-
+      worker_tools needs node_version (x.y.z) and node_sha256_linux_x64 (64 hex), and this guest
+      must be x86_64 (got {{ ansible_architecture | default('unknown') }}). Claude Code needs Node
+      22 or newer, which the distro package does not provide.
+    quiet: true
+
+- name: HARD GATE — the card's inner nameservers are IP literals, never loopback
+  # A loopback entry is the failure this option exists to fix (docker falls back to public DNS);
+  # a NAME would need a resolver to find the resolver.
+  ansible.builtin.assert:
+    that:
+      - (worker_card_dns | ansible.utils.ipaddr | length) == (worker_card_dns | length)
+      - (worker_card_dns | ansible.utils.ipaddr('loopback') | length) == 0
+    fail_msg: "worker_card_dns entries must be non-loopback IP literals (got {{ worker_card_dns }})."
+    quiet: true
+
+- name: HARD GATE — gh is pinned to a checksummed release, not the distro package
+  # Ubuntu 24.04's gh is 2.45: no `api --slurp` (2.48) and, with it, no working PR poll, so
+  # review comments would never reach a card. A pinned release makes the version a fact.
+  ansible.builtin.assert:
+    that:
+      - worker_tools.gh_version | default('') is match('\A[0-9]+\.[0-9]+\.[0-9]+\Z')
+      - worker_tools.gh_sha256_linux_amd64 | default('') is match('\A[0-9a-f]{64}\Z')
+    fail_msg: >-
+      worker_tools needs gh_version (x.y.z) and gh_sha256_linux_amd64 (64 hex, from the release's
+      checksums file). The distro gh is too old for sessiond's PR loop.
+    quiet: true
+
+- name: HARD GATE — ssh may accept only WORKER_* environment names
+  # AcceptEnv of PATH, LD_PRELOAD, BASH_ENV and friends lets a login pick the environment of every
+  # command it runs. The prefix is the whole defence, so it is the gate.
+  ansible.builtin.assert:
+    that:
+      - item is match('\AWORKER_[A-Z0-9_]+\Z')
+    fail_msg: >-
+      worker_ssh_accept_env entry '{{ item }}' is refused: it must be WORKER_ followed by upper-case
+      letters, digits or underscores.
+    quiet: true
+  loop: "{{ worker_ssh_accept_env }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: HARD GATE — an extra authorized key must look like a public key
+  ansible.builtin.assert:
+    that:
+      - item is match('\A(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp[0-9]+|sk-ssh-ed25519@openssh\.com) [A-Za-z0-9+/=]+( .*)?\Z')
+      - "'PRIVATE' not in item"
+    fail_msg: "worker_extra_authorized_keys holds an entry that is not a public key line (and a private key would be refused outright)."
+    quiet: true
+  loop: "{{ worker_extra_authorized_keys }}"
+  loop_control:
+    label: "{{ item[:24] }}"
+
+- name: HARD GATE — sysbox is pinned and checksummed, and the runtime is sysbox
+  # The runtime name is also the isolation claim. `runc` would start every card container with the
+  # VM's namespaces and no inner dockerd, and the container would look exactly like a working one.
+  ansible.builtin.assert:
+    that:
+      - worker_container_runtime == 'sysbox-runc'
+      - worker_sysbox.version | default('') is match('\A[0-9]+\.[0-9]+\.[0-9]+\Z')
+      - worker_sysbox.sha256_linux_amd64 | default('') is match('\A[0-9a-f]{64}\Z')
+    fail_msg: >-
+      worker_container_runtime must be sysbox-runc, and worker_sysbox needs version (x.y.z) and
+      sha256_linux_amd64 (64 hex, from the release's checksum list).
+    quiet: true
+
+- name: HARD GATE — a card's limits are readable numbers
+  # sessiond refuses to parse a limit it cannot read, but by then a card is mid-launch. A zero or
+  # unit-less memory limit that reached `docker run` would mean "no limit", i.e. an unbounded card.
+  ansible.builtin.assert:
+    that:
+      - worker_card_memory is match('\A[1-9][0-9]*[mMgG]\Z')
+      - worker_card_cpus | float > 0
+      - worker_vm_reserve_mb | int >= 256
+    fail_msg: >-
+      worker_card_memory must look like 2g or 512m (not 0, not unit-less), worker_card_cpus must be
+      above 0 and worker_vm_reserve_mb at least 256.
+    quiet: true
+
+- name: HARD GATE — protocol mode is pinned and has its own credential
+  # acpx and the two ACP adapters are what a protocol card RUNS; a floating version makes the
+  # agent a function of when the play ran (and acpx is pre-1.0: its CLI changes between minors).
+  # The acpx-mcp token is what an MCP client presents; it must not be the sessiond token, or a
+  # client given "drive ACP sessions" would also hold stop/done/pr-ready for every card.
+  ansible.builtin.assert:
+    that:
+      - worker_tools.acpx_version | default('') is match('\A[0-9]+\.[0-9]+\.[0-9]+\Z')
+      - worker_tools.claude_agent_acp_version | default('') is match('\A[0-9]+\.[0-9]+\.[0-9]+\Z')
+      - worker_tools.codex_acp_version | default('') is match('\A[0-9]+\.[0-9]+\.[0-9]+\Z')
+      - worker_acpx_mcp_token | default('') | length >= 16
+      - worker_acpx_mcp_token != worker_sessiond_token | default('')
+    fail_msg: >-
+      worker_acp_enabled needs worker_tools.acpx_version, claude_agent_acp_version and
+      codex_acp_version as exact x.y.z versions, and a worker_acpx_mcp_token of 16+ characters
+      that differs from worker_sessiond_token.
+    # Not no_log, so the refusal stays readable (molecule asserts its reason): an assert reports
+    # the failed EXPRESSION, never a value. Keep it that way: this fail_msg must never interpolate
+    # either token.
+    quiet: true
+  when: worker_acp_enabled | bool
+
+# Last on purpose: a worker_tools that lacks some OTHER pin must be refused by that pin's own
+# gate (the molecule bad cases depend on that order); only an otherwise-complete input reaches here.
+- name: HARD GATE — the card image's uv is pinned to a version and a checksum
+  # uv is baked into the default card image from the astral-sh/uv release tarball; without a pin the
+  # image would carry whatever the release page served on the day, and without the digest the build
+  # could not verify what it unpacked.
+  ansible.builtin.assert:
+    that:
+      - worker_tools.uv_version | default('') is match('\A[0-9]+\.[0-9]+\.[0-9]+\Z')
+      - worker_tools.uv_sha256_linux_x64 | default('') is match('\A[0-9a-f]{64}\Z')
+    fail_msg: >-
+      worker_tools needs uv_version (x.y.z) and uv_sha256_linux_x64 (64 hex, the release's own
+      uv-x86_64-unknown-linux-gnu.tar.gz.sha256). The card image installs uv from that tarball.
+    quiet: true

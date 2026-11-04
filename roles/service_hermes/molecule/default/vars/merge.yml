@@ -1,0 +1,44 @@
+---
+# Shared by converge.yml and verify.yml for the merge/pin play. Kept out of molecule.yml's
+# inventory because the render play below sets hermes_state_uid at PLAY level, which outranks inventory.
+render_root: /tmp/molecule-hermes-merge
+hermes_container_name: hermes
+hermes_config_dir: /tmp/molecule-hermes-merge
+hermes_state_uid: '{{ lookup(''pipe'', ''id -u'') | int }}'
+hermes_state_gid: '{{ lookup(''pipe'', ''id -g'') | int }}'
+hermes_gateway_url: http://litellm.example.com:4000/v1
+hermes_gateway_api_key: sk-molecule-virtual-key-placeholder
+hermes_gateway_provider_name: example-gateway
+hermes_gateway_discover_models: true
+hermes_gateway_models: [example-provider/model-large]
+hermes_default_model: example-provider/model-large
+hermes_tool_loop_hard_stop: true
+hermes__merge_quiesce: false
+# agent_dir.py (the dashboard theme writer) checks the anchor's owner; the scenario runs unprivileged.
+hermes__estate_uid: "{{ lookup('pipe', 'id -u') | int }}"
+# The API server is ON in this play so the merge's api_server-floor gate is exercised in the PASS
+# direction here (the subtract below satisfies it) and in the refuse direction in verify.yml.
+hermes_api_server_enabled: true
+hermes_api_server_key: molecule-api-server-key-at-least-32-chars
+hermes_config_owned:
+  - key: sessions.auto_prune
+    value: true
+    tier: B
+  - key: hooks_auto_accept
+    value: true
+    tier: C
+  - key: curator.interval_days
+    value: 14
+    tier: A-range
+    allowed: {min: 3, max: 30}
+# The floor: the daemon's own enabled set at the pin (read from /v1/toolsets), minus what an API
+# caller must not have. Same shape as the inventory's, so the scenario exercises the real derivation.
+hermes_toolsets_core:
+  [browser, code_execution, connections, cronjob, delegation, file, image_gen, memory,
+   session_search, skills, terminal, todo, vision, web]
+hermes_toolsets_subtract:
+  api_server: [terminal, file, code_execution, browser, delegation, cronjob]
+hermes_skills_source: "{{ playbook_dir }}/fixtures/skills"
+hermes_skills_mount_path: /opt/example-skills
+# A deployment may set hermes_api_server_full_control: true; this scenario leaves it
+# at its default (false) so the floor is subtracted, and flips it per case in verify.yml.

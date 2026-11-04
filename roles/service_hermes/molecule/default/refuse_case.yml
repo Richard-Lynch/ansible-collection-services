@@ -1,0 +1,62 @@
+---
+# One input the role must REFUSE: override some facts, run an entrypoint, and require the failure to
+# be the one named. The facts are put back afterwards whether or not it failed, because the next
+# case (and the rest of the play) needs the resolved values the role bound.
+#
+# set_fact, not task vars: the role's resolver bound these as FACTS, and a fact outranks a task-level
+# var, so a `vars:` override would test nothing.
+- name: "Refuse: {{ refuse_case.why }}"
+  block:
+    - name: Remember the resolved values
+      ansible.builtin.set_fact:
+        _refuse_saved:
+          hermes_toolsets_core: "{{ hermes_toolsets_core }}"
+          hermes_toolsets_subtract: "{{ hermes_toolsets_subtract }}"
+          hermes_skills_source: "{{ hermes_skills_source }}"
+          hermes_api_server_full_control: "{{ hermes_api_server_full_control }}"
+          hermes_api_server_enabled: "{{ hermes_api_server_enabled }}"
+          hermes__owned_all: "{{ hermes__owned_all | default([]) }}"
+      no_log: true
+
+    # EXPLICIT keys, not `set_fact: "{{ some_dict }}"`: handing set_fact a templated dict is
+    # silently a no-op (measured: the fact keeps its old value and the task reports ok), which
+    # turned the first version of this file into a refusal test that tested nothing.
+    - name: Override only what this case names
+      ansible.builtin.set_fact:
+        hermes_toolsets_core: "{{ refuse_case.facts.hermes_toolsets_core | default(hermes_toolsets_core) }}"
+        hermes_toolsets_subtract: "{{ refuse_case.facts.hermes_toolsets_subtract | default(hermes_toolsets_subtract) }}"
+        hermes_skills_source: "{{ refuse_case.facts.hermes_skills_source | default(hermes_skills_source) }}"
+        hermes_api_server_full_control: "{{ refuse_case.facts.hermes_api_server_full_control | default(hermes_api_server_full_control) }}"
+        hermes_api_server_enabled: "{{ refuse_case.facts.hermes_api_server_enabled | default(hermes_api_server_enabled) }}"
+        hermes__owned_all: "{{ refuse_case.facts.hermes__owned_all | default(hermes__owned_all | default([])) }}"
+      no_log: true
+
+    - name: Run the entrypoint with the bad input
+      ansible.builtin.include_role:
+        name: service_hermes
+        tasks_from: "{{ refuse_case.entry }}"
+        public: true
+
+    - name: The role accepted it
+      ansible.builtin.fail:
+        msg: "ACCEPTED: {{ refuse_case.why }}"
+  rescue:
+    - name: It must have refused for the stated reason, not for an unrelated one
+      ansible.builtin.assert:
+        that:
+          - "'ACCEPTED' not in (ansible_failed_result.msg | default(''))"
+          - refuse_case.expect in (ansible_failed_result.msg | default(''))
+        fail_msg: >-
+          {{ refuse_case.why }}: failed, but not with '{{ refuse_case.expect }}':
+          {{ ansible_failed_result.msg | default('?') }}
+        quiet: true
+  always:
+    - name: Put the resolved values back
+      ansible.builtin.set_fact:
+        hermes_toolsets_core: "{{ _refuse_saved.hermes_toolsets_core }}"
+        hermes_toolsets_subtract: "{{ _refuse_saved.hermes_toolsets_subtract }}"
+        hermes_skills_source: "{{ _refuse_saved.hermes_skills_source }}"
+        hermes_api_server_full_control: "{{ _refuse_saved.hermes_api_server_full_control }}"
+        hermes_api_server_enabled: "{{ _refuse_saved.hermes_api_server_enabled }}"
+        hermes__owned_all: "{{ _refuse_saved.hermes__owned_all }}"
+      no_log: true

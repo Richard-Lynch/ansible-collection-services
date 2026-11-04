@@ -1,0 +1,80 @@
+---
+# Converge: the role's own entrypoints against real files. Everything here must be a no-op on the
+# second pass (the idempotence step): `main` re-renders identical files, `mirror` finds nothing
+# new to commit, and `restore` finds the tree already equal to the archive.
+- name: Converge - install, mirror to a git remote, restore a real archive into a fresh tree
+  hosts: localhost
+  gather_facts: false
+  vars_files: [vars.yml]
+  vars:
+    as_common: &as_common
+      agent_state_product: hermes
+      agent_state_python: "{{ ansible_playbook_python }}"
+      agent_state_install_dir: "{{ w }}/install"
+      agent_state_key_dir: "{{ w }}/keys-host"
+      agent_state_unit_dir: "{{ w }}/units"
+      agent_state_textfile_dir: "{{ w }}/textfile"
+      agent_state_packages: []
+      agent_state_enable_timers: false
+      agent_state_stack_managed: false
+      agent_state_restore_quiet_start: false
+      agent_state_root: "{{ w }}/src"
+      agent_state_mirror_dir: "{{ w }}/mirror-work"
+      agent_state_backup_target: "{{ w }}/share"
+      agent_state_repo_url: "file://{{ w }}/remote.git"
+      agent_state_mirror_paths: [SOUL.md, USER.md, memories, skills, cron/jobs.json, webhook_subscriptions.json]
+      agent_state_config_file: config.yaml
+      agent_state_sqlite_files: [state.db]
+      agent_state_backup_exclude: ["cache/", "logs/", "sandboxes/", "browser-profiles/"]
+      agent_state_required_paths: [SOUL.md, state.db]
+  tasks:
+    - name: Public key for the recipient
+      ansible.builtin.command:
+        argv: [age-keygen, -y, "{{ w }}/keys/age.txt"]
+      register: _pub
+      changed_when: false
+
+    - name: The private identity (a restore needs it; it never lives on a guest)
+      ansible.builtin.slurp:
+        src: "{{ w }}/keys/age.txt"
+      register: _id
+      no_log: true
+
+    - name: Which archive prepare took
+      ansible.builtin.find:
+        paths: "{{ w }}/share"
+        patterns: "*.tar.zst.age"
+      register: _arch
+
+    - name: Exactly one archive exists
+      ansible.builtin.assert:
+        that: _arch.matched == 1
+        quiet: true
+
+    - name: Install the role (main)
+      ansible.builtin.include_role:
+        name: config_agent_state
+      vars:
+        <<: *as_common
+        agent_state_backup_recipient: "{{ _pub.stdout | trim }}"
+        agent_state_deploy_key: "{{ lookup('ansible.builtin.file', w ~ '/keys/deploy') }}"
+
+    - name: Mirror layer 2 to the git remote
+      ansible.builtin.include_role:
+        name: config_agent_state
+        tasks_from: mirror
+      vars:
+        <<: *as_common
+        agent_state_deploy_key: "{{ lookup('ansible.builtin.file', w ~ '/keys/deploy') }}"
+
+    - name: Restore the archive into a fresh tree
+      ansible.builtin.include_role:
+        name: config_agent_state
+        tasks_from: restore
+      vars:
+        <<: *as_common
+        agent_state_root: "{{ w }}/restored"
+        agent_state_restore_confirm: true
+        agent_state_restore_scope: runtime
+        agent_state_restore_from: "{{ _arch.files[0].path | basename }}"
+        agent_state_restore_identity: "{{ _id.content | b64decode }}"

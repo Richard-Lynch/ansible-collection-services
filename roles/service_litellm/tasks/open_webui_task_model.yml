@@ -1,0 +1,117 @@
+---
+# service_litellm : open_webui_task_model — set Open WebUI's EXTERNAL task model, and nothing else.
+#
+# Title, tag and follow-up generation run on task.model.external for chats with an external
+# (OpenAI-connection) model; empty means "the chat's own model", so a chat with an agent model
+# would also start agent turns for those background prompts.
+#
+# THE API REPLACES THE WHOLE TASK CONFIG. POST /api/v1/tasks/config/update takes a TaskConfigForm
+# with every task setting (prompt templates, enable flags, both task models) and upserts all of
+# them (routers/tasks.py at v0.11.4). So this reads the current config, changes ONE key, writes the
+# full body back, and asserts every other key read back unchanged.
+#
+# Same authentication as open_webui_connections (tasks/_owui_api_client.yml).
+
+- name: Load the Open WebUI API client
+  ansible.builtin.include_tasks: _owui_api_client.yml
+
+- name: Read the current task config
+  community.docker.docker_container_exec:
+    container: "{{ litellm_open_webui_container_name }}"
+    argv: [python3, -c, "{{ litellm__owui_api_script }}"]
+    env:
+      OWUI_METHOD: GET
+      OWUI_PATH: /api/v1/tasks/config
+  register: litellm__owui_task_get
+  changed_when: false
+
+- name: Read the model list the task model must come from
+  community.docker.docker_container_exec:
+    container: "{{ litellm_open_webui_container_name }}"
+    argv: [python3, -c, "{{ litellm__owui_api_script }}"]
+    env:
+      OWUI_METHOD: GET
+      OWUI_PATH: /api/models
+  register: litellm__owui_task_models
+  changed_when: false
+
+- name: Parse both
+  ansible.builtin.set_fact:
+    litellm__owui_task_current: "{{ litellm__owui_task_get.stdout | from_json }}"
+    litellm__owui_task_listed: "{{ (litellm__owui_task_models.stdout | from_json).data | map(attribute='id') | list }}"
+
+# A task model Open WebUI does not list saves fine and then fails every title/tag request, so the
+# id is checked against the picker before anything is written. And a body missing keys would fail
+# validation at best — at worst write defaults over an administrator's templates — so the read's shape is
+# asserted too.
+- name: HARD GATE — the task model is a listed model and the read is a full task config
+  ansible.builtin.assert:
+    that:
+      - litellm_open_webui_task_model_external in litellm__owui_task_listed
+      - litellm__owui_task_current is mapping
+      - "'TASK_MODEL_EXTERNAL' in litellm__owui_task_current"
+      - "'TITLE_GENERATION_PROMPT_TEMPLATE' in litellm__owui_task_current"
+      - "'ENABLE_TITLE_GENERATION' in litellm__owui_task_current"
+    fail_msg: >-
+      '{{ litellm_open_webui_task_model_external }}' listed: {{ litellm_open_webui_task_model_external
+      in litellm__owui_task_listed }}; task config keys read:
+      {{ litellm__owui_task_current.keys() | list if litellm__owui_task_current is mapping else 'not a mapping' }}.
+    quiet: true
+
+- name: Report the task model
+  ansible.builtin.debug:
+    msg:
+      mode: "{{ 'APPLY' if litellm_open_webui_task_model_apply | bool else 'REPORT ONLY (litellm_open_webui_task_model_apply=false)' }}"
+      current: "{{ litellm__owui_task_current.TASK_MODEL_EXTERNAL | default('', true) }}"
+      declared: "{{ litellm_open_webui_task_model_external }}"
+      would_change: "{{ litellm__owui_task_current.TASK_MODEL_EXTERNAL != litellm_open_webui_task_model_external }}"
+
+- name: Write the task config with only TASK_MODEL_EXTERNAL changed
+  community.docker.docker_container_exec:
+    container: "{{ litellm_open_webui_container_name }}"
+    argv: [python3, -c, "{{ litellm__owui_api_script }}"]
+    env:
+      OWUI_METHOD: POST
+      OWUI_PATH: /api/v1/tasks/config/update
+      OWUI_BODY: "{{ litellm__owui_task_current | combine({'TASK_MODEL_EXTERNAL': litellm_open_webui_task_model_external}) | to_json }}"
+  # Runs only when the value differs, so a run is honestly `changed`.
+  changed_when: true
+  when:
+    - litellm_open_webui_task_model_apply | bool
+    - litellm__owui_task_current.TASK_MODEL_EXTERNAL != litellm_open_webui_task_model_external
+
+- name: Read the task config back
+  community.docker.docker_container_exec:
+    container: "{{ litellm_open_webui_container_name }}"
+    argv: [python3, -c, "{{ litellm__owui_api_script }}"]
+    env:
+      OWUI_METHOD: GET
+      OWUI_PATH: /api/v1/tasks/config
+  register: litellm__owui_task_readback
+  changed_when: false
+  when: litellm_open_webui_task_model_apply | bool
+
+- name: HARD GATE — the external task model is set and every other task setting is unchanged
+  ansible.builtin.assert:
+    that:
+      - _after.TASK_MODEL_EXTERNAL == litellm_open_webui_task_model_external
+      - _drifted | length == 0
+    fail_msg: >-
+      Read back TASK_MODEL_EXTERNAL={{ _after.TASK_MODEL_EXTERNAL | default('?') }}; other keys that
+      changed: {{ _drifted }}.
+    success_msg: "task.model.external = {{ _after.TASK_MODEL_EXTERNAL }}; all other task settings unchanged"
+  vars:
+    _after: "{{ litellm__owui_task_readback.stdout | from_json }}"
+    # Every key, from either side, whose value differs (a key present on one side only counts).
+    _drifted: "{{ _drifted_json | from_json }}"
+    _drifted_json: >-
+      {% set out = [] %}
+      {% for k in ((litellm__owui_task_current.keys() | list) + (_after.keys() | list)) | unique %}
+      {%   if k != 'TASK_MODEL_EXTERNAL'
+             and (k not in _after or k not in litellm__owui_task_current
+                  or _after[k] != litellm__owui_task_current[k]) %}
+      {%     set _ = out.append(k) %}
+      {%   endif %}
+      {% endfor %}
+      {{ out | to_json }}
+  when: litellm_open_webui_task_model_apply | bool

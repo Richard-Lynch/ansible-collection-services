@@ -1,0 +1,13 @@
+---
+galaxy_info:
+  role_name: service_coding_worker
+  namespace: richard_lynch
+  author: Richard Lynch
+  description: >-
+    A coding-agent worker VM: Claude Code and Codex routed through a LiteLLM gateway, each task card
+    in its own git worktree and sysbox container, supervised by a session daemon with a GitHub PR
+    feedback loop and an optional ACP protocol mode, with ttyd for browser jump-in.
+  license: GPL-3.0-or-later
+  min_ansible_version: "2.19"
+  galaxy_tags: [agent, coding, sysbox, tmux, claude, codex]
+dependencies: []

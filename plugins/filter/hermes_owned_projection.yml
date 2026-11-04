@@ -1,0 +1,40 @@
+# Copyright: (c) 2026, Richard Lynch
+# GNU General Public License v3.0+ (see https://www.gnu.org/licenses/gpl-3.0.txt)
+---
+DOCUMENTATION:
+  name: hermes_owned_projection
+  short_description: Merge a declared set of owned leaves onto a live Hermes config
+  author: Richard Lynch (@Richard-Lynch)
+  description:
+    - The caller owns a declared set of leaves of the agent's config.yaml; the agent and the dashboard
+      write the rest. Returns the merged document, the leaf-level diff, the unowned leaf names and a changed
+      flag; unowned keys pass through unchanged.
+    - Tier B and C leaves are set when they differ; an A-range leaf is reset only when missing or outside
+      C(allowed); C(retired) keys are removed; C(seeds) are written only when missing and never compared
+      again. Secret leaves are masked in the diff. Owning a parent (a dict value) is refused.
+  options:
+    _input:
+      description: The live config.yaml, parsed (a mapping).
+      type: dict
+      required: true
+    owned:
+      description: Owned leaves, each with C(key), C(value), C(tier) (A-range, B or C), and optionally
+        C(allowed), C(secret) and C(layer).
+      type: list
+      required: true
+    retired:
+      description: Keys to remove.
+      type: list
+    seeds:
+      description: Unowned leaves (C(key), C(value)) written only when the key is missing.
+      type: list
+EXAMPLES: |
+  - name: Project the owned leaves
+    ansible.builtin.set_fact:
+      merge: "{{ live | richard_lynch.services.hermes_owned_projection([{'key': 'model.default', 'value': 'large-model', 'tier': 'B'}]) }}"
+    vars:
+      live: {model: {default: small-model}, memory: {enabled: true}}
+RETURN:
+  _value:
+    description: A mapping with C(projection), C(diff), C(unowned_keys) and C(changed).
+    type: dict

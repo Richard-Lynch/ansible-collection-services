@@ -1,0 +1,22 @@
+---
+# One malformed pin: the gate must FAIL, and fail on the pin rather than on something unrelated.
+- name: "Refuse: {{ pin_case.why }}"
+  block:
+    - name: Run the gate with the bad pin
+      ansible.builtin.include_role:
+        name: service_hermes
+        tasks_from: _pin_gate
+      vars:
+        hermes_image_repo: "{{ pin_case.repo | default('nousresearch/hermes-agent') }}"
+        hermes_image_tag: "{{ pin_case.tag }}"
+        hermes_image_digest: "{{ pin_case.digest }}"
+    - name: The gate let a bad pin through
+      ansible.builtin.fail:
+        msg: "pin gate ACCEPTED: {{ pin_case.why }}"
+  rescue:
+    - name: The refusal must come from the pin gate
+      ansible.builtin.assert:
+        that:
+          - "'not a valid tag + digest pair' in ansible_failed_result.msg"
+        fail_msg: "{{ pin_case.why }}: failed, but not on the pin: {{ ansible_failed_result.msg | default('?') }}"
+        quiet: true

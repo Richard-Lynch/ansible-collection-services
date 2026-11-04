@@ -1,0 +1,36 @@
+---
+# One backup into the ring scenario. A second boundary between archive names (they carry a
+# one-second timestamp), then the real entrypoint.
+- name: Wait out the timestamp resolution
+  ansible.builtin.command:
+    argv: [sleep, "1"]
+  changed_when: false
+
+- name: Back up into the ring share (keep 2, no monthly extras)
+  ansible.builtin.include_role:
+    name: config_agent_state
+    tasks_from: backup
+  vars:
+    agent_state_product: "{{ as_common.agent_state_product }}"
+    agent_state_python: "{{ as_common.agent_state_python }}"
+    agent_state_install_dir: "{{ as_common.agent_state_install_dir }}"
+    agent_state_key_dir: "{{ as_common.agent_state_key_dir }}"
+    agent_state_unit_dir: "{{ as_common.agent_state_unit_dir }}"
+    agent_state_textfile_dir: "{{ as_common.agent_state_textfile_dir }}"
+    agent_state_packages: "{{ as_common.agent_state_packages }}"
+    agent_state_enable_timers: "{{ as_common.agent_state_enable_timers }}"
+    agent_state_stack_managed: "{{ as_common.agent_state_stack_managed }}"
+    agent_state_restore_quiet_start: "{{ as_common.agent_state_restore_quiet_start }}"
+    agent_state_root: "{{ as_common.agent_state_root }}"
+    agent_state_mirror_dir: "{{ as_common.agent_state_mirror_dir }}"
+    agent_state_repo_url: "{{ as_common.agent_state_repo_url }}"
+    agent_state_mirror_paths: "{{ as_common.agent_state_mirror_paths }}"
+    agent_state_config_file: "{{ as_common.agent_state_config_file }}"
+    agent_state_sqlite_files: "{{ as_common.agent_state_sqlite_files }}"
+    agent_state_backup_exclude: "{{ as_common.agent_state_backup_exclude }}"
+    agent_state_required_paths: "{{ as_common.agent_state_required_paths }}"
+    agent_state_backup_target: "{{ w }}/share_ring"
+    agent_state_backup_recipient: "{{ _pub.stdout | trim }}"
+    agent_state_backup_keep: 2
+    agent_state_backup_keep_monthly: 0
+    agent_state_backup_label: "ring{{ ring_i }}"

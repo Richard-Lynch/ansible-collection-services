@@ -1,0 +1,36 @@
+---
+dependency: { name: galaxy }
+driver: { name: default }
+platforms: [{ name: localhost }]
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: "${MOLECULE_PROJECT_DIRECTORY}/../"
+    ANSIBLE_COLLECTIONS_PATH: "${MOLECULE_PROJECT_DIRECTORY}/../../collections.galaxy:${MOLECULE_PROJECT_DIRECTORY}/../../../../.."
+  inventory: { host_vars: { localhost: { ansible_connection: local } } }
+  playbooks: { prepare: prepare.yml, converge: converge.yml, verify: verify.yml, cleanup: cleanup.yml }
+verifier: { name: ansible }
+scenario:
+  # Idempotence is IN the sequence and is a real test: converge installs the role (main), mirrors
+  # to a git remote and restores a real archive into a fresh tree; a second pass must report
+  # changed=0 (an unchanged mirror makes no commit; a tree that already equals the archive is not
+  # swapped). The backup itself is taken in prepare because a backup is, by nature, a new
+  # artifact on every run and could never be idempotent.
+  #
+  # WHAT THIS PROVES, AND WHAT IT CANNOT: the real script runs on real files with the real
+  # `age`, `zstd` and `git` binaries - round trip, WAL capture, encryption, the corrupt-backup
+  # refusals, the blocking scan, the ring prune, the drill's isolation refusals. What no scenario
+  # here can show is the part that needs a docker daemon and a live agent: stopping and starting
+  # the stack, the quiet-start overlay taking effect, the API read-backs. Those are the drill's
+  # job on a real host.
+  #
+  # destroy/create are no-ops for this driver, but destroy RESETS molecule's "already prepared"
+  # flag (state.yml under the scenario's ephemeral directory - which nothing else resets, and which
+  # every checkout of this repo shares, because it is keyed on the role's NAME). Without it, a run
+  # after a PASSING one skips prepare ("Skipping, instances already prepared."): neither the
+  # "Start from empty" nor the one backup runs, and converge finds the share as the previous run's
+  # verify left it - two archives - and fails `_arch.matched == 1`. A FAILED run's
+  # --destroy=always resets the flag and a passing run does not, so the failure alternates.
+  # cleanup at both ends removes the scratch tree, so no run can read another's files whatever
+  # the flag says; the ordering of scenarios in the gate cannot matter either.
+  test_sequence: [destroy, syntax, create, cleanup, prepare, converge, idempotence, verify, cleanup, destroy]

@@ -1,0 +1,167 @@
+---
+# service_litellm : open_webui_connections — converge extra OpenAI-compatible connections in the
+# RUNNING Open WebUI, leaving every connection it does not declare exactly as it was.
+#
+# WHY THE ADMIN API AND NOT THE COMPOSE ENV. Open WebUI 0.11 seeds every setting into its `config`
+# table on first boot and reads `openai.*` from there, so
+# OPENAI_API_BASE_URLS in the environment is ignored once the instance exists.
+# ENABLE_PERSISTENT_CONFIG=false would make the environment win, but for EVERY setting at once,
+# discarding whatever an administrator set in the admin UI. POST /openai/config/update is the code path
+# the admin UI itself uses: it upserts the four openai.* rows and clears the model cache, so the
+# change is live without a restart.
+#
+# HOW IT AUTHENTICATES. Open WebUI's session token is an HS256 JWT signed with WEBUI_SECRET_KEY
+# carrying the user id (utils/auth.py create_token/decode_token at v0.11.4). The script below
+# mints a two-minute one INSIDE the container, from the container's own environment, for the
+# earliest-created admin, and calls the API on the container's loopback. The signing key never
+# leaves the host and no standing admin credential is created. With no Redis configured,
+# is_valid_token has no revocation list to consult, so a token minted this way is accepted
+# exactly like a login's.
+#
+# VISIBILITY. A model with no row in Open WebUI's `model` table is visible to ADMINS ONLY
+# (utils/models.py get_filtered_models: "only admins can see unconfigured models"), and
+# check_model_access refuses an unregistered model to everyone else. This entrypoint creates no
+# model row, so a connection added here is admin-only until someone grants access in the UI.
+
+- name: Define the Open WebUI admin API client
+  ansible.builtin.include_tasks: _owui_api_client.yml
+
+- name: HARD GATE — every declared connection has a url ending in /v1, a key, and a unique url
+  ansible.builtin.assert:
+    that:
+      - litellm_open_webui_connections | length > 0
+      - litellm_open_webui_connections | rejectattr('url', 'search', '/v1$') | list | length == 0
+      - litellm_open_webui_connections | selectattr('key', 'falsy') | list | length == 0
+      - litellm_open_webui_connections | map(attribute='url') | unique | list | length == litellm_open_webui_connections | length
+    fail_msg: >-
+      litellm_open_webui_connections needs at least one entry, each with a url ending in /v1 (Open
+      WebUI appends /models and /chat/completions to it), a non-empty key, and no url twice.
+      Declared: {{ litellm_open_webui_connections | map(attribute='name') | list }}.
+    quiet: true
+  no_log: true
+
+- name: Read Open WebUI's current connection list from its admin API
+  community.docker.docker_container_exec:
+    container: "{{ litellm_open_webui_container_name }}"
+    argv: [python3, -c, "{{ litellm__owui_api_script }}"]
+    env:
+      OWUI_METHOD: GET
+      OWUI_PATH: /openai/config
+  register: litellm__owui_get
+  changed_when: false
+  no_log: true
+
+- name: Parse the current connection list
+  ansible.builtin.set_fact:
+    litellm__owui_current: "{{ litellm__owui_get.stdout | from_json }}"
+  no_log: true
+
+# A read that parsed to the wrong shape would merge onto an EMPTY list, append the declared
+# connection at index 0 and write that — replacing LiteLLM. So the shape is asserted before
+# anything is computed from it.
+- name: HARD GATE — the read returned a connection list, not an error body
+  ansible.builtin.assert:
+    that:
+      - litellm__owui_current is mapping
+      - litellm__owui_current.OPENAI_API_BASE_URLS is defined
+      - litellm__owui_current.OPENAI_API_BASE_URLS is sequence
+      - litellm__owui_current.OPENAI_API_BASE_URLS | length > 0
+      - litellm__owui_current.OPENAI_API_KEYS is defined
+      - litellm__owui_current.OPENAI_API_CONFIGS is defined
+    fail_msg: >-
+      GET /openai/config did not return a connection list (top-level keys:
+      {{ litellm__owui_current.keys() | list if litellm__owui_current is mapping else 'not a mapping' }}).
+      Refusing to merge onto it: an empty base would replace every existing connection.
+    quiet: true
+
+- name: Merge the declared connections
+  ansible.builtin.include_tasks: _owui_connections_merge.yml
+
+- name: Report the connection list (keys shown as lengths only)
+  ansible.builtin.debug:
+    msg:
+      mode: "{{ 'APPLY' if litellm_open_webui_connections_apply | bool else 'REPORT ONLY (litellm_open_webui_connections_apply=false)' }}"
+      would_change: "{{ litellm__owui_changed }}"
+      connections: "{{ litellm__owui_summary }}"
+
+- name: Write the merged connection list
+  community.docker.docker_container_exec:
+    container: "{{ litellm_open_webui_container_name }}"
+    argv: [python3, -c, "{{ litellm__owui_api_script }}"]
+    env:
+      OWUI_METHOD: POST
+      OWUI_PATH: /openai/config/update
+      OWUI_BODY: "{{ litellm__owui_merged | to_json }}"
+  register: litellm__owui_post
+  # Runs only when the merge differs from what Open WebUI holds, so a run is honestly `changed`.
+  changed_when: true
+  no_log: true
+  when:
+    - litellm_open_webui_connections_apply | bool
+    - litellm__owui_changed | bool
+
+# ---------------------------------------------------------------------------------------------
+# Read-back from the same API the UI reads, never from the POST's own echo.
+# ---------------------------------------------------------------------------------------------
+- name: Read the connection list back
+  community.docker.docker_container_exec:
+    container: "{{ litellm_open_webui_container_name }}"
+    argv: [python3, -c, "{{ litellm__owui_api_script }}"]
+    env:
+      OWUI_METHOD: GET
+      OWUI_PATH: /openai/config
+  register: litellm__owui_readback
+  changed_when: false
+  no_log: true
+  when: litellm_open_webui_connections_apply | bool
+
+- name: HARD GATE — Open WebUI now holds exactly the merged list
+  ansible.builtin.assert:
+    that:
+      - (litellm__owui_readback.stdout | from_json).OPENAI_API_BASE_URLS == litellm__owui_merged.OPENAI_API_BASE_URLS
+      - (litellm__owui_readback.stdout | from_json).OPENAI_API_KEYS == litellm__owui_merged.OPENAI_API_KEYS
+      - (litellm__owui_readback.stdout | from_json).OPENAI_API_CONFIGS == litellm__owui_merged.OPENAI_API_CONFIGS
+    fail_msg: >-
+      Open WebUI's connection list read back differently from the list written (urls read back:
+      {{ (litellm__owui_readback.stdout | from_json).OPENAI_API_BASE_URLS | default('unparseable') }}).
+    quiet: true
+  no_log: true
+  when: litellm_open_webui_connections_apply | bool
+
+# The connection being saved is not the model being pickable: Open WebUI lists a connection's
+# models by calling its /models at request time, so a wrong key or an unreachable url saves fine
+# and then contributes nothing. /api/models is what the model picker is built from.
+- name: Read the model list the picker is built from
+  community.docker.docker_container_exec:
+    container: "{{ litellm_open_webui_container_name }}"
+    argv: [python3, -c, "{{ litellm__owui_api_script }}"]
+    env:
+      OWUI_METHOD: GET
+      OWUI_PATH: /api/models?refresh=true
+  register: litellm__owui_models
+  changed_when: false
+  when: litellm_open_webui_connections_apply | bool
+
+- name: HARD GATE — every declared model id is in the model picker
+  ansible.builtin.assert:
+    that:
+      - _missing | length == 0
+    fail_msg: >-
+      Open WebUI saved the connection(s) but does not list {{ _missing }}. It calls each
+      connection's /models when building the picker, so the url is unreachable from the container,
+      the key is refused, or the model ids differ from what the connection serves.
+    success_msg: "Model picker lists: {{ _expected }}"
+  vars:
+    _listed: "{{ (litellm__owui_models.stdout | from_json).data | map(attribute='id') | list }}"
+    # Open WebUI serves a prefixed connection's models as "<prefix_id>.<id>".
+    _expected: "{{ _expected_json | from_json }}"
+    _expected_json: >-
+      {% set out = [] %}
+      {% for c in litellm_open_webui_connections %}
+      {%   for m in c.model_ids or [] %}
+      {%     set _ = out.append((c.prefix_id ~ '.' if c.prefix_id else '') ~ m) %}
+      {%   endfor %}
+      {% endfor %}
+      {{ out | to_json }}
+    _missing: "{{ _expected | reject('in', _listed) | list }}"
+  when: litellm_open_webui_connections_apply | bool

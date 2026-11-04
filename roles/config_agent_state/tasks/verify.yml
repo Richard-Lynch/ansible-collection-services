@@ -1,0 +1,115 @@
+---
+# verify - read-only. changed_when false throughout; nothing here writes.
+# Ansible loads ONLY defaults/main.yml on its own. This entrypoint's generated defaults are in
+# defaults/verify.yml, so without this the resolver would find no `__default` for any option declared
+# only here and leave it undefined.
+- name: Load this entrypoint's generated defaults
+  ansible.builtin.include_vars:
+    file: "{{ role_path }}/defaults/verify.yml"
+
+- name: Resolve declared options over their generated defaults
+  ansible.builtin.include_tasks: _resolve_defaults.yml
+
+- name: Apply the generated argspec guards
+  ansible.builtin.include_tasks: _argspec_guards.yml
+
+- name: Shape-check the declared values
+  ansible.builtin.include_tasks: _gates.yml
+
+- name: The role is installed
+  ansible.builtin.include_tasks: _installed.yml
+
+- name: Newest archive on the share
+  ansible.builtin.command:
+    argv: ["{{ agent_state_python }}", "{{ agent_state_install_dir }}/agent_state.py", latest,
+           --target, "{{ agent_state_backup_target }}", --product, "{{ agent_state_product }}"]
+  register: _as_latest
+  changed_when: false
+
+- name: Read its manifest
+  ansible.builtin.slurp:
+    src: "{{ agent_state_backup_target }}/{{ (_as_latest.stdout_lines[-1] | from_json).archive }}.manifest.json"
+  register: _as_manifest_raw
+
+- name: Hash the ciphertext on the share
+  ansible.builtin.stat:
+    path: "{{ agent_state_backup_target }}/{{ (_as_latest.stdout_lines[-1] | from_json).archive }}"
+    checksum_algorithm: sha256
+  register: _as_cipher
+
+- name: The host's own clock, in the manifest's format (UTC)
+  ansible.builtin.command:
+    argv: [date, -u, "+%Y%m%dT%H%M%SZ"]
+  register: _as_now
+  changed_when: false
+
+- name: Mirror versus live files
+  ansible.builtin.command:
+    argv: >-
+      {{ [agent_state_python, agent_state_install_dir ~ '/agent_state.py', 'mirror-diff',
+          '--root', agent_state_root, '--repo-dir', agent_state_mirror_dir]
+         + (['--exclude'] | product(agent_state_mirror_exclude) | list | flatten)
+         + (['--skip-names-file', agent_state_mirror_skip_names_file] if agent_state_mirror_skip_names_file | default('') | length > 0 else [])
+         + ['--paths'] + agent_state_mirror_paths }}
+  register: _as_mdiff
+  changed_when: false
+
+- name: The mirror job's own metrics (its last success and whether the scan is blocking it)
+  # mirror-diff compares files; whether the mirror has RUN lately is in the textfile the job
+  # writes. A clone that exists but has not succeeded for weeks must not pass as "current".
+  ansible.builtin.slurp:
+    src: "{{ agent_state_textfile_dir }}/agent_state_{{ agent_state_product }}_mirror.prom"
+  register: _as_mirror_prom
+  failed_when: false
+
+- name: Epoch now (for the mirror age)
+  ansible.builtin.command:
+    argv: [date, -u, "+%s"]
+  register: _as_epoch
+  changed_when: false
+
+- name: Compute the report
+  ansible.builtin.set_fact:
+    agent_state_verify_report:
+      archive: "{{ (_as_latest.stdout_lines[-1] | from_json).archive }}"
+      age_seconds: "{{ ((_as_now.stdout | trim | to_datetime('%Y%m%dT%H%M%SZ')) - ((_as_manifest_raw.content | b64decode | from_json).created | to_datetime('%Y%m%dT%H%M%SZ'))).total_seconds() | int }}"
+      ciphertext_matches_manifest: "{{ _as_cipher.stat.checksum == (_as_manifest_raw.content | b64decode | from_json).archive.sha256 }}"
+      mirror: "{{ _as_mdiff.stdout_lines[-1] | from_json }}"
+      mirror_last_success_age_seconds: "{{ ((_as_epoch.stdout | trim | int) - (_as_mirror_last | int)) if _as_mirror_last | length > 0 else -1 }}"
+      mirror_scan_blocked: "{{ _as_mirror_blocked }}"
+  vars:
+    _as_mirror_text: "{{ (_as_mirror_prom.content | default('') | b64decode) if _as_mirror_prom.content is defined else '' }}"
+    _as_mirror_last: "{{ _as_mirror_text | regex_findall('(?m)^agent_state_mirror_last_success_timestamp_seconds[{][^}]*[}] ([0-9]+)') | first | default('') }}"
+    _as_mirror_blocked: "{{ (_as_mirror_text | regex_findall('(?m)^agent_state_mirror_scan_blocked[{][^}]*[}] ([01])') | first | default('unknown')) }}"
+
+- name: Report
+  ansible.builtin.debug:
+    var: agent_state_verify_report
+
+- name: HARD GATE — the newest backup is fresh and its ciphertext is the one the manifest describes
+  ansible.builtin.assert:
+    that:
+      - agent_state_verify_report.ciphertext_matches_manifest | bool
+      - agent_state_verify_report.age_seconds | int <= agent_state_verify_max_age_seconds | int
+    fail_msg: >-
+      newest backup {{ agent_state_verify_report.archive }}: age {{ agent_state_verify_report.age_seconds }}s
+      (limit {{ agent_state_verify_max_age_seconds }}s), ciphertext matches manifest:
+      {{ agent_state_verify_report.ciphertext_matches_manifest }}.
+    quiet: true
+
+- name: HARD GATE — the mirror is initialised, has succeeded within the limit, and is not blocked
+  # "0 files differ" from a work clone that does not exist is "cannot tell", not "current"; and a
+  # clone that last succeeded weeks ago, or whose scan is blocking every run, is not current
+  # either. The same age limit as the backup applies.
+  ansible.builtin.assert:
+    that:
+      - agent_state_verify_report.mirror.initialised | bool
+      - agent_state_verify_report.mirror_last_success_age_seconds | int >= 0
+      - agent_state_verify_report.mirror_last_success_age_seconds | int <= agent_state_verify_max_age_seconds | int
+      - agent_state_verify_report.mirror_scan_blocked | string == '0'
+    fail_msg: >-
+      mirror not current: initialised={{ agent_state_verify_report.mirror.initialised }},
+      last success {{ agent_state_verify_report.mirror_last_success_age_seconds }}s ago
+      (-1 = never recorded; limit {{ agent_state_verify_max_age_seconds }}s),
+      scan blocked={{ agent_state_verify_report.mirror_scan_blocked }}.
+    quiet: true

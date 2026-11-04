@@ -1,0 +1,17 @@
+---
+# Imported by every play that DELETES the scratch tree (cleanup.yml, prepare.yml). `w` is derived
+# from molecule's `molecule_ephemeral_directory`, which is an env lookup: run outside molecule it is
+# the empty string and `w` becomes "/scratch". Refuse before the `state: absent` that follows.
+- name: HARD GATE — the scratch tree is inside molecule's ephemeral directory, which is absolute
+  ansible.builtin.assert:
+    that:
+      - molecule_ephemeral_directory is defined
+      - molecule_ephemeral_directory | length > 1
+      - molecule_ephemeral_directory is match('/')
+      - w == molecule_ephemeral_directory ~ '/scratch'
+    fail_msg: >-
+      scratch path '{{ w | default('undefined') }}' is not '<molecule ephemeral directory>/scratch'
+      (molecule_ephemeral_directory='{{ molecule_ephemeral_directory | default('undefined') }}').
+      These plays run only under molecule, which sets MOLECULE_EPHEMERAL_DIRECTORY; refusing to
+      delete anything else.
+    quiet: true

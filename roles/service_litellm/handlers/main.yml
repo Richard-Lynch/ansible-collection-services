@@ -1,0 +1,4 @@
+---
+# No handlers needed — tasks/main.yml restarts the compose stack directly, keyed on
+# `deployment_config_changed` OR'd with app.env's own changed status. A notify/handler
+# indirection would fire at play end, which is too late for the read-backs that follow.

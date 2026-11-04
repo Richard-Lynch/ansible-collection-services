@@ -1,0 +1,86 @@
+---
+# One planted symlink against the REAL estate-scripts delivery (_automations_deliver.yml).
+# m5_link.link is the path (relative to render_root) replaced by a link to a directory OUTSIDE
+# the tree holding one sentinel file; m5_link.expect is the refusal text, or '' for a near-miss
+# that must converge. Either way the outside directory must come back byte-for-byte unchanged:
+# a delivery that refuses AFTER writing or pruning through the link is the bug, not the fix.
+- name: "Symlink case setup: {{ m5_link.why }}"
+  vars:
+    _outside: /tmp/molecule-hermes-m5-outside
+  block:
+    - name: Reset the outside directory
+      ansible.builtin.file: { path: "{{ _outside }}", state: absent }
+
+    - name: Create the outside directory
+      ansible.builtin.file: { path: "{{ _outside }}", state: directory, mode: "0755" }
+
+    - name: Put the sentinel outside
+      ansible.builtin.copy: { dest: "{{ _outside }}/sentinel", content: "untouched\n", mode: "0644" }
+
+    - name: Is something already at the link path
+      ansible.builtin.stat: { path: "{{ render_root }}/{{ m5_link.link }}", follow: false }
+      register: _m5_link_before
+
+    - name: Move it aside (restored below)
+      ansible.builtin.command:
+        argv: [mv, "{{ render_root }}/{{ m5_link.link }}", "{{ render_root }}/{{ m5_link.link }}.saved"]
+      when: _m5_link_before.stat.exists
+      changed_when: true
+
+    - name: Plant the link
+      ansible.builtin.file:
+        src: "{{ _outside }}"
+        dest: "{{ render_root }}/{{ m5_link.link }}"
+        state: link
+
+- name: "Symlink case: {{ m5_link.why }}"
+  block:
+    - name: Run the real delivery through the planted link
+      ansible.builtin.include_role:
+        name: service_hermes
+        tasks_from: _automations_deliver
+        public: true
+
+    - name: The delivery accepted a link it must refuse
+      ansible.builtin.fail:
+        msg: "ACCEPTED: {{ m5_link.why }}"
+      when: m5_link.expect | length > 0
+  rescue:
+    - name: It must have refused, for the stated reason
+      vars:
+        _said: "{{ ansible_failed_result.msg | default('') }} {{ ansible_failed_result.stderr | default('') }}"
+      ansible.builtin.assert:
+        that:
+          - m5_link.expect | length > 0
+          - "'ACCEPTED' not in _said"
+          - m5_link.expect in _said
+        fail_msg: "{{ m5_link.why }}: expected '{{ m5_link.expect }}', got: {{ _said }}"
+        quiet: true
+  always:
+    - name: List the outside directory
+      ansible.builtin.find: { paths: /tmp/molecule-hermes-m5-outside, file_type: any, hidden: true, recurse: true }
+      register: _m5_outside
+
+    - name: Read the sentinel
+      ansible.builtin.slurp: { src: /tmp/molecule-hermes-m5-outside/sentinel }
+      register: _m5_sentinel
+      failed_when: false
+
+    - name: Remove the planted link
+      ansible.builtin.file: { path: "{{ render_root }}/{{ m5_link.link }}", state: absent }
+
+    - name: Put back what was there
+      ansible.builtin.command:
+        argv: [mv, "{{ render_root }}/{{ m5_link.link }}.saved", "{{ render_root }}/{{ m5_link.link }}"]
+      when: _m5_link_before.stat.exists
+      changed_when: true
+
+- name: "Nothing outside the tree changed: {{ m5_link.why }}"
+  ansible.builtin.assert:
+    that:
+      - _m5_outside.files | map(attribute='path') | list == ['/tmp/molecule-hermes-m5-outside/sentinel']
+      - (_m5_sentinel.content | default('') | b64decode | trim) == 'untouched'
+    fail_msg: >-
+      {{ m5_link.why }}: the link's target changed --
+      {{ _m5_outside.files | map(attribute='path') | list | to_json }}
+    quiet: true

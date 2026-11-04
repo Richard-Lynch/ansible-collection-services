@@ -1,0 +1,23 @@
+---
+# Presence is READ BACK whether or not anything was installed: a package task that "succeeded"
+# against a mirror that lacks the package would otherwise be the last word.
+- name: Install the packages the mechanics need
+  ansible.builtin.package:
+    name: "{{ agent_state_packages }}"
+    state: present
+  when: agent_state_packages | length > 0
+
+- name: Each required binary answers
+  ansible.builtin.command:
+    cmd: "{{ item }}"
+  register: _as_tool
+  changed_when: false
+  loop: ["age --version", "zstd --version", "git --version"]
+
+- name: The interpreter is new enough for the script
+  ansible.builtin.command:
+    argv:
+      - "{{ agent_state_python }}"
+      - -c
+      - "import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)"
+  changed_when: false

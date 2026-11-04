@@ -1,0 +1,145 @@
+---
+# Render-and-gate scenario. The role's real converge needs a guest (apt, systemd, npm, tmux), which
+# a CI runner is not, so coverage here is honestly PARTIAL: it proves
+#   (1) the preflight gates (tasks/_gates.yml, the file the role itself includes) PASS a good
+#       input and each REFUSE a bad one, so none of them is a gate that has only seen valid input;
+#   (2) the templates render parseable artifacts under the role's REAL path derivation, for a
+#       loopback variant and a LAN-bind variant;
+#   (3) what is NOT written into the group-readable files.
+# It does not prove the agent runs; the on-guest read-backs in tasks/main.yml do that.
+#
+# NOT rendered here: templates/agent.env.j2, the 0600 credential file (it holds every token).
+- name: Converge — gates and renders
+  hosts: localhost
+  gather_facts: true
+  vars:
+    render_root: /tmp/molecule-coding-worker
+    _good:
+      worker_user: coder
+      worker_tools:
+        claude_code_version: "2.1.312"
+        codex_version: "0.165.0"
+        node_version: "22.23.4"
+        node_sha256_linux_x64: "1805bcd35e6815559bd2eb97db438d3fdb0eb3a5e6a977b7c1badca76337e9ce"
+        acpx_version: "0.21.1"
+        claude_agent_acp_version: "0.99.1"
+        codex_acp_version: "2.5.0"
+        gh_version: "2.103.3"
+        gh_sha256_linux_amd64: "4c806978ffce1cec70853302a56d70ac6da4f19bae7adca4e1a8ab00633dd91d"
+        uv_version: "0.13.6"
+        uv_sha256_linux_x64: "f29c3e94ffabd7e6f3ba521dba169a9b7ec12100bf3257087f0f24f6123f3645"
+      worker_acp_enabled: true
+      worker_acp_permissions: approve-all
+      worker_sessiond_token: "sessiond-token-for-molecule-only"
+      worker_acpx_mcp_token: "acpx-mcp-token-for-molecule-only"
+      worker_subscription_login: false
+      worker_container_runtime: sysbox-runc
+      worker_sysbox:
+        version: "0.7.1"
+        sha256_linux_amd64: "9d6d5484f980d0a17f86c492c1262015c2afb66280bdb97215b79fde6a0261c5"
+      worker_card_cpus: 2
+      worker_card_memory: 2g
+      worker_vm_reserve_mb: 1024
+      worker_card_base_image: "ubuntu:24.04"
+      worker_card_dns: ["192.0.2.53"]
+      worker_repos:
+        - {name: lab, url: "https://github.com/example/lab.git", base_branch: main}
+      worker_mcp_catalogue:
+        - name: grafana-ro
+          transport: http
+          url: "http://monitoring.example:8686/mcp"
+          headers: {Authorization: "Bearer ${GRAFANA_RO_TOKEN}"}
+          reviewed_by: reviewer
+        - name: runner
+          transport: stdio
+          command: /usr/local/bin/runner-mcp
+          args: ["--stdio"]
+          env: {RUNNER_TOKEN: "${RUNNER_TOKEN}"}
+          reviewed_by: reviewer
+      worker_mcp_default_enabled: [runner]
+      worker_ssh_accept_env: [WORKER_SESSIOND_URL, WORKER_SESSIOND_TOKEN, WORKER_TERM_URL]
+      worker_extra_authorized_keys: []
+      # Near-miss for the settings gate: a narrow allowlist with a deny list passes.
+      worker_claude_settings:
+        permissions:
+          defaultMode: acceptEdits
+          allow: ["Bash(git status)", "Bash(git push origin {card_branch})"]
+          deny: ["Bash(gh pr merge *)"]
+  tasks:
+    - name: Ensure a clean render root
+      ansible.builtin.file: {path: "{{ render_root }}", state: absent}
+
+    - name: Create the variant directories
+      ansible.builtin.file: {path: "{{ render_root }}/{{ item }}", state: directory, mode: "0755"}
+      loop: [loopback, lan]
+
+    # ------------------------------------------------------------------ (1) gates, good input
+    - name: Write the good input as a vars file (include_vars is how a dict becomes role inputs)
+      ansible.builtin.copy:
+        dest: "{{ render_root }}/good.json"
+        content: "{{ _good | to_json }}"
+        mode: "0644"
+
+    - name: The molecule host may be arm64; the architecture gate is exercised by an override
+      ansible.builtin.set_fact:
+        ansible_architecture: x86_64
+
+    - name: A good input passes every gate
+      ansible.builtin.include_tasks: _good_case.yml
+
+    # ------------------------------------------------------------------ (1) gates, bad inputs
+    # Each case overrides ONE field of the good input and must make the gate FAIL, and the
+    # failure must name the gate the case is for (`expect`): a case refused by an unrelated gate
+    # is a gate that has never been shown to fire. A case that does not fail lands in
+    # `survivors` and verify fails on it.
+    - name: Each bad input must be refused by its gate
+      ansible.builtin.include_tasks: _bad_case.yml
+      loop:
+        - {id: floating-claude, expect: floating tag, over: {worker_tools: {claude_code_version: latest, codex_version: "0.165.0", node_version: "22.23.4", node_sha256_linux_x64: "1805bcd35e6815559bd2eb97db438d3fdb0eb3a5e6a977b7c1badca76337e9ce"}}}
+        - {id: bad-node-checksum, expect: node_sha256_linux_x64, over: {worker_tools: {claude_code_version: "2.1.312", codex_version: "0.165.0", node_version: "22.23.4", node_sha256_linux_x64: "deadbeef"}}}
+        - {id: subscription-login, expect: worker_subscription_login must stay false, over: {worker_subscription_login: true}}
+        - {id: ssh-repo-url, expect: an https url, over: {worker_repos: [{name: lab, url: "git@github.com:example/lab.git", base_branch: main}]}}
+        - {id: path-traversal-repo-name, expect: a safe name, over: {worker_repos: [{name: "../etc", url: "https://x/y.git", base_branch: main}]}}
+        # The three catalogue cases replace the WHOLE catalogue, so they must also empty
+        # worker_mcp_default_enabled: with the good input's [runner] inherited, the
+        # default-not-in-catalogue gate fired first and the case passed for the wrong reason
+        - {id: literal-mcp-secret, expect: never a literal secret, over: {worker_mcp_default_enabled: [], worker_mcp_catalogue: [{name: leaky, transport: http, url: "http://m/mcp", headers: {Authorization: "Bearer sk-live-literal"}, reviewed_by: reviewer}]}}
+        - {id: unreviewed-mcp, expect: reviewed_by, over: {worker_mcp_default_enabled: [], worker_mcp_catalogue: [{name: nobody, transport: http, url: "http://m/mcp", reviewed_by: ""}]}}
+        - {id: stdio-env-other-name, expect: under its own name, over: {worker_mcp_default_enabled: [], worker_mcp_catalogue: [{name: runner, transport: stdio, command: /usr/local/bin/runner-mcp, env: {RUNNER_TOKEN: "${OTHER_TOKEN}"}, reviewed_by: reviewer}]}}
+        - {id: http-header-mixed-value, expect: Bearer, over: {worker_mcp_default_enabled: [], worker_mcp_catalogue: [{name: mixed, transport: http, url: "http://m/mcp", headers: {Authorization: "Token ${T}"}, reviewed_by: reviewer}]}}
+        - {id: default-not-in-catalogue, expect: not in worker_mcp_catalogue, over: {worker_mcp_default_enabled: [ghost]}}
+        - {id: not-x86, expect: must be x86_64, over: {ansible_architecture: aarch64}}
+        - {id: accept-env-path, expect: worker_ssh_accept_env entry, over: {worker_ssh_accept_env: [WORKER_SESSIOND_URL, PATH]}}
+        - {id: accept-env-lowercase, expect: worker_ssh_accept_env entry, over: {worker_ssh_accept_env: [WORKER_token]}}
+        - {id: runtime-runc, expect: worker_container_runtime must be sysbox-runc, over: {worker_container_runtime: runc}}
+        - {id: card-dns-loopback, expect: worker_card_dns entries, over: {worker_card_dns: ["127.0.0.53"]}}
+        - {id: card-dns-name, expect: worker_card_dns entries, over: {worker_card_dns: [bind9.example]}}
+        - {id: gh-unpinned, expect: gh_sha256_linux_amd64, over: {worker_tools: {claude_code_version: "2.1.312", codex_version: "0.165.0", node_version: "22.23.4", node_sha256_linux_x64: "1805bcd35e6815559bd2eb97db438d3fdb0eb3a5e6a977b7c1badca76337e9ce", acpx_version: "0.21.1", claude_agent_acp_version: "0.99.1", codex_acp_version: "2.5.0"}}}
+        # gh IS pinned here, so only the uv gate can be the one that refuses it
+        - {id: uv-unpinned, expect: uv_sha256_linux_x64, over: {worker_tools: {claude_code_version: "2.1.312", codex_version: "0.165.0", node_version: "22.23.4", node_sha256_linux_x64: "1805bcd35e6815559bd2eb97db438d3fdb0eb3a5e6a977b7c1badca76337e9ce", acpx_version: "0.21.1", claude_agent_acp_version: "0.99.1", codex_acp_version: "2.5.0", gh_version: "2.103.3", gh_sha256_linux_amd64: "4c806978ffce1cec70853302a56d70ac6da4f19bae7adca4e1a8ab00633dd91d", uv_version: "0.13.6"}}}
+        - {id: claude-bypass-mode, expect: may not use bypassPermissions, over: {worker_claude_settings: {permissions: {defaultMode: bypassPermissions}}}}
+        - {id: claude-skip-prompt, expect: may not use bypassPermissions, over: {worker_claude_settings: {skipDangerousModePermissionPrompt: true}}}
+        - {id: claude-allow-all-bash, expect: may not use bypassPermissions, over: {worker_claude_settings: {permissions: {allow: ["Bash(git status)", "Bash( * )"]}}}}
+        - {id: sysbox-checksum-short, expect: sha256_linux_amd64, over: {worker_sysbox: {version: "0.7.1", sha256_linux_amd64: "deadbeef"}}}
+        - {id: sysbox-version-floating, expect: sha256_linux_amd64, over: {worker_sysbox: {version: latest, sha256_linux_amd64: "9d6d5484f980d0a17f86c492c1262015c2afb66280bdb97215b79fde6a0261c5"}}}
+        - {id: memory-unitless, expect: worker_card_memory must look like, over: {worker_card_memory: "2048"}}
+        - {id: memory-zero, expect: worker_card_memory must look like, over: {worker_card_memory: "0g"}}
+        - {id: cpus-zero, expect: worker_card_memory must look like, over: {worker_card_cpus: 0}}
+        - {id: reserve-too-small, expect: worker_card_memory must look like, over: {worker_vm_reserve_mb: 100}}
+        - {id: acpx-floating, expect: worker_acp_enabled needs, over: {worker_tools: {claude_code_version: "2.1.312", codex_version: "0.165.0", node_version: "22.23.4", node_sha256_linux_x64: "1805bcd35e6815559bd2eb97db438d3fdb0eb3a5e6a977b7c1badca76337e9ce", gh_version: "2.103.3", gh_sha256_linux_amd64: "4c806978ffce1cec70853302a56d70ac6da4f19bae7adca4e1a8ab00633dd91d", acpx_version: latest, claude_agent_acp_version: "0.99.1", codex_acp_version: "2.5.0"}}}
+        - {id: acpx-mcp-token-short, expect: worker_acp_enabled needs, over: {worker_acpx_mcp_token: short}}
+        - {id: acpx-mcp-token-is-sessiond-token, expect: worker_acp_enabled needs, over: {worker_acpx_mcp_token: "sessiond-token-for-molecule-only"}}
+        - {id: extra-key-private, expect: not a public key line, over: {worker_extra_authorized_keys: ["-----BEGIN OPENSSH PRIVATE KEY-----"]}}
+      loop_control:
+        label: "{{ item.id }}"
+
+    # ------------------------------------------------------------------ (2) renders
+    - name: Render both variants with the role's own default resolver and path derivation
+      ansible.builtin.include_tasks: _render_variant.yml
+      loop:
+        # loopback renders protocol mode OFF and the role's own defaults for the image name, the
+        # ttyd title and the VM dockerd's networks; lan renders protocol mode ON and sets all three
+        - {name: loopback, sessiond_bind: "127.0.0.1", ttyd_bind: "127.0.0.1", tail: false, acp: false, custom: false}
+        - {name: lan, sessiond_bind: "0.0.0.0", ttyd_bind: "eth0", tail: true, acp: true, custom: true}
+      loop_control:
+        label: "{{ item.name }}"

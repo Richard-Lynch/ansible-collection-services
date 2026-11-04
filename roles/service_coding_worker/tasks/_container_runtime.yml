@@ -1,0 +1,328 @@
+---
+# Docker with the sysbox runtime, the default card image, and the proof that both work.
+#
+# Why a VM and not an LXC guest: sysbox needs a real kernel (user namespaces, id-mapped mounts,
+# sysfs/procfs virtualisation). Each card gets a container under the sysbox-runc runtime, which is
+# what lets the card run its OWN dockerd without --privileged and without the VM's docker socket.
+#
+# Every step converges: apt and get_url are idempotent, daemon.json restarts docker only when it
+# changed, and the image is built only when a tag named after its Dockerfile's hash is absent.
+# Restarting docker kills running card containers (sysbox does not support live-restore); that
+# happens on a daemon.json change only, which is a deliberate act, and sessiond marks those cards
+# vanished and `resume` recreates them.
+
+- name: Install Docker from the distribution (no third-party repository to trust)
+  ansible.builtin.apt:
+    name: [docker.io, containerd, fuse3, rsync, iptables, nftables, curl]
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+    install_recommends: false
+
+- name: Fetch the sysbox-ce package, verified against the pinned sha256
+  ansible.builtin.get_url:
+    url: "https://github.com/nestybox/sysbox/releases/download/v{{ worker_sysbox.version }}/sysbox-ce_{{ worker_sysbox.version }}.linux_amd64.deb"
+    dest: "/var/cache/sysbox-ce_{{ worker_sysbox.version }}.linux_amd64.deb"
+    checksum: "sha256:{{ worker_sysbox.sha256_linux_amd64 }}"
+    mode: "0644"
+
+- name: Install sysbox-ce
+  ansible.builtin.apt:
+    deb: "/var/cache/sysbox-ce_{{ worker_sysbox.version }}.linux_amd64.deb"
+    state: present
+
+# A card's root can `umount /etc/claude-code` (the read-only managed-settings mount comes off)
+# unless told otherwise, because sysbox-fs ALLOWS unmounting immutable mounts
+# by default (`allow-immutable-unmounts`, default true; remounting read-write is already refused).
+# Card containers have no reason to unmount anything the VM mounted into them, so turn it off.
+# The flag is appended to the PACKAGE's own ExecStart, read from its unit, so a sysbox upgrade that
+# changes the base command line is followed rather than overwritten.
+- name: Read the packaged sysbox-fs unit
+  ansible.builtin.slurp:
+    src: /lib/systemd/system/sysbox-fs.service
+  register: _worker_sysboxfs_unit
+
+- name: The packaged ExecStart
+  ansible.builtin.set_fact:
+    _worker_sysboxfs_exec: "{{ _worker_sysboxfs_unit.content | b64decode | regex_search('(?m)^ExecStart=(.*)$', '\\1') | default([''], true) | first | trim }}"
+
+- name: ASSERT — the packaged unit has an ExecStart to extend
+  ansible.builtin.assert:
+    that:
+      - _worker_sysboxfs_exec | length > 0
+      - "'sysbox-fs' in _worker_sysboxfs_exec"
+    fail_msg: "could not read ExecStart from /lib/systemd/system/sysbox-fs.service ('{{ _worker_sysboxfs_exec }}')"
+    quiet: true
+
+- name: The sysbox-fs drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/sysbox-fs.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Refuse immutable unmounts in sysbox-fs (drop-in)
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/sysbox-fs.service.d/iaac-immutable-mounts.conf
+    content: |
+      # {{ ansible_managed | default('managed by service_coding_worker') }}
+      [Service]
+      ExecStart=
+      ExecStart={{ _worker_sysboxfs_exec }} --allow-immutable-unmounts=false
+    owner: root
+    group: root
+    mode: "0644"
+  register: _worker_sysboxfs_dropin
+
+- name: List running card containers (restarting sysbox breaks them)  # noqa: no-handler
+  ansible.builtin.command:
+    argv: [docker, ps, -q, --filter, "label=hermes.worker.card"]
+  register: _worker_cards_running
+  changed_when: false
+  failed_when: false
+  when: _worker_sysboxfs_dropin.changed
+
+- name: HARD GATE — no card is running when sysbox must restart  # noqa: no-handler
+  ansible.builtin.assert:
+    that: _worker_cards_running.stdout | trim | length == 0
+    fail_msg: >-
+      sysbox-fs must restart to refuse immutable unmounts, and that breaks running card containers
+      (sysbox has no live-restore). Stop or pause-then-stop the running cards, then converge again.
+    quiet: true
+  when: _worker_sysboxfs_dropin.changed
+
+- name: Restart sysbox with the new sysbox-fs flags  # noqa: no-handler
+  # Not a handler: the self-test below must run against the restarted daemons in this same run.
+  ansible.builtin.systemd:
+    name: sysbox
+    state: restarted
+    daemon_reload: true
+  when: _worker_sysboxfs_dropin.changed
+
+- name: Read sysbox-fs's running command line back
+  ansible.builtin.command:
+    argv: [systemctl, show, sysbox-fs, --property, ExecStart, --property, ActiveState]
+  register: _worker_sysboxfs_show
+  changed_when: false
+
+- name: ASSERT — sysbox-fs is active with immutable unmounts refused
+  ansible.builtin.assert:
+    that:
+      - "'--allow-immutable-unmounts=false' in _worker_sysboxfs_show.stdout"
+      - "'ActiveState=active' in _worker_sysboxfs_show.stdout_lines"
+    fail_msg: "sysbox-fs: {{ _worker_sysboxfs_show.stdout_lines }}"
+    quiet: true
+
+- name: Register the sysbox runtime with Docker
+  ansible.builtin.template:
+    src: docker-daemon.json.j2
+    dest: /etc/docker/daemon.json
+    owner: root
+    group: root
+    mode: "0644"
+  register: _worker_docker_daemon
+
+- name: Restart Docker only when its configuration changed  # noqa: no-handler
+  # Not a handler: the image build and the sysbox self-test below need the NEW daemon in this same
+  # run, and flushing handlers here would also run handlers for units that do not exist yet.
+  ansible.builtin.systemd:
+    name: docker
+    state: restarted
+  when: _worker_docker_daemon.changed
+
+- name: Enable and start docker and the two sysbox daemons
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop: [docker, sysbox-mgr, sysbox-fs]
+
+- name: Keep card containers off the VM's own listeners (sessiond, ttyd, sshd)
+  ansible.builtin.template:
+    src: worker-card-firewall.nft.j2
+    dest: "{{ worker_conf_dir }}/card-firewall.nft"
+    owner: root
+    group: root
+    mode: "0644"
+  register: _worker_card_fw_rules
+
+- name: Install the card firewall unit
+  ansible.builtin.template:
+    src: worker-card-firewall.service.j2
+    dest: /etc/systemd/system/worker-card-firewall.service
+    owner: root
+    group: root
+    mode: "0644"
+  register: _worker_card_fw_unit
+
+- name: Load the card firewall now and at every boot  # noqa: no-handler
+  ansible.builtin.systemd:
+    name: worker-card-firewall
+    enabled: true
+    state: "{{ 'restarted' if (_worker_card_fw_rules.changed or _worker_card_fw_unit.changed) else 'started' }}"
+    daemon_reload: "{{ _worker_card_fw_unit.changed }}"
+
+- name: Read the loaded ruleset back
+  ansible.builtin.command: nft list table inet hermes_worker
+  register: _worker_card_fw_loaded
+  changed_when: false
+  check_mode: false
+
+- name: ASSERT — the loaded table drops the card bridges (the file being on disk is not the rule loaded)
+  ansible.builtin.assert:
+    that:
+      - "'docker0' in _worker_card_fw_loaded.stdout"
+      - "'br-*' in _worker_card_fw_loaded.stdout"
+      - "'drop' in _worker_card_fw_loaded.stdout"
+    fail_msg: >-
+      nft does not show the hermes_worker input drop for the card bridges, so a card container could
+      reach sessiond and ttyd on the VM. Loaded: {{ _worker_card_fw_loaded.stdout }}
+    quiet: true
+
+- name: Let the worker account talk to the VM's Docker (it drives card containers)
+  # The VM is the dedicated, credential-holding dev machine; the group is root-equivalent ON IT.
+  # What keeps that from reaching the agents is that no card container is given this socket.
+  ansible.builtin.user:
+    name: "{{ worker_user }}"
+    groups: docker
+    append: true
+  register: _worker_docker_group
+
+- name: Keep the default card image's build recipe where it can be read
+  ansible.builtin.copy:
+    content: "{{ worker_card_dockerfile }}"
+    dest: "{{ worker_lib_dir }}/card-image.Dockerfile"
+    owner: root
+    group: root
+    mode: "0644"
+
+# The image's uv comes from the build CONTEXT (worker_lib_dir), fetched here against the pin so the
+# Dockerfile never reaches the network for it (the same shape as gh and Node on the VM). The file
+# is named with its version so two pins can never collide in the context.
+- name: Fetch the uv release tarball for the card image, verified against the pinned sha256
+  ansible.builtin.get_url:
+    url: "https://github.com/astral-sh/uv/releases/download/{{ worker_tools.uv_version }}/uv-x86_64-unknown-linux-gnu.tar.gz"
+    dest: "{{ worker_lib_dir }}/uv-{{ worker_tools.uv_version }}-x86_64-unknown-linux-gnu.tar.gz"
+    checksum: "sha256:{{ worker_tools.uv_sha256_linux_x64 }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Is the default card image already built
+  ansible.builtin.command: docker image inspect {{ worker_card_image }}
+  register: _worker_image_probe
+  changed_when: false
+  failed_when: _worker_image_probe.rc not in [0, 1]
+  check_mode: false
+
+- name: Build the default card image
+  ansible.builtin.command: >-
+    docker build -t {{ worker_card_image }} -f {{ worker_lib_dir }}/card-image.Dockerfile {{ worker_lib_dir }}
+  when: _worker_image_probe.rc == 1
+  changed_when: true
+
+- name: Read the image back
+  ansible.builtin.command: docker image inspect --format {% raw %}'{{.Id}}'{% endraw %} {{ worker_card_image }}
+  register: _worker_image_after
+  changed_when: false
+  check_mode: false
+  failed_when: _worker_image_after.rc != 0 or (_worker_image_after.stdout | trim | length) == 0
+
+# ------------------------------------------------------------------------------------------
+# Read-backs. The property the consumer depends on is "a container started with --runtime
+# sysbox-runc gets its own user namespace and a working inner dockerd", not "the package is
+# installed" or "daemon.json lists the runtime".
+# ------------------------------------------------------------------------------------------
+- name: Read Docker's own list of runtimes
+  ansible.builtin.command: docker info --format {% raw %}'{{json .}}'{% endraw %}
+  register: _worker_docker_info
+  changed_when: false
+  check_mode: false
+
+- name: ASSERT — Docker offers the sysbox runtime
+  ansible.builtin.assert:
+    that:
+      - worker_container_runtime in ((_worker_docker_info.stdout | from_json).Runtimes | default({}))
+    fail_msg: >-
+      docker info does not list {{ worker_container_runtime }} under Runtimes, so every card launch
+      would be refused. Is /etc/docker/daemon.json the one this role wrote, and is sysbox-ce installed?
+    quiet: true
+
+- name: Read each sysbox daemon's state
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+  register: _worker_sysbox_active
+  failed_when: _worker_sysbox_active.status.ActiveState | default('unknown') != 'active'
+  loop: [sysbox-mgr, sysbox-fs]
+  loop_control:
+    label: "{{ item }}"
+  check_mode: false
+
+- name: Remove a self-test container an interrupted converge left behind
+  ansible.builtin.command: docker rm -f worker-sysbox-selftest
+  register: _worker_selftest_rm
+  changed_when: "'worker-sysbox-selftest' in _worker_selftest_rm.stdout"
+  check_mode: false
+
+- name: Start a throwaway sysbox container, bring up its inner dockerd and read its uid map
+  # No label, so sessiond never lists it; --rm, so it leaves nothing. 512m: the inner dockerd is
+  # small, and this runs on every converge.
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - --runtime
+      - "{{ worker_container_runtime }}"
+      - --name
+      - worker-sysbox-selftest
+      - --memory
+      - 512m
+      - "{{ worker_card_image }}"
+      - sh
+      - -c
+      - |
+        (dockerd >/tmp/dockerd.log 2>&1 &)
+        i=0
+        while [ "$i" -lt 40 ]; do
+          docker info >/dev/null 2>&1 && break
+          i=$((i + 1))
+          sleep 1
+        done
+        head -1 /proc/self/uid_map
+        docker info >/dev/null 2>&1 && echo INNER_DOCKER_OK
+        # what a repo's bootstrap needs from the image: a venv-capable python3 and the pinned uv
+        python3 -c 'import venv, ensurepip; print("PY_VENV_OK")'
+        uv --version
+  register: _worker_selftest
+  changed_when: false
+  check_mode: false
+
+- name: ASSERT — the container has its own user namespace and a working inner dockerd
+  # uid_map's first line is "<inside> <outside> <count>". Under runc it is "0 0 4294967295"
+  # (the host's namespace); under sysbox the outside column is a high, non-zero range.
+  ansible.builtin.assert:
+    that:
+      - _worker_selftest.stdout_lines | select('match', '^ *0 +[1-9][0-9]* ') | list | length == 1
+      - "'INNER_DOCKER_OK' in _worker_selftest.stdout_lines"
+    fail_msg: >-
+      The sysbox self-test container did not show a mapped uid namespace and a running inner dockerd
+      (stdout: {{ _worker_selftest.stdout_lines | default([]) }}). A card started now would run its
+      agent without the isolation this role exists to provide.
+    quiet: true
+
+- name: ASSERT — a card can build a Python venv and has the pinned uv (what a repo's bootstrap script needs)
+  # Read from a container of the image sessiond will launch, not from the Dockerfile: the property
+  # the consumer depends on is "python3 -m venv works here and uv is THIS version", and only the
+  # running image can say so.
+  ansible.builtin.assert:
+    that:
+      - "'PY_VENV_OK' in _worker_selftest.stdout_lines"
+      # `uv --version` prints "uv X.Y.Z (<hash> <date>)" on a release build: match the prefix
+      - _worker_selftest.stdout_lines | select('match', 'uv ' ~ worker_tools.uv_version ~ '( |\Z)') | list | length == 1
+    fail_msg: >-
+      The card image {{ worker_card_image }} cannot bootstrap a repo: expected PY_VENV_OK and
+      'uv {{ worker_tools.uv_version }}' in its self-test output, got
+      {{ _worker_selftest.stdout_lines | default([]) }}.
+    quiet: true

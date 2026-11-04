@@ -1,0 +1,99 @@
+---
+- name: "Variant {{ item.name }}: write the inputs as a vars file"
+  ansible.builtin.copy:
+    dest: "{{ render_root }}/{{ item.name }}/inputs.json"
+    content: "{{ _good | combine(_variant_vars) | to_json }}"
+    mode: "0644"
+  vars:
+    _variant_vars:
+      worker_git_user_name: t
+      worker_git_user_email: t@t
+      worker_ssh_authorized_key: "ssh-ed25519 AAAA test"
+      worker_litellm_url: "http://litellm.example:4000"
+      worker_litellm_api_key: "sk-molecule-NOT-A-REAL-KEY-0001"
+      worker_claude_model: coder-model
+      worker_codex_model: coder-model
+      worker_github_token: "molecule-NOT-A-REAL-GITHUB-TOKEN-0001"
+      worker_sessiond_token: "molecule-sessiond-token-0001"
+      worker_ttyd_credential: "operator:molecule-ttyd-credential"
+      worker_sessiond_bind: "{{ item.sessiond_bind }}"
+      worker_ttyd_bind: "{{ item.ttyd_bind }}"
+      worker_card_tail_enabled: "{{ item.tail }}"
+      worker_acp_enabled: "{{ item.acp }}"
+
+- name: "Variant {{ item.name }}: load them"
+  ansible.builtin.include_vars:
+    file: "{{ render_root }}/{{ item.name }}/inputs.json"
+
+- name: "Variant {{ item.name }}: stand in for a gathered default address (derivation reads it for an interface bind)"
+  ansible.builtin.set_fact:
+    ansible_default_ipv4: {address: "192.0.2.9"}
+
+- name: "Variant {{ item.name }}: the role's own default resolver, then its own path derivation"
+  ansible.builtin.include_role:
+    name: service_coding_worker
+    tasks_from: "{{ _t }}"
+    public: true
+  # The role's resolver REBINDS defaults on a repeat call (RESOLVE-01), ignoring facts, so the
+  # three inputs that differ between variants must arrive as include-level vars, which is the one
+  # thing that survives it. A real play calls the role once and never needs this.
+  vars:
+    worker_sessiond_bind: "{{ item.sessiond_bind }}"
+    worker_ttyd_bind: "{{ item.ttyd_bind }}"
+    worker_card_tail_enabled: "{{ item.tail }}"
+    worker_acp_enabled: "{{ item.acp }}"
+    # the card image tag is the Dockerfile's hash, so its inputs must survive the rebind too
+    worker_card_dns: "{{ _good.worker_card_dns }}"
+    # unset in the loopback variant means the role's own generated default
+    worker_card_image_name: "{{ 'example-card' if item.custom else worker_card_image_name__default }}"
+    worker_ttyd_title: "{{ 'example-worker' if item.custom else worker_ttyd_title__default }}"
+    worker_docker_bip: "{{ '198.51.100.1/24' if item.custom else worker_docker_bip__default }}"
+    worker_docker_address_pools: "{{ [{'base': '203.0.113.0/24', 'size': 28}] if item.custom else worker_docker_address_pools__default }}"
+  loop: [_resolve_defaults, _derive, _card_image]
+  loop_control:
+    loop_var: _t
+    label: "{{ _t }}"
+
+- name: "Variant {{ item.name }}: bind the per-variant inputs as facts for the template task"
+  # Task-level vars rank BELOW set_fact, and the resolver's repeat-call branch left the defaults as
+  # facts, so only another set_fact reaches the template (the include-level vars above do not
+  # outlive their include).
+  ansible.builtin.set_fact:
+    worker_sessiond_bind: "{{ item.sessiond_bind }}"
+    worker_ttyd_bind: "{{ item.ttyd_bind }}"
+    worker_card_tail_enabled: "{{ item.tail }}"
+    worker_acp_enabled: "{{ item.acp | bool }}"
+    worker_acp_permissions: "{{ _good.worker_acp_permissions }}"
+    worker_ssh_accept_env: "{{ _good.worker_ssh_accept_env }}"
+    worker_card_dns: "{{ _good.worker_card_dns }}"
+    worker_ttyd_title: "{{ 'example-worker' if item.custom else worker_ttyd_title__default }}"
+    worker_docker_bip: "{{ '198.51.100.1/24' if item.custom else worker_docker_bip__default }}"
+    worker_docker_address_pools: "{{ [{'base': '203.0.113.0/24', 'size': 28}] if item.custom else worker_docker_address_pools__default }}"
+
+- name: "Variant {{ item.name }}: render the artifacts"
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/../../templates/{{ _r.src }}"
+    dest: "{{ render_root }}/{{ item.name }}/{{ _r.dest }}"
+    mode: "0644"
+  loop:
+    - {src: sessiond.json.j2, dest: sessiond.json}
+    - {src: codex_base.toml.j2, dest: codex_base.toml}
+    - {src: worker-sessiond.service.j2, dest: worker-sessiond.service}
+    - {src: worker-ttyd.service.j2, dest: worker-ttyd.service}
+    - {src: worker-acpx-mcp.service.j2, dest: worker-acpx-mcp.service}
+    - {src: tmux.conf.j2, dest: tmux.conf}
+    - {src: worker-metrics.service.j2, dest: worker-metrics.service}
+    - {src: sshd-worker-env.conf.j2, dest: sshd-worker-env.conf}
+    - {src: worker-metrics.timer.j2, dest: worker-metrics.timer}
+    - {src: docker-daemon.json.j2, dest: docker-daemon.json}
+    - {src: card-image.Dockerfile.j2, dest: card-image.Dockerfile}
+    - {src: worker-card-firewall.nft.j2, dest: card-firewall.nft}
+  loop_control:
+    loop_var: _r
+    label: "{{ _r.dest }}"
+
+- name: "Variant {{ item.name }}: record the probe addresses the role derived"
+  ansible.builtin.copy:
+    dest: "{{ render_root }}/{{ item.name }}/derived.json"
+    content: "{{ {'sessiond': worker_probe_sessiond_host, 'ttyd': worker_probe_ttyd_host, 'conf_dir': worker_conf_dir, 'node_bin': worker_node_bin, 'node_dir': worker_node_dir, 'card_image': worker_card_image} | to_json }}"
+    mode: "0644"

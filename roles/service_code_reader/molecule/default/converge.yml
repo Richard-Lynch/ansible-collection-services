@@ -1,0 +1,90 @@
+---
+# Render-only scenario: the real converge needs Docker and a mailbox, neither reproducible on a
+# CI runner, so coverage is honestly PARTIAL -- it proves the role's own gates fire and that the
+# templates render the properties the design depends on, not that the sidecar runs.
+#
+# The gates are the role's REAL task files (_resolve_defaults, _argspec_guards, _preflight), and
+# the defaults come from the role's own defaults/main.yml. Hand-copying either would be a second
+# source of truth that drifts.
+#
+# Every refusal below is run against a NEAR-MISS that must pass, so a gate that always fails or
+# never fires cannot go unnoticed.
+- name: Converge -- run the role's gates and render its templates (no docker)
+  hosts: localhost
+  gather_facts: false
+  vars:
+    render_root: /tmp/molecule-code-reader
+    role_root: "{{ playbook_dir }}/../.."
+    good:
+      code_reader_imap_host: imap.test.invalid
+      code_reader_imap_user: codes@agent.test.invalid
+      code_reader_imap_password: "molecule-imap-password-XYZZY"
+      code_reader_sender_allowlist: ["noreply@example.com", "@trusted.test"]
+      code_reader_token: "molecule-token-0123456789abcdef0123456789abcdef"
+      code_reader_network: agent-net
+  tasks:
+    - name: Ensure a clean render root
+      ansible.builtin.file: { path: "{{ render_root }}", state: absent }
+
+    - name: Create the render directory
+      ansible.builtin.file: { path: "{{ render_root }}", state: directory, mode: "0755" }
+
+    - name: Load the role's generated defaults
+      ansible.builtin.include_vars:
+        file: "{{ role_root }}/defaults/main.yml"
+
+    # ---- the near-miss: a correct configuration must PASS every real gate -----------------
+    - name: Run the real gates over the GOOD configuration
+      ansible.builtin.include_tasks: gates.yml
+      vars:
+        cfg_in: "{{ good }}"
+
+    # ---- the refusals: each fixture must FAIL, and fail for the reason it claims ----------
+    - name: Each bad fixture must be refused by the gate it targets
+      ansible.builtin.include_tasks: refuse.yml
+      loop:
+        - { name: public-bind, expect: "loopback", override: { code_reader_bind: "0.0.0.0" } }
+        - { name: all-v6-bind, expect: "loopback", override: { code_reader_bind: "::" } }
+        - { name: lan-bind, expect: "loopback", override: { code_reader_bind: "192.0.2.12" } }
+        - { name: floating-image, expect: "explicit version tag", override: { code_reader_image: "python:latest" } }
+        - { name: bare-domain, expect: "allowlist entries", override: { code_reader_sender_allowlist: ["example.com"] } }
+        - { name: short-token, expect: "at least 32", override: { code_reader_token: "short" } }
+        - { name: quote-in-password, expect: "single quote", override: { code_reader_imap_password: "has'a-quote-XYZZY" } }
+      # loop_var, not `item`: the gates loop over `item` themselves, and a lazily-templated
+      # `fixture: "{{ item }}"` would silently re-resolve to the inner loop's value.
+      loop_control: { loop_var: fixture, label: "{{ fixture.name }}" }
+
+    # And the loopback near-misses (IPv6 loopback, a different 127.x) must NOT be refused.
+    - name: Loopback variants pass the bind gate
+      ansible.builtin.include_tasks: gates.yml
+      vars:
+        cfg_in: "{{ good | combine({'code_reader_bind': ok_bind}) }}"
+      loop: ["127.0.0.1", "127.0.1.1", "::1"]
+      loop_control: { loop_var: ok_bind }
+
+    # ---- rendering -------------------------------------------------------------------------
+    # A CLEAN resolver pass with only the good values, so the facts the renders below read are
+    # not left holding the last refused fixture's override (set_fact persists for the whole play).
+    - name: Resolve the good configuration for rendering
+      ansible.builtin.include_tasks: gates.yml
+      vars:
+        cfg_in: "{{ good }}"
+
+    # Required options carry no default, so the resolver (rightly) does not bind them on a repeat
+    # call. Set them from the same `good` the gates just accepted.
+    - name: Bind the required options for the renders
+      ansible.builtin.set_fact:
+        "{{ opt.key }}": "{{ opt.value }}"
+      loop: "{{ good | dict2items }}"
+      loop_control: { loop_var: opt, label: "{{ opt.key }}" }
+
+    - name: Render the compose project, env file and config
+      ansible.builtin.template:
+        src: "{{ item.src }}"
+        dest: "{{ render_root }}/{{ item.dest }}"
+        mode: "{{ item.mode }}"
+      loop:
+        - { src: "{{ role_root }}/templates/docker-compose.yml.j2", dest: docker-compose.yml, mode: "0640" }
+        - { src: "{{ role_root }}/templates/code-reader.env.j2", dest: code-reader.env, mode: "0600" }
+        - { src: "{{ role_root }}/files/config.json.j2", dest: config.json, mode: "0644" }
+      loop_control: { label: "{{ item.dest }}" }

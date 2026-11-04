@@ -1,0 +1,13 @@
+---
+galaxy_info:
+  role_name: config_mcp_servers
+  namespace: richard_lynch
+  author: Richard Lynch
+  description: >-
+    Validate a reviewed MCP server catalogue (no unreviewed entry, no literal credential, an
+    explicit tool include) and render it with each client's declared enablement as one JSON
+    document for the consumers that read it.
+  license: GPL-3.0-or-later
+  min_ansible_version: "2.19"
+  galaxy_tags: [mcp, agent, llm]
+dependencies: []

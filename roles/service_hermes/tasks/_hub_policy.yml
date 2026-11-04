@@ -1,0 +1,193 @@
+---
+# The policy hook's script, the MCP catalogue, and the settings service's files.
+# Runs after the owned-leaf merge (the policy directory exists) and before the stack is deployed.
+# Everything under policy/ is root-owned and mounted READ-ONLY into both containers.
+
+- name: HARD GATE — the policy hook needs the enforced managed scope and hooks_auto_accept
+  vars:
+    _auto: "{{ hermes__owned_all | selectattr('key', 'equalto', 'hooks_auto_accept') | list }}"
+  ansible.builtin.assert:
+    that:
+      - hermes_managed_enforce | bool
+      - _auto | length == 1
+      - _auto[0].tier == 'C'
+      - _auto[0].value is sameas true
+    fail_msg: >-
+      hermes_policy_hook_enabled is true but {{ 'the managed scope is not enforced'
+      if not (hermes_managed_enforce | bool) else 'hooks_auto_accept is not an owned tier-C leaf set to true' }}.
+      The gateway has no TTY, so a hook without hooks_auto_accept stays UNREGISTERED and denies
+      nothing; and the hook script is delivered in the read-only policy mount that only an
+      enforced scope mounts. Declare both in inventory, then re-run.
+    quiet: true
+  when: hermes_policy_hook_enabled | bool
+
+- name: Stage the policy hook (executable; Hermes runs it by path, shell=False)
+  ansible.builtin.copy:
+    dest: "{{ hermes_config_dir }}/policy/hermes_policy_hook.py"
+    mode: "0755"
+    content: "{{ lookup('ansible.builtin.file', role_path ~ '/scripts/hermes_policy_hook.py', rstrip=False) }}"
+  when: hermes_policy_hook_enabled | bool
+
+# Removing the flag removes the script too, so "hook disabled" cannot leave a stale copy that a
+# later re-enable would find already in place with old content.
+- name: Remove the policy hook script when the hook is disabled
+  ansible.builtin.file:
+    path: "{{ hermes_config_dir }}/policy/hermes_policy_hook.py"
+    state: absent
+  when: not (hermes_policy_hook_enabled | bool)
+
+# The post_tool_call AUDIT hook. Same delivery and the same prerequisites as the policy
+# hook (read-only policy mount, hooks_auto_accept), but an observer: it cannot block anything, so
+# its prerequisites are about it being REGISTERED, not about it failing closed.
+- name: HARD GATE — the audit hook needs the enforced managed scope and hooks_auto_accept
+  vars:
+    _auto: "{{ hermes__owned_all | selectattr('key', 'equalto', 'hooks_auto_accept') | list }}"
+  ansible.builtin.assert:
+    that:
+      - hermes_managed_enforce | bool
+      - _auto | length == 1
+      - _auto[0].tier == 'C'
+      - _auto[0].value is sameas true
+    fail_msg: >-
+      hermes_audit_hook_enabled is true but {{ 'the managed scope is not enforced'
+      if not (hermes_managed_enforce | bool) else 'hooks_auto_accept is not an owned tier-C leaf set to true' }}.
+      A hook without hooks_auto_accept stays UNREGISTERED in a non-TTY gateway and writes nothing,
+      which would read as "no tool calls" rather than "no audit".
+    quiet: true
+  when: hermes_audit_hook_enabled | bool
+
+- name: Stage the audit hook (executable; Hermes runs it by path, shell=False)
+  ansible.builtin.copy:
+    dest: "{{ hermes_config_dir }}/policy/hermes_audit_hook.py"
+    mode: "0755"
+    content: "{{ lookup('ansible.builtin.file', role_path ~ '/scripts/hermes_audit_hook.py', rstrip=False) }}"
+  when: hermes_audit_hook_enabled | bool
+
+- name: Remove the audit hook script when the hook is disabled
+  ansible.builtin.file:
+    path: "{{ hermes_config_dir }}/policy/hermes_audit_hook.py"
+    state: absent
+  when: not (hermes_audit_hook_enabled | bool)
+
+# The file exists BEFORE the first tool call, so the log shipper has already discovered it and
+# holds a position at its start when the first line lands (a file a log shipper first sees mid-write can
+# lose the lines written before discovery). An existing trail is never truncated or re-stamped.
+# data/logs is in the agent's tree, so NOT `file:` + `copy:` as root, which resolve the path by
+# name: a planted `data/logs -> /etc` would have root chown /etc and create a file in it
+# (AGENTTREE-01). agent_dir.py walks from the root-owned config dir by fd, refusing any link.
+- name: Ensure the audit log directory and file exist, refusing any link (agent_dir.py)
+  ansible.builtin.script:
+    cmd: >-
+      {{ role_path }}/scripts/agent_dir.py
+      --anchor {{ hermes_config_dir | quote }}
+      --anchor-uid {{ hermes__estate_uid | default(0) | int }}
+      --uid {{ hermes_uid | int }} --gid {{ hermes_uid | int }}
+      --own data/logs --touch data/logs/tool-audit.jsonl --file-mode 0644
+    executable: python3
+  register: hermes__audit_log
+  changed_when: (hermes__audit_log.stdout | default('{}', true) | from_json).changed | default(false)
+  when: hermes_audit_hook_enabled | bool
+
+# The catalogue is config_mcp_servers' output (rendered on this guest, into the policy directory,
+# by the play BEFORE this role). This role only refuses to start a settings service that would
+# read no catalogue -- an absent file would make every enable_mcp a refusal, silently.
+- name: Stat the MCP catalogue config_mcp_servers rendered
+  ansible.builtin.stat:
+    path: "{{ hermes_config_dir }}/policy/mcp-catalogue.json"
+  register: hermes__catalogue_stat
+  when: hermes_settings_service_enabled | bool
+
+- name: HARD GATE — the settings service has a catalogue to read
+  ansible.builtin.assert:
+    that:
+      - hermes__catalogue_stat.stat.exists
+    fail_msg: >-
+      {{ hermes_config_dir }}/policy/mcp-catalogue.json does not exist. Run config_mcp_servers
+      before this role so the settings service has the reviewed catalogue; without it every enable_mcp would be refused.
+    quiet: true
+  when: hermes_settings_service_enabled | bool
+
+- name: Deliver the settings service
+  when: hermes_settings_service_enabled | bool
+  block:
+    - name: HARD GATE — the settings service needs a long bearer token
+      ansible.builtin.assert:
+        that:
+          - hermes_settings_service_token | length >= 32
+        fail_msg: >-
+          hermes_settings_service_enabled is true but hermes_settings_service_token is shorter than
+          32 characters. Create it in your secret store and pass it as
+          hermes_settings_service_token.
+        quiet: true
+      no_log: true
+
+    - name: HARD GATE — the settings service's source must be given and present
+      ansible.builtin.assert:
+        that:
+          - hermes_settings_service_src | length > 0
+          - (hermes_settings_service_src ~ '/hermes_settings/__main__.py') is file
+        fail_msg: >-
+          hermes_settings_service_enabled is true, so hermes_settings_service_src must name a
+          controller directory holding the service's hermes_settings/ package (got
+          '{{ hermes_settings_service_src }}').
+        quiet: true
+
+    - name: Ensure the service's code, secrets and state directories exist
+      ansible.builtin.file:
+        path: "{{ hermes_config_dir }}/{{ item.d }}"
+        state: directory
+        owner: "{{ item.owner }}"
+        group: "{{ item.owner }}"
+        mode: "{{ item.mode }}"
+      loop:
+        - { d: settings-service, owner: "0", mode: "0755" }
+        - { d: settings-service/hermes_settings, owner: "0", mode: "0755" }
+        - { d: settings-secrets, owner: "{{ hermes_uid }}", mode: "0500" }
+        - { d: settings-state, owner: "{{ hermes_uid }}", mode: "0750" }
+      loop_control:
+        label: "{{ item.d }}"
+
+    - name: Deliver the service's code (root-owned, read-only in the container)
+      ansible.builtin.copy:
+        src: "{{ hermes_settings_service_src }}/hermes_settings/{{ item }}"
+        dest: "{{ hermes_config_dir }}/settings-service/hermes_settings/{{ item }}"
+        owner: "0"
+        group: "0"
+        mode: "0644"
+      loop:
+        [
+          __init__.py,
+          __main__.py,
+          backends.py,
+          catalogue.py,
+          mcp_http.py,
+          policy.py,
+          service.py,
+        ]
+      register: hermes__settings_code
+
+    - name: Write the service's bearer token (0400, the service's uid only)
+      ansible.builtin.copy:
+        dest: "{{ hermes_config_dir }}/settings-secrets/token"
+        content: "{{ hermes_settings_service_token }}\n"
+        owner: "{{ hermes_uid }}"
+        group: "{{ hermes_uid }}"
+        mode: "0400"
+      register: hermes__settings_token_file
+      no_log: true
+
+    - name: Write the service's GitHub token (0400; empty means tier B answers pr-unavailable)
+      ansible.builtin.copy:
+        dest: "{{ hermes_config_dir }}/settings-secrets/github-token"
+        content: "{{ hermes_settings_github_token }}\n"
+        owner: "{{ hermes_uid }}"
+        group: "{{ hermes_uid }}"
+        mode: "0400"
+      register: hermes__settings_gh_file
+      no_log: true
+
+    - name: Note whether the settings service must be recreated
+      ansible.builtin.set_fact:
+        hermes__settings_changed: >-
+          {{ hermes__settings_code.changed or hermes__settings_token_file.changed
+             or hermes__settings_gh_file.changed }}

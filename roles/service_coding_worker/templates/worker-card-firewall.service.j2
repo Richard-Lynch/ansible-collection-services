@@ -1,0 +1,14 @@
+# Managed by Ansible (service_coding_worker).
+[Unit]
+Description=Drop card-container traffic addressed to the worker VM itself
+After=network-pre.target docker.service
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f {{ worker_conf_dir }}/card-firewall.nft
+ExecStop=/usr/sbin/nft delete table inet hermes_worker
+
+[Install]
+WantedBy=multi-user.target

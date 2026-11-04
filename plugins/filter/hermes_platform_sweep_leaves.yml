@@ -1,0 +1,34 @@
+# Copyright: (c) 2026, Richard Lynch
+# GNU General Public License v3.0+ (see https://www.gnu.org/licenses/gpl-3.0.txt)
+---
+DOCUMENTATION:
+  name: hermes_platform_sweep_leaves
+  short_description: Leaves that set every platform_toolsets key already in a config to one list
+  author: Richard Lynch (@Richard-Lynch)
+  description:
+    - Returns one leaf per C(platform_toolsets.<platform>) key already present in the config text, set
+      to the given toolsets, except platforms the explicit leaves already name.
+    - A cloned profile carries the source's list for every chat platform; this closes the ones the caller
+      did not name. Empty toolsets means no sweep.
+  options:
+    _input:
+      description: The current config.yaml text.
+      type: str
+      required: true
+    toolsets:
+      description: The toolset list every present platform is set to.
+      type: list
+      required: true
+    explicit_leaves:
+      description: Leaves the caller applies on top; platforms they name are not swept.
+      type: list
+EXAMPLES: |
+  - name: Sweep the cloned platform lists
+    ansible.builtin.set_fact:
+      sweep: "{{ config_text | richard_lynch.services.hermes_platform_sweep_leaves(['terminal', 'kanban']) }}"
+    vars:
+      config_text: "platform_toolsets: {slack: [terminal, browser], cli: [terminal]}\n"
+RETURN:
+  _value:
+    description: A list of mappings with C(key) and C(value).
+    type: list

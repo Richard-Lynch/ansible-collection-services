@@ -1,0 +1,11 @@
+# Rendered by roles/service_hermes. A card's state change reaches its Slack thread within one interval.
+[Unit]
+Description=Hermes Kanban -> Slack card threads every {{ hermes_kanban_notify.interval_seconds | default(30) }}s
+
+[Timer]
+OnBootSec=90
+OnUnitActiveSec={{ hermes_kanban_notify.interval_seconds | default(30) }}
+AccuracySec=5
+
+[Install]
+WantedBy=timers.target

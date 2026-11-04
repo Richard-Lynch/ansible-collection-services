@@ -1,0 +1,10 @@
+---
+- name: Tell the concurrent writer to stop
+  ansible.builtin.command:
+    argv: [kill, -TERM, "{{ lookup('ansible.builtin.file', race_dir ~ '/writer.pid') }}"]
+  changed_when: true
+
+- name: Wait until it has stopped (its final report exists)
+  ansible.builtin.wait_for:
+    path: "{{ race_dir }}/writer.final"
+    timeout: 20

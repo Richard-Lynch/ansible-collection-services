@@ -1,0 +1,60 @@
+---
+# Protocol mode: acpx and the two ACP adapters, pinned, installed into
+# the Node prefix that every card container bind-mounts READ-ONLY at the same path (so a bump is a
+# converge, never an image rebuild, and the version a card runs is the one asserted below); and
+# acpx-mcp, the MCP server that exposes worker-sessiond's protocol endpoints and nothing else.
+# Included from main.yml only when worker_acp_enabled.
+- name: Install acpx and the ACP adapters at their pinned versions
+  community.general.npm:
+    name: "{{ item.name }}"
+    version: "{{ item.version }}"
+    global: true
+    executable: "{{ worker_node_bin }}/npm"
+    state: present
+  environment:
+    PATH: "{{ worker_node_bin }}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  loop:
+    - {name: acpx, version: "{{ worker_tools.acpx_version }}"}
+    - {name: "@agentclientprotocol/claude-agent-acp", version: "{{ worker_tools.claude_agent_acp_version }}"}
+    - {name: "@agentclientprotocol/codex-acp", version: "{{ worker_tools.codex_acp_version }}"}
+  loop_control:
+    label: "{{ item.name }}@{{ item.version }}"
+
+- name: Put acpx on the default PATH (the jump-in shell, and an owner debugging a session)
+  ansible.builtin.file:
+    src: "{{ worker_node_bin }}/acpx"
+    dest: /usr/local/bin/acpx
+    state: link
+    force: true
+
+- name: Install acpx-mcp
+  ansible.builtin.copy:
+    src: acpx_mcp.py
+    dest: "{{ worker_lib_dir }}/acpx_mcp.py"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart worker-acpx-mcp
+
+- name: Write acpx-mcp's credential file (its own token, and sessiond's for the loopback hop)
+  ansible.builtin.copy:
+    content: |
+      ACPX_MCP_TOKEN={{ worker_acpx_mcp_token }}
+      WORKER_SESSIOND_TOKEN={{ worker_sessiond_token }}
+    dest: "{{ worker_conf_dir }}/acpx-mcp.env"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  notify: Restart worker-acpx-mcp
+
+- name: Install acpx-mcp's systemd unit
+  ansible.builtin.template:
+    src: worker-acpx-mcp.service.j2
+    dest: /etc/systemd/system/worker-acpx-mcp.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart worker-acpx-mcp

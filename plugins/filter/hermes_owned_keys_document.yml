@@ -1,0 +1,28 @@
+# Copyright: (c) 2026, Richard Lynch
+# GNU General Public License v3.0+ (see https://www.gnu.org/licenses/gpl-3.0.txt)
+---
+DOCUMENTATION:
+  name: hermes_owned_keys_document
+  short_description: 'The public owned-keys document: owned leaves sorted, secret values omitted'
+  author: Richard Lynch (@Richard-Lynch)
+  description:
+    - Returns the owned set as readers of an owned-keys file need it (key, tier, value or C(secret), C(allowed),
+      and C(layer) when C(user)), sorted by key, so a leaf cannot be managed in one place and free in
+      another.
+  options:
+    _input:
+      description: Owned leaves, as for hermes_owned_projection.
+      type: list
+      required: true
+EXAMPLES: |
+  - name: Owned-keys document
+    ansible.builtin.copy:
+      dest: /etc/agent-policy/owned-keys.json
+      content: "{{ owned | richard_lynch.services.hermes_owned_keys_document | to_nice_json }}"
+      mode: "0644"
+    vars:
+      owned: [{key: model.default, value: large-model, tier: B}]
+RETURN:
+  _value:
+    description: A list of mappings, one per owned leaf.
+    type: list

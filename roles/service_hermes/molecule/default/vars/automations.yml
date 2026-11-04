@@ -1,0 +1,60 @@
+---
+# Automations play (converge play 3, verify play 3): the webhook routes, the send gate and the cron
+# scripts through the role's REAL merge, managed-scope staging and delivery. Its own root, so it
+# cannot disturb the merge play's assertions. TEST values, not real deployment values.
+render_root: /tmp/molecule-hermes-m5
+hermes_container_name: hermes
+hermes_config_dir: /tmp/molecule-hermes-m5
+hermes_state_uid: "{{ lookup('pipe', 'id -u') | int }}"
+hermes_state_gid: "{{ lookup('pipe', 'id -g') | int }}"
+hermes__estate_owner: "{{ lookup('pipe', 'id -un') }}"
+hermes__estate_group: "{{ lookup('pipe', 'id -gn') }}"
+hermes__estate_uid: "{{ lookup('pipe', 'id -u') | int }}"
+hermes__merge_quiesce: false
+hermes_gateway_url: http://litellm.example.com:4000/v1
+hermes_gateway_api_key: sk-molecule-virtual-key-placeholder
+hermes_gateway_provider_name: example-gateway
+hermes_gateway_models: [example-provider/model-large]
+hermes_default_model: example-provider/model-large
+hermes_api_server_enabled: false
+hermes_managed_enforce: true
+hermes_config_owned:
+  - key: hooks_auto_accept
+    value: true
+    tier: C
+hermes_toolsets_core: [terminal, web]
+hermes_toolsets_subtract: {}
+
+hermes_webhook_enabled: true
+hermes_webhook_secret: molecule-webhook-global-secret-0123456789
+hermes_webhook_routes:
+  hub-test:
+    deliver_only: true
+    deliver: slack
+    prompt: "Hub webhook test: {message}"
+  ha:
+    secret_env: HERMES_WEBHOOK_HA_SECRET
+    prompt: "Home Assistant: {event}"
+    toolsets: [web]
+  gone-route:
+    deliver_only: true
+    deliver: slack
+    prompt: "to be retired in the verify case"
+hermes_webhook_route_secrets:
+  HERMES_WEBHOOK_HA_SECRET: molecule-ha-route-placeholder-value
+hermes_webhook_retired_routes: []
+
+hermes_hub_gate_enabled: true
+hermes_hub_gate_allowed_recipients: [Owner@Example.com]
+
+hermes_cron_scripts_source: "{{ playbook_dir }}/fixtures/estate_scripts"
+hermes_cron_scripts_config:
+  alertmanager_url: http://am.example.com:9093
+hermes_cron_seed:
+  - name: alertmanager-pull
+    schedule: "every 5m"
+    no_agent: true
+    script: estate/alertmanager_pull.py
+    deliver: slack
+    enabled: true
+hermes_cron_env_passthrough: [EXAMPLE_POLL_TOKEN]

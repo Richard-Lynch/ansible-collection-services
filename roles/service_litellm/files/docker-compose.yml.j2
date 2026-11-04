@@ -1,0 +1,191 @@
+---
+# Rendered by roles/service_litellm. Do not edit on the host -- the next converge overwrites it.
+#
+# Three containers, one compose project:
+#   postgres    -- LiteLLM's state (virtual keys, spend, models added via the UI)
+#   litellm     -- the OpenAI-compatible gateway
+#   open-webui  -- chat UI, pointed at litellm over the compose-internal network
+{# No reverse-proxy labels here: a reverse proxy in front of this stack is configured by the
+   caller (for example a static router file), which also keeps Jinja out of YAML mapping keys —
+   a templated label key would ship the literal braces. #}
+services:
+  {{ litellm_postgres_container_name }}:
+    image: {{ litellm_postgres_image }}
+    container_name: {{ litellm_postgres_container_name }}
+    restart: unless-stopped
+    # POSTGRES_PASSWORD comes from postgres.env (0600): this file is 0640 and names no credential.
+    env_file:
+      - {{ litellm_config_dir }}/postgres.env
+    environment:
+      POSTGRES_USER: "{{ litellm_postgres_user }}"
+      POSTGRES_DB: "{{ litellm_postgres_db }}"
+      TZ: "{{ litellm_timezone }}"
+    volumes:
+      - {{ litellm_config_dir }}/data/postgres:/var/lib/postgresql/data:rw
+    # pg_isready gates litellm's start below. Without it litellm races the DB on a cold
+    # boot, fails its migration, and restarts until postgres happens to be up.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U {{ litellm_postgres_user }} -d {{ litellm_postgres_db }}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - {{ litellm_network }}
+
+{% if litellm_redis_enabled | bool %}
+  {{ litellm_redis_container_name }}:
+    image: {{ litellm_redis_image }}
+    container_name: {{ litellm_redis_container_name }}
+    restart: unless-stopped
+    # WHY REDIS IS NOT OPTIONAL IN PRACTICE: the proxy runs more than one worker, and without a
+    # shared store each worker keeps its OWN rate limits, budgets, router state and cache. So a
+    # limit is enforced once PER WORKER and spend can overshoot its budget by roughly the worker
+    # count — on a gateway holding real provider keys that is a money bug, not a tuning detail.
+    # LiteLLM warns about exactly this in its own UI.
+    #
+    # The password, `appendonly yes` (a restart must not reset every budget counter) and
+    # `maxmemory-policy noeviction` (an evicted spend counter is a budget silently not enforced)
+    # are in redis.conf (0600, the redis uid's), NOT on the command line, so the password is not
+    # in the process argv that `ps` shows. That is ALL it keeps out: redis.env below is an
+    # env_file, and env_file values land in the container's Config.Env, so `docker inspect` (and
+    # any docker_container_info read-back) still shows REDISCLI_AUTH. What covers that is
+    # INSPECTENV-01 and no_log on every task that reads this container's inspect document.
+    # A DIRECTORY mount, so a re-render is seen by the next start (a single-file bind mount pins
+    # the old inode).
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    env_file:
+      - {{ litellm_config_dir }}/redis.env
+    volumes:
+      - {{ litellm_config_dir }}/data/redis:/data:rw
+      - {{ litellm_config_dir }}/redis:/usr/local/etc/redis:ro
+    healthcheck:
+      # redis-cli reads REDISCLI_AUTH (redis.env): no password on its argv either.
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    environment:
+      TZ: "{{ litellm_timezone }}"
+    networks:
+      - {{ litellm_network }}
+
+{% endif %}
+  {{ litellm_container_name }}:
+    image: {{ litellm_image }}
+    container_name: {{ litellm_container_name }}
+    restart: unless-stopped
+    depends_on:
+      {{ litellm_postgres_container_name }}:
+        condition: service_healthy
+{% if litellm_redis_enabled | bool %}
+      {{ litellm_redis_container_name }}:
+        condition: service_healthy
+{% endif %}
+    command: ["--config", "/app/config/config.yaml"]
+    env_file:
+      - {{ litellm_config_dir }}/app.env
+{% if litellm_ui_logo_path | default('') or litellm_ui_logo_path_dark | default('') or litellm_ui_favicon_path | default('') %}
+    # Branding only -- not credential-shaped, so it lives here rather than in app.env.
+    # UI_LOGO_PATH / UI_LOGO_PATH_DARK / LITELLM_FAVICON_URL are plain os.getenv() reads with
+    # NO premium_user gate (verified v1.104.2's /get_image, /get_favicon). Each value is
+    # either an http(s) URL the BROWSER fetches directly, or a path readable inside this
+    # container.
+    environment:
+{% if litellm_ui_logo_path | default('') %}
+      UI_LOGO_PATH: "{{ litellm_ui_logo_path }}"
+{% endif %}
+{% if litellm_ui_logo_path_dark | default('') %}
+      UI_LOGO_PATH_DARK: "{{ litellm_ui_logo_path_dark }}"
+{% endif %}
+{% if litellm_ui_favicon_path | default('') %}
+      LITELLM_FAVICON_URL: "{{ litellm_ui_favicon_path }}"
+{% endif %}
+{% endif %}
+    volumes:
+      - {{ litellm_config_dir }}/config:/app/config:ro
+{% if litellm_ui_logo_path | default('') or litellm_ui_logo_path_dark | default('') or litellm_ui_favicon_path | default('') %}
+      # Mounted READ-ONLY so a local (non-http(s)) branding path has something to resolve
+      # against inside the container. By convention a caller using a local file sets e.g.
+      # litellm_ui_logo_path: /app/branding/logo.png and places the real file at
+      # <litellm_config_dir>/branding/logo.png on the host -- the same "host file under
+      # litellm_config_dir, mounted read-only" shape used for Open WebUI's branding below.
+      # An http(s) value needs no mount at all; this directory is simply unused in that case.
+      - {{ litellm_config_dir }}/branding:/app/branding:ro
+{% endif %}
+    ports:
+      - "{{ litellm_host_port }}:4000"
+    # /health/liveliness is the UNPROTECTED liveness probe. Never point a healthcheck or a
+    # Prometheus scrape at /health: that endpoint requires auth AND issues a real, billed
+    # API call to every configured model on every hit.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          python3 -c "import urllib.request;
+          urllib.request.urlopen('http://localhost:4000/health/liveliness')"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - {{ litellm_network }}
+
+  {{ litellm_open_webui_container_name }}:
+    image: {{ litellm_open_webui_image }}
+    container_name: {{ litellm_open_webui_container_name }}
+    restart: unless-stopped
+    depends_on:
+      {{ litellm_container_name }}:
+        condition: service_started
+    # OPENAI_API_KEY (the gateway's master key) and WEBUI_SECRET_KEY come from open-webui.env
+    # (0600): this file is 0640 and names no credential.
+    env_file:
+      - {{ litellm_config_dir }}/open-webui.env
+    environment:
+      # The whole point of the pairing: Open WebUI treats litellm as its OpenAI backend, so
+      # every model litellm routes shows up in the UI with no per-model wiring here.
+      # Container-to-container on the compose network -- plain HTTP by design
+      # (TLS at the boundary, not internally).
+      OPENAI_API_BASE_URL: "http://{{ litellm_container_name }}:4000/v1"
+      WEBUI_NAME: "{{ litellm_open_webui_name }}"
+      # WEBUI_AUTH is set EXPLICITLY even though True is its default, because ENABLE_SIGNUP is
+      # computed as `False if not WEBUI_AUTH else getenv(...)` (verified in v0.11.4's env.py/
+      # config.py). With auth off, the UI needs no login at all AND the signup setting below
+      # becomes meaningless — so the thing that makes it load-bearing must not be left implicit.
+      WEBUI_AUTH: "true"
+      ENABLE_SIGNUP: "{{ litellm_open_webui_enable_signup | string | lower }}"
+      # No host allowlist is set, deliberately. Open WebUI has no HOMEPAGE_ALLOWED_HOSTS-style
+      # variable; its nearest equivalent is CORS_ALLOW_ORIGIN, which is SEMICOLON-separated and
+      # whose own comment says production needs only one host because FastAPI serves the built
+      # frontend and the backend from the same origin. Behind one reverse-proxy route on one
+      # hostname an allowlist here would constrain nothing that is not already constrained -- and a
+      # comma-joined value (the obvious mistake, copied from other apps' host allowlists) fails
+      # CORS_ALLOW_ORIGIN's scheme/netloc validation outright.
+      # Open WebUI's own state. Kept on SQLite deliberately: it is the upstream default and
+      # needs no second DB role, and this stack's postgres exists for litellm's schema.
+      DATA_DIR: "/app/backend/data"
+      HOST: "0.0.0.0"
+      WEBUI_URL: "http://localhost:{{ litellm_open_webui_host_port }}"
+      TZ: "{{ litellm_timezone }}"
+    volumes:
+      - {{ litellm_config_dir }}/data/open-webui:/app/backend/data:rw
+{% if litellm_open_webui_logo_path | default('') %}
+      # Open WebUI has no logo env var (verified v0.11.4) and wipes+recopies STATIC_DIR from
+      # its own bundled assets on EVERY process start, so a plain file at this path reverts
+      # on the next restart. A read-only mount survives because OWUI's own copy step catches
+      # the write failure and logs rather than erroring.
+      - {{ litellm_open_webui_logo_path }}:/app/backend/open_webui/static/logo.png:ro
+{% endif %}
+{% if litellm_open_webui_favicon_path | default('') %}
+      - {{ litellm_open_webui_favicon_path }}:/app/backend/open_webui/static/favicon.png:ro
+{% endif %}
+    ports:
+      - "{{ (litellm_open_webui_bind_address ~ ':') if litellm_open_webui_bind_address | length > 0 else '' }}{{ litellm_open_webui_host_port }}:8080"
+    networks:
+      - {{ litellm_network }}
+
+networks:
+  {{ litellm_network }}:
+    external: true
