@@ -7,11 +7,13 @@
 .github/workflows/disclose.yml
 .github/workflows/release.yml
 .gitignore
+.python-version
 CHANGELOG.md
 LICENSE
 README.md
 ci/affected-scenarios.sh
 configured_roles.txt
+deps-baseline.json
 devkit.toml
 export.manifest
 galaxy.yml
@@ -49,6 +51,7 @@ plugins/filter/mcp_catalogue.py
 plugins/filter/mcp_catalogue_document.yml
 plugins/lookup/hosting_definition.py
 plugins/modules/slack_channels.py
+renovate.json
 roles/config_agent_state/README.md
 roles/config_agent_state/defaults/backup.yml
 roles/config_agent_state/defaults/drill.yml
