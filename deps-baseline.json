@@ -1,0 +1,13 @@
+{
+  "_comment": "devkit check dependencies baseline: violations that existed when DEP-02..05 arrived. key = RULE|path|name, value = occurrences, and a reason for each. New ones FAIL; an entry that no longer occurs FAILS until removed. Regenerate with `devkit check dependencies --update-baseline` after a fix, never to admit a new one.",
+  "entries": {
+    "DEP-02|roles/service_postgres/tasks/verify.yml|psycopg2-binary": 1,
+    "DEP-03|roles/service_postgres/defaults/main.yml|dpage/pgadmin4": 1,
+    "DEP-03|roles/service_postgres/defaults/main.yml|quay.io/prometheuscommunity/postgres-exporter": 1
+  },
+  "reasons": {
+    "DEP-02|roles/service_postgres/tasks/verify.yml|psycopg2-binary": "target-host verify dependency installed for the role's own read-back; pinned in the next service_postgres release with a tested version",
+    "DEP-03|roles/service_postgres/defaults/main.yml|dpage/pgadmin4": "live deployment default; pinning changes the running pgAdmin, so a tested tag lands in its own service_postgres release",
+    "DEP-03|roles/service_postgres/defaults/main.yml|quay.io/prometheuscommunity/postgres-exporter": "live deployment default; pinning changes the running exporter, so a tested tag lands in its own service_postgres release"
+  }
+}

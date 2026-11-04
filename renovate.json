@@ -1,0 +1,4 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["local>Richard-Lynch/ansible-devkit//renovate/default"]
+}

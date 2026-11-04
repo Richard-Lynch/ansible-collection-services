@@ -69,3 +69,9 @@ log_dir = "var/trap-hits"
 [boundary]
 engine_roots = ["roles", "plugins"]
 patterns = []
+
+[dependencies]
+# devkit check dependencies (DEP-02..05). No requirements file is pip-installed here; violations this
+# collection already had are in deps-baseline.json, each with its reason.
+requirement_files = []
+baseline = "deps-baseline.json"
