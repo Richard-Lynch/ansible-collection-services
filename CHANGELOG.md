@@ -9,6 +9,12 @@ All notable changes to this collection are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the collection
 uses [Semantic Versioning](https://semver.org/).
 
+## [1.1.1] — 2026-11-04
+
+### Added
+
+- CI: the agent-tree check covers the AI-stack roles (tree roots declared)
+
 ## [1.1.0] — 2026-11-04
 
 ### Added

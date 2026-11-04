@@ -29,9 +29,33 @@ paths = ["plugins", "tests"]
 exclude_prefixes = [".venv/", "venv/", "tests/output/", ".claude/worktrees/"]
 
 [agent_tree]
-tree_roots = []
-concat_roots = []
-config_dir_aliases = {}
+# AGENTTREE-01: the directories the agent's unprivileged user can write. A root-run write BY NAME
+# below one of them goes wherever a link the agent planted there points. Regexes over NORMALISED
+# text (spaces inside {{ }} removed); a write is flagged when its path continues below a root with
+# "/<more>".
+tree_roots = [
+  # service_hermes: the gateway's data directory, by option and as the container mounts it.
+  '\{\{hermes_config_dir\}\}/data',
+  '/opt/hermes/data',
+  # config_agent_state and config_hermes_learning: the agent-owned state and learning homes.
+  '\{\{(?:agent_state_root|hermes_learning_host_home)\}\}',
+  # service_coding_worker: each card's data directory and each card user's home.
+  '\{\{worker_state_dir\}\}/(?:cards/[^/]+/data|homes/[^/]+)',
+  # config_hermes_profile: its option IS the gateway's data directory, so the role's own text never
+  # names hermes_config_dir; a filter chain on it (`| regex_replace(...)`) is still the same root.
+  '\{\{hermes_profile_data_dir(?:\|[^{}]*)?\}\}',
+]
+# Jinja concatenation onto a root, e.g. `hermes_config_dir ~ ('/x' if c else '/data') ~ '/f'`.
+concat_roots = [
+  "hermes_config_dir\\s*~.*['\\\"]/data\\b",
+  '(?:agent_state_root|hermes_learning_host_home)\s*~',
+]
+# var = suffix: a variable defined as `{{ var }}` (or `{{ var | default(...) }}`) is an alias, and
+# `{{ alias }}<suffix>` is a tree root too.
+config_dir_aliases = { hermes_config_dir = "/data" }
+# The confined helpers a finding points at: service_hermes's scripts/agent_dir.py, and the
+# confined_io module the root-run host scripts use.
+helper_names = "agent_dir.py / confined_io"
 
 [ha_restart]
 supervisor_modules = []
