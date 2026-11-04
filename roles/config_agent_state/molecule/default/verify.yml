@@ -1,0 +1,938 @@
+---
+# PLAY 0 - the drill as the FIRST role call of a play, with the drill env in PLAY vars.
+# Play vars sit where host_vars sit: below a set_fact. The resolver's first-call branch reads them;
+# a SECOND resolver call in the same entrypoint takes the repeat branch and rebinds every option
+# to its __default, so the rendered drill.env would lose the inventory's keys while every
+# include-`vars:` test stays green (include vars shadow the fact).
+# This play must be first: facts from the main play below would make the role's own call a
+# "repeat" and the test would no longer exercise the inventory path.
+- name: Verify (play 0) - drill as the first role call, env from the host_vars position
+  hosts: localhost
+  gather_facts: false
+  vars_files: [vars.yml]
+  vars:
+    agent_state_drill_env: { HERMES_UID: "10000", DRILL_FROM_HOSTVARS: "1" }
+    agent_state_drill_scratch_secrets: [API_SERVER_KEY]
+    agent_state_drill_readback_key_env: API_SERVER_KEY
+  tasks:
+    - name: The drill (nothing about the drill env in this include's vars, on purpose)
+      ansible.builtin.include_role:
+        name: config_agent_state
+        tasks_from: drill
+      vars:
+        agent_state_product: hermes
+        agent_state_python: "{{ ansible_playbook_python }}"
+        agent_state_install_dir: "{{ w }}/install"
+        agent_state_key_dir: "{{ w }}/keys-host"
+        agent_state_unit_dir: "{{ w }}/units"
+        agent_state_textfile_dir: "{{ w }}/textfile"
+        agent_state_packages: []
+        agent_state_enable_timers: false
+        agent_state_stack_managed: false
+        agent_state_root: "{{ w }}/src"
+        agent_state_mirror_dir: "{{ w }}/mirror-work"
+        agent_state_backup_target: "{{ w }}/share"
+        agent_state_repo_url: "file://{{ w }}/remote.git"
+        agent_state_mirror_paths: [SOUL.md, USER.md, memories, skills, cron/jobs.json, webhook_subscriptions.json]
+        agent_state_sqlite_files: [state.db]
+        agent_state_backup_exclude: ["cache/", "logs/", "sandboxes/", "browser-profiles/"]
+        agent_state_required_paths: [SOUL.md, state.db]
+        agent_state_drill_confirm: true
+        agent_state_restore_identity: "{{ lookup('ansible.builtin.file', w ~ '/keys/age.txt') }}"
+        agent_state_drill_image: "registry.invalid/agent@sha256:{{ '0' * 64 }}"
+        agent_state_drill_port: 8642
+        agent_state_drill_dir: "{{ w }}/drill_hostvars"
+
+    - name: HARD GATE — the rendered drill.env carried the keys from PLAY vars, plus the scratch secret
+      ansible.builtin.assert:
+        that:
+          - "'DRILL_FROM_HOSTVARS' in agent_state_drill_env_keys"
+          - "'HERMES_UID' in agent_state_drill_env_keys"
+          - "'API_SERVER_KEY' in agent_state_drill_env_keys"
+        fail_msg: >-
+          drill.env was rendered with keys {{ agent_state_drill_env_keys }}: the inventory's drill
+          env did not reach the template (the resolver was run twice, or play/host vars lost).
+        quiet: true
+
+# Verify. Every check asserts a property that would be SILENTLY wrong rather than loudly broken:
+# a backup that lost the WAL, an archive that is readable without the key, a corrupt archive that
+# is accepted, a scan that reports "blocked" but staged the file anyway. Negative cases are run
+# through the role's own entrypoints and must be refused FOR THE NAMED REASON, with the live tree
+# left byte-for-byte as it was.
+- name: Verify - round trip, encryption, refusals, the blocking scan, the ring, the drill
+  hosts: localhost
+  gather_facts: false
+  vars_files: [vars.yml]
+  vars:
+    as_common: &as_common
+      agent_state_product: hermes
+      agent_state_python: "{{ ansible_playbook_python }}"
+      agent_state_install_dir: "{{ w }}/install"
+      agent_state_key_dir: "{{ w }}/keys-host"
+      agent_state_unit_dir: "{{ w }}/units"
+      agent_state_textfile_dir: "{{ w }}/textfile"
+      agent_state_packages: []
+      agent_state_enable_timers: false
+      agent_state_stack_managed: false
+      agent_state_restore_quiet_start: false
+      agent_state_root: "{{ w }}/src"
+      agent_state_mirror_dir: "{{ w }}/mirror-work"
+      agent_state_backup_target: "{{ w }}/share"
+      agent_state_repo_url: "file://{{ w }}/remote.git"
+      agent_state_mirror_paths: [SOUL.md, USER.md, memories, skills, cron/jobs.json, webhook_subscriptions.json]
+      agent_state_config_file: config.yaml
+      agent_state_sqlite_files: [state.db]
+      agent_state_backup_exclude: ["cache/", "logs/", "sandboxes/", "browser-profiles/"]
+      agent_state_required_paths: [SOUL.md, state.db]
+  tasks:
+    - name: Public key for the recipient
+      ansible.builtin.command:
+        argv: [age-keygen, -y, "{{ w }}/keys/age.txt"]
+      register: _pub
+      changed_when: false
+
+    - name: The archive prepare took
+      ansible.builtin.find:
+        paths: "{{ w }}/share"
+        patterns: "*.tar.zst.age"
+      register: _arch
+
+    - name: Name it
+      ansible.builtin.set_fact:
+        _arch_name: "{{ _arch.files[0].path | basename }}"
+        _arch_path: "{{ _arch.files[0].path }}"
+
+    # ------------------------------------------------------------------ 1. the round trip
+    - name: Restored tree equals the source (everything that should be there, byte for byte)
+      ansible.builtin.command:
+        argv: [diff, -r, -x, state.db, -x, state.db-wal, -x, state.db-shm, -x, cache, -x, logs, -x, sandboxes, -x, browser-profiles, "{{ w }}/src", "{{ w }}/restored"]
+      changed_when: false
+
+    - name: The excluded directories did not ride along
+      ansible.builtin.stat:
+        path: "{{ w }}/restored/{{ item }}"
+      register: _excl
+      loop: [cache, logs, sandboxes, browser-profiles]
+
+    - name: HARD GATE — none of them exist in the restored tree
+      ansible.builtin.assert:
+        that: [not item.stat.exists]
+        fail_msg: "{{ item.item }} was archived despite the exclude list."
+        quiet: true
+      loop: "{{ _excl.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: The restored database
+      ansible.builtin.command:
+        argv: ["{{ ansible_playbook_python }}", "{{ playbook_dir }}/rowcount.py", "{{ w }}/restored/state.db"]
+      register: _rc_restored
+      changed_when: false
+
+    - name: A naive file copy of the live database (what a cp-based backup would have kept)
+      ansible.builtin.copy:
+        src: "{{ w }}/src/state.db"
+        dest: "{{ w }}/naive.db"
+        remote_src: true
+        mode: "0644"
+
+    - name: Count the naive copy's rows
+      ansible.builtin.command:
+        argv: ["{{ ansible_playbook_python }}", "{{ playbook_dir }}/rowcount.py", "{{ w }}/naive.db"]
+      register: _rc_naive
+      changed_when: false
+
+    - name: HARD GATE — the backup API captured the WAL, and a plain copy provably does not
+      ansible.builtin.assert:
+        that:
+          - (_rc_restored.stdout | from_json).sessions == 400
+          - (_rc_restored.stdout | from_json).integrity == 'ok'
+          - (_rc_naive.stdout | from_json).sessions < 400
+        fail_msg: >-
+          restored {{ _rc_restored.stdout }}; naive copy {{ _rc_naive.stdout }}. If the naive copy
+          has all 400 rows the fixture no longer proves the WAL is captured.
+        quiet: true
+
+    # ------------------------------------------------------------------ 1b. equals, not contains
+    - name: A file the archive does not hold, planted in the restored tree
+      ansible.builtin.copy:
+        dest: "{{ w }}/restored/EXTRA_SHOULD_NOT_SURVIVE.txt"
+        content: "created after the backup\n"
+        mode: "0644"
+
+    - name: Restore the same archive over it again
+      ansible.builtin.include_role:
+        name: config_agent_state
+        tasks_from: restore
+      vars:
+        <<: *as_common
+        agent_state_root: "{{ w }}/restored"
+        agent_state_restore_confirm: true
+        agent_state_restore_scope: runtime
+        agent_state_restore_from: "{{ _arch_name }}"
+        agent_state_restore_identity: "{{ lookup('ansible.builtin.file', w ~ '/keys/age.txt') }}"
+
+    - name: Is the extra file gone from the live tree, and the previous tree moved aside
+      ansible.builtin.stat:
+        path: "{{ w }}/restored/EXTRA_SHOULD_NOT_SURVIVE.txt"
+      register: _extra
+
+    - name: The moved-aside trees
+      ansible.builtin.find:
+        paths: "{{ w }}"
+        patterns: "restored.pre-restore-*"
+        file_type: directory
+      register: _aside
+
+    - name: HARD GATE — a tree holding MORE than the archive is restored (changed), not reported equal
+      ansible.builtin.assert:
+        that:
+          - _as_restore is changed
+          - not _extra.stat.exists
+          - _aside.matched == 1
+        fail_msg: "changed={{ _as_restore is changed }} extra_exists={{ _extra.stat.exists }} aside={{ _aside.matched }}"
+        quiet: true
+
+    - name: Restored directory entries keep their mode (a 0700 directory comes back 0700)
+      ansible.builtin.stat:
+        path: "{{ w }}/restored/private"
+      register: _privdir
+
+    - name: HARD GATE — directory mode and an EMPTY directory survive the round trip
+      ansible.builtin.assert:
+        that:
+          - _privdir.stat.exists
+          - _privdir.stat.isdir
+          - _privdir.stat.mode == '0700'
+        fail_msg: "private/: exists={{ _privdir.stat.exists }} mode={{ _privdir.stat.mode | default('?') }}"
+        quiet: true
+
+    # ------------------------------------------------------------------ 2. it is really encrypted
+    - name: The archive's first bytes
+      ansible.builtin.command:
+        argv: [head, -c, "21", "{{ _arch_path }}"]
+      register: _head
+      changed_when: false
+
+    - name: Plaintext from the state is nowhere in the ciphertext
+      ansible.builtin.command:
+        argv: [grep, -a, -c, -e, "dry assistant", -e, "oauth-state", -e, "printer is on", "{{ _arch_path }}"]
+      register: _plain
+      failed_when: _plain.rc != 1
+      changed_when: false
+
+    - name: HARD GATE — an age file, with none of the state readable in it
+      ansible.builtin.assert:
+        that: [_head.stdout == 'age-encryption.org/v1', _plain.stdout == '0']
+        quiet: true
+
+    # ------------------------------------------------------------------ 3. corrupt-backup refusals
+    - name: Each way a backup can be wrong is refused, for its own reason, before anything is touched
+      ansible.builtin.include_tasks: _refusal_case.yml
+      loop:
+        - { name: wrong-identity, tamper: "", identity: "{{ w }}/keys/wrong.txt", expect: "could not decrypt" }
+        - { name: flipped-byte, tamper: flip-archive, identity: "{{ w }}/keys/age.txt", expect: "sha256 differs from its manifest" }
+        - { name: flipped-and-rehashed, tamper: flip-and-rehash, identity: "{{ w }}/keys/age.txt", expect: "could not decrypt" }
+        - { name: lying-member-hash, tamper: lie-member, identity: "{{ w }}/keys/age.txt", expect: "member hash mismatch" }
+        - { name: lying-row-count, tamper: lie-rowcount, identity: "{{ w }}/keys/age.txt", expect: "row counts differ" }
+      loop_control:
+        loop_var: case
+        label: "{{ case.name }}"
+
+    # ------------------------------------------------------------------ 4. a corrupt source db
+    - name: Backing up a corrupt database
+      block:
+        - name: Empty share for it
+          ansible.builtin.file:
+            path: "{{ w }}/share_corrupt"
+            state: directory
+            mode: "0755"
+        - name: Backup
+          ansible.builtin.include_role:
+            name: config_agent_state
+            tasks_from: backup
+          vars:
+            <<: *as_common
+            agent_state_root: "{{ w }}/src_corrupt"
+            agent_state_backup_target: "{{ w }}/share_corrupt"
+            agent_state_backup_recipient: "{{ _pub.stdout | trim }}"
+        - name: Accepted
+          ansible.builtin.set_fact:
+            _accepted: true
+            _cause: ""
+      rescue:
+        - name: Refused
+          ansible.builtin.set_fact:
+            _accepted: false
+            _cause: "{{ ansible_failed_result.stderr | default(ansible_failed_result.msg | default('')) }}"
+
+    - name: Anything on that share
+      ansible.builtin.find:
+        paths: "{{ w }}/share_corrupt"
+        patterns: "*"
+      register: _corrupt_share
+
+    - name: Backing up a root that holds an UNDECLARED database
+      block:
+        - name: Empty share for it
+          ansible.builtin.file:
+            path: "{{ w }}/share_undeclared"
+            state: directory
+            mode: "0755"
+        - name: Backup
+          ansible.builtin.include_role:
+            name: config_agent_state
+            tasks_from: backup
+          vars:
+            <<: *as_common
+            agent_state_root: "{{ w }}/src_undeclared"
+            agent_state_backup_target: "{{ w }}/share_undeclared"
+            agent_state_backup_recipient: "{{ _pub.stdout | trim }}"
+        - name: Accepted
+          ansible.builtin.set_fact:
+            _undeclared_accepted: true
+            _undeclared_cause: ""
+      rescue:
+        - name: Refused
+          ansible.builtin.set_fact:
+            _undeclared_accepted: false
+            _undeclared_cause: "{{ ansible_failed_result.stderr | default(ansible_failed_result.msg | default('')) }}"
+
+    - name: HARD GATE — an undeclared *.db refuses the backup, naming the file
+      ansible.builtin.assert:
+        that:
+          - not (_undeclared_accepted | bool)
+          - "'not declared in --sqlite' in _undeclared_cause"
+          - "'other.db' in _undeclared_cause"
+        fail_msg: "accepted={{ _undeclared_accepted }} cause={{ _undeclared_cause }}"
+        quiet: true
+
+    - name: HARD GATE — a database that fails integrity_check refuses the backup and leaves no archive
+      ansible.builtin.assert:
+        that:
+          - not (_accepted | bool)
+          - "'integrity_check failed' in _cause or 'could not read' in _cause"
+          - _corrupt_share.matched == 0
+        fail_msg: "accepted={{ _accepted }} cause={{ _cause }} files={{ _corrupt_share.matched }}"
+        quiet: true
+
+    # ------------------------------------------------------------------ 5. the ring
+    - name: The ring share
+      ansible.builtin.file:
+        path: "{{ w }}/share_ring"
+        state: directory
+        mode: "0755"
+
+    - name: Foreign file on the ring share (a prune must never touch what it did not write)
+      ansible.builtin.copy:
+        dest: "{{ w }}/share_ring/notes.txt"
+        content: "not ours\n"
+        mode: "0644"
+
+    - name: Four backups into a keep-2 ring
+      ansible.builtin.include_tasks: _ring_one.yml
+      loop: [1, 2, 3, 4]
+      loop_control:
+        loop_var: ring_i
+
+    - name: What the ring holds
+      ansible.builtin.find:
+        paths: "{{ w }}/share_ring"
+        patterns: ["*.tar.zst.age", "*.manifest.json", "notes.txt"]
+      register: _ring
+
+    - name: HARD GATE — newest two kept (archive and manifest), older ones gone, foreign file untouched
+      ansible.builtin.assert:
+        that:
+          - (_ring.files | map(attribute='path') | select('search', 'tar.zst.age$') | reject('search', 'manifest') | list | length) == 2
+          - (_ring.files | map(attribute='path') | select('search', 'manifest.json$') | list | length) == 2
+          - (_ring.files | map(attribute='path') | select('search', 'notes.txt$') | list | length) == 1
+          - (_ring.files | map(attribute='path') | select('search', 'ring4') | list | length) == 2
+          - (_ring.files | map(attribute='path') | select('search', 'ring1') | list | length) == 0
+        fail_msg: "ring contents: {{ _ring.files | map(attribute='path') | map('basename') | list }}"
+        quiet: true
+
+    # ------------------------------------------------------------------ 6. the mirror
+    - name: Files in the mirror's remote
+      ansible.builtin.command:
+        argv: [git, "--git-dir={{ w }}/remote.git", ls-tree, -r, --name-only, main]
+      register: _tree
+      changed_when: false
+
+    - name: The masked config snapshot
+      ansible.builtin.command:
+        argv: [git, "--git-dir={{ w }}/remote.git", show, "main:config/config.yaml.masked"]
+      register: _masked
+      changed_when: false
+
+    - name: HARD GATE — layer 2 is in git; the runtime layer and the raw config are not
+      ansible.builtin.assert:
+        that:
+          - "'SOUL.md' in _tree.stdout_lines"
+          - "'memories/MEMORY.md' in _tree.stdout_lines"
+          - "'skills/triage/SKILL.md' in _tree.stdout_lines"
+          - "'cron/jobs.json' in _tree.stdout_lines"
+          - "'config/config.yaml.masked' in _tree.stdout_lines"
+          - "'state.db' not in _tree.stdout_lines"
+          - "'oauth/token.json' not in _tree.stdout_lines"
+          - "'config.yaml' not in _tree.stdout_lines"
+          - "'***MASKED***' in _masked.stdout"
+          - "'placeholder-value' not in _masked.stdout"
+          - "'default: some-model' in _masked.stdout"
+        fail_msg: "tree: {{ _tree.stdout_lines }}"
+        quiet: true
+
+    # ------------------------------------------------------------------ 7. the blocking scan
+    - name: A root whose persona file carries a planted credential (built at run time, never in the repo)
+      ansible.builtin.file:
+        path: "{{ w }}/src_canary"
+        state: directory
+        mode: "0755"
+
+    - name: Canary files
+      ansible.builtin.copy:
+        dest: "{{ w }}/src_canary/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - { name: SOUL.md, content: "# persona\nplain\n" }
+        - { name: USER.md, content: "# user\nmy token is {{ 'ghp_' ~ ('A' * 36) }}\n" }
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Remote and work area for the canary run
+      ansible.builtin.command:
+        argv: [git, init, --bare, -b, main, "{{ w }}/remote2.git"]
+        creates: "{{ w }}/remote2.git/HEAD"
+
+    - name: The FIRST mirror attempt over a planted credential
+      block:
+        - name: Mirror
+          ansible.builtin.include_role:
+            name: config_agent_state
+            tasks_from: mirror
+          vars:
+            <<: *as_common
+            agent_state_product: example-agent
+            agent_state_root: "{{ w }}/src_canary"
+            agent_state_mirror_dir: "{{ w }}/mirror-work2"
+            agent_state_repo_url: "file://{{ w }}/remote2.git"
+            agent_state_mirror_paths: [SOUL.md, USER.md]
+            agent_state_config_file: ""
+            agent_state_deploy_key: "{{ lookup('ansible.builtin.file', w ~ '/keys/deploy') }}"
+        - name: Accepted
+          ansible.builtin.set_fact:
+            _accepted: true
+            _cause: ""
+      rescue:
+        - name: Refused
+          ansible.builtin.set_fact:
+            _accepted: false
+            _cause: "{{ ansible_failed_result.msg | default('') }}"
+
+    - name: What the blocked run left in the remote, the work clone and the metrics
+      ansible.builtin.command:
+        argv: "{{ item }}"
+      register: _blocked_probe
+      failed_when: false
+      changed_when: false
+      loop:
+        - [git, "--git-dir={{ w }}/remote2.git", rev-parse, --verify, main]
+        - [git, -C, "{{ w }}/mirror-work2", rev-parse, --verify, HEAD]
+        - [git, -C, "{{ w }}/mirror-work2", diff, --cached, --name-only]
+        - [cat, "{{ w }}/textfile/agent_state_example-agent_mirror.prom"]
+
+    - name: HARD GATE — blocked on the FIRST run - named by file and rule, value never printed, nothing staged, committed or pushed
+      ansible.builtin.assert:
+        that:
+          - not (_accepted | bool)
+          - "'BLOCKED by the secret/PII scan' in _cause"
+          - "'USER.md' in _cause"
+          - "'github-token' in _cause"
+          - "('A' * 36) not in _cause"
+          - _blocked_probe.results[0].rc != 0
+          - _blocked_probe.results[1].rc != 0
+          - _blocked_probe.results[2].stdout == ''
+          - "'agent_state_mirror_scan_blocked{product=\"example-agent\"} 1' in _blocked_probe.results[3].stdout"
+          - ('A' * 36) not in _blocked_probe.results[3].stdout
+        fail_msg: "accepted={{ _accepted }} cause={{ _cause }} probes={{ _blocked_probe.results | map(attribute='rc') | list }}"
+        quiet: true
+
+    - name: Remove the credential
+      ansible.builtin.copy:
+        dest: "{{ w }}/src_canary/USER.md"
+        content: "# user\nprefers short answers\n"
+        mode: "0644"
+
+    - name: Mirror again - the same code now commits and pushes
+      ansible.builtin.include_role:
+        name: config_agent_state
+        tasks_from: mirror
+      vars:
+        <<: *as_common
+        agent_state_product: example-agent
+        agent_state_root: "{{ w }}/src_canary"
+        agent_state_mirror_dir: "{{ w }}/mirror-work2"
+        agent_state_repo_url: "file://{{ w }}/remote2.git"
+        agent_state_mirror_paths: [SOUL.md, USER.md]
+        agent_state_config_file: ""
+        agent_state_deploy_key: "{{ lookup('ansible.builtin.file', w ~ '/keys/deploy') }}"
+
+    - name: The remote after the clean run
+      ansible.builtin.command:
+        argv: [git, "--git-dir={{ w }}/remote2.git", ls-tree, -r, --name-only, main]
+      register: _tree2
+      changed_when: false
+
+    - name: Metrics after the clean run
+      ansible.builtin.command:
+        argv: [cat, "{{ w }}/textfile/agent_state_example-agent_mirror.prom"]
+      register: _prom2
+      changed_when: false
+
+    - name: HARD GATE — clean content went through and the blocked gauge cleared
+      ansible.builtin.assert:
+        that:
+          - "'USER.md' in _tree2.stdout_lines"
+          - "'agent_state_mirror_scan_blocked{product=\"example-agent\"} 0' in _prom2.stdout"
+          - "'agent_state_mirror_last_success_timestamp_seconds{product=\"example-agent\"}' in _prom2.stdout"
+        quiet: true
+
+    - name: Plant the credential again (a LATER blocked run, after a success)
+      ansible.builtin.copy:
+        dest: "{{ w }}/src_canary/USER.md"
+        content: "# user\nmy token is {{ 'ghp_' ~ ('B' * 36) }}\n"
+        mode: "0644"
+
+    - name: The mirror is blocked again
+      block:
+        - name: Mirror
+          ansible.builtin.include_role:
+            name: config_agent_state
+            tasks_from: mirror
+          vars:
+            <<: *as_common
+            agent_state_product: example-agent
+            agent_state_root: "{{ w }}/src_canary"
+            agent_state_mirror_dir: "{{ w }}/mirror-work2"
+            agent_state_repo_url: "file://{{ w }}/remote2.git"
+            agent_state_mirror_paths: [SOUL.md, USER.md]
+            agent_state_config_file: ""
+            agent_state_deploy_key: "{{ lookup('ansible.builtin.file', w ~ '/keys/deploy') }}"
+        - name: Accepted
+          ansible.builtin.set_fact:
+            _accepted: true
+      rescue:
+        - name: Refused
+          ansible.builtin.set_fact:
+            _accepted: false
+
+    - name: Metrics after the second block
+      ansible.builtin.command:
+        argv: [cat, "{{ w }}/textfile/agent_state_example-agent_mirror.prom"]
+      register: _prom3
+      changed_when: false
+
+    - name: HARD GATE — a blocked run keeps the last-success line (a staleness rule can still see it) and sets blocked=1
+      ansible.builtin.assert:
+        that:
+          - not (_accepted | bool)
+          - "'agent_state_mirror_scan_blocked{product=\"example-agent\"} 1' in _prom3.stdout"
+          - "'agent_state_mirror_last_success_timestamp_seconds{product=\"example-agent\"}' in _prom3.stdout"
+          - ('B' * 36) not in _prom3.stdout
+        fail_msg: "accepted={{ _accepted }} prom={{ _prom3.stdout_lines }}"
+        quiet: true
+
+    - name: Restore the clean persona so later steps are unaffected
+      ansible.builtin.copy:
+        dest: "{{ w }}/src_canary/USER.md"
+        content: "# user\nprefers short answers\n"
+        mode: "0644"
+
+    # ------------------------------------------------------------------ 7b. bundled skills stay out
+    # The image's bundled skills carry sample addresses and `api_key=` lines, so the scan would
+    # block on files the vendor ships and the user never wrote. The manifest of bundled names is the discriminator.
+    - name: Skill directories
+      ansible.builtin.file:
+        path: "{{ w }}/src_canary/{{ item }}"
+        state: directory
+        mode: "0755"
+      loop: [skills/cat/bundled-x, skills/cat/mine]
+
+    - name: A bundled skill (with an address in it), an agent-learned skill, and the manifest
+      ansible.builtin.copy:
+        dest: "{{ w }}/src_canary/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - { name: "skills/cat/bundled-x/SKILL.md", content: "# bundled\nwrite to someone@example.com\n" }
+        - { name: "skills/cat/mine/SKILL.md", content: "# mine\nplain\n" }
+        - { name: "skills/.bundled_manifest", content: "bundled-x:0123abcd\n" }
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Mirror with the manifest named
+      ansible.builtin.include_role:
+        name: config_agent_state
+        tasks_from: mirror
+      vars:
+        <<: *as_common
+        agent_state_product: example-agent
+        agent_state_root: "{{ w }}/src_canary"
+        agent_state_mirror_dir: "{{ w }}/mirror-work2"
+        agent_state_repo_url: "file://{{ w }}/remote2.git"
+        agent_state_mirror_paths: [SOUL.md, USER.md, skills]
+        agent_state_mirror_skip_names_file: skills/.bundled_manifest
+        agent_state_config_file: ""
+        agent_state_deploy_key: "{{ lookup('ansible.builtin.file', w ~ '/keys/deploy') }}"
+
+    - name: The remote after the bundled-skill run
+      ansible.builtin.command:
+        argv: [git, "--git-dir={{ w }}/remote2.git", ls-tree, -r, --name-only, main]
+      register: _tree3
+      changed_when: false
+
+    - name: HARD GATE — the learned skill went through and the bundled one did not
+      ansible.builtin.assert:
+        that:
+          - "'skills/cat/mine/SKILL.md' in _tree3.stdout_lines"
+          - "'skills/cat/bundled-x/SKILL.md' not in _tree3.stdout_lines"
+        fail_msg: "tree={{ _tree3.stdout_lines }}"
+        quiet: true
+
+    - name: CONTROL - the same tree WITHOUT the manifest named is blocked (so the case above can fail)
+      block:
+        - name: Mirror without it
+          ansible.builtin.include_role:
+            name: config_agent_state
+            tasks_from: mirror
+          vars:
+            <<: *as_common
+            agent_state_product: example-agent
+            agent_state_root: "{{ w }}/src_canary"
+            agent_state_mirror_dir: "{{ w }}/mirror-work2"
+            agent_state_repo_url: "file://{{ w }}/remote2.git"
+            agent_state_mirror_paths: [SOUL.md, USER.md, skills]
+            agent_state_mirror_skip_names_file: ""
+            agent_state_config_file: ""
+            agent_state_deploy_key: "{{ lookup('ansible.builtin.file', w ~ '/keys/deploy') }}"
+        - name: Accepted
+          ansible.builtin.set_fact:
+            _accepted_ctl: true
+      rescue:
+        - name: Refused
+          ansible.builtin.set_fact:
+            _accepted_ctl: false
+
+    - name: HARD GATE — without the manifest the bundled skill's address blocks the mirror
+      ansible.builtin.assert:
+        that:
+          - not (_accepted_ctl | bool)
+        quiet: true
+
+    - name: Remove the bundled-skill fixtures so later steps are unaffected
+      ansible.builtin.file:
+        path: "{{ w }}/src_canary/skills"
+        state: absent
+
+    # ------------------------------------------------------------------ 8. install artifacts
+    - name: Stat the deploy key, its directory and a wrapper
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: _modes
+      loop:
+        - "{{ w }}/keys-host"
+        - "{{ w }}/keys-host/mirror_deploy_key"
+        - "{{ w }}/install/backup-nightly.sh"
+        - "{{ w }}/install/agent_state.py"
+
+    - name: HARD GATE — the key is unreadable to anyone else
+      ansible.builtin.assert:
+        that:
+          - _modes.results[0].stat.mode == '0700'
+          - _modes.results[1].stat.mode == '0600'
+          - _modes.results[2].stat.mode == '0750'
+          - _modes.results[3].stat.mode == '0755'
+        quiet: true
+
+    - name: The key body appears in no wrapper and no unit
+      # The second line of the PEM body is a long base64 run unique to this key.
+      ansible.builtin.command:
+        argv: [grep, -r, -l, -F, "{{ (lookup('ansible.builtin.file', w ~ '/keys/deploy')).splitlines()[1] }}", "{{ w }}/install", "{{ w }}/units"]
+      register: _keyleak
+      failed_when: _keyleak.rc != 1
+      changed_when: false
+      no_log: true
+
+    - name: A deploy key that is NOT a key is refused at install
+      block:
+        - name: Install with a garbage key
+          ansible.builtin.include_role:
+            name: config_agent_state
+          vars:
+            <<: *as_common
+            agent_state_key_dir: "{{ w }}/keys-host-bad"
+            agent_state_install_dir: "{{ w }}/install-bad"
+            agent_state_unit_dir: "{{ w }}/units-bad"
+            agent_state_backup_recipient: "{{ _pub.stdout | trim }}"
+            agent_state_deploy_key: "{{ '-----BEGIN ' ~ 'OPENSSH PRIVATE KEY-----' }}\nnot-a-key\n-----END OPENSSH PRIVATE KEY-----\n"
+        - name: Accepted
+          ansible.builtin.set_fact:
+            _accepted: true
+            _cause: ""
+      rescue:
+        - name: Refused
+          ansible.builtin.set_fact:
+            _accepted: false
+            _cause: "{{ ansible_failed_result.msg | default('') }}"
+
+    - name: HARD GATE — refused, naming the key, without printing it
+      ansible.builtin.assert:
+        that: [not (_accepted | bool), "'does not parse as an SSH private key' in _cause", "'not-a-key' not in _cause"]
+        fail_msg: "accepted={{ _accepted }} cause={{ _cause }}"
+        quiet: true
+
+    - name: The rendered timer and wrapper
+      ansible.builtin.slurp:
+        src: "{{ item }}"
+      register: _unit
+      loop:
+        - "{{ w }}/units/agent-state-backup.timer"
+        - "{{ w }}/units/agent-state-mirror.timer"
+        - "{{ w }}/units/agent-state-backup.service"
+        - "{{ w }}/install/backup-nightly.sh"
+
+    - name: HARD GATE — the schedule, the unit's target and the recipient the wrapper encrypts to
+      ansible.builtin.assert:
+        that:
+          - "'OnCalendar=*-*-* 02:00:00' in (_unit.results[0].content | b64decode)"
+          - "'OnCalendar=*-*-* 02:30:00' in (_unit.results[1].content | b64decode)"
+          - "('ExecStart=' ~ w ~ '/install/backup-nightly.sh') in (_unit.results[2].content | b64decode)"
+          - (_pub.stdout | trim) in (_unit.results[3].content | b64decode)
+        quiet: true
+
+    - name: Run the nightly wrapper itself (quoting, argv, metrics) with a label appended
+      ansible.builtin.command:
+        argv: ["{{ w }}/install/backup-nightly.sh", --label, wrapper]
+      register: _wrapper
+      changed_when: true
+
+    - name: Backup metric
+      ansible.builtin.command:
+        argv: [cat, "{{ w }}/textfile/agent_state_hermes_backup.prom"]
+      register: _bprom
+      changed_when: false
+
+    - name: HARD GATE — the wrapper produced a labelled archive and a timestamp metric
+      ansible.builtin.assert:
+        that:
+          - "'-wrapper.tar.zst.age' in _wrapper.stdout"
+          - "'agent_state_backup_last_success_timestamp_seconds{product=\"hermes\"}' in _bprom.stdout"
+        quiet: true
+
+    # ------------------------------------------------------------------ 9. the quiet-start overlay
+    - name: Declare what the overlay should carry (set_fact, because earlier role calls set_fact these
+        names and a task-level vars would be outranked by them)
+      ansible.builtin.set_fact:
+        agent_state_stack_service: hermes
+        agent_state_quiet_start_env: { PLATFORMS_ENABLED: "false", CRON_DISPATCH: "off" }
+
+    - name: Render the overlay from the role's own template
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../templates/quiet-start.overlay.yml.j2"
+        dest: "{{ w }}/overlay.yml"
+        mode: "0600"
+
+    - name: Slurp it
+      ansible.builtin.slurp:
+        src: "{{ w }}/overlay.yml"
+      register: _overlay
+
+    - name: HARD GATE — parsed, it sets exactly the declared variables on the named service
+      ansible.builtin.assert:
+        that:
+          - "(_overlay.content | b64decode | from_yaml).services.hermes.environment == {'PLATFORMS_ENABLED': 'false', 'CRON_DISPATCH': 'off'}"
+        quiet: true
+
+    - name: A restore that asks for quiet start but declares nothing to disable
+      block:
+        - name: Restore
+          ansible.builtin.include_role:
+            name: config_agent_state
+            tasks_from: restore
+          vars:
+            <<: *as_common
+            agent_state_restore_confirm: true
+            agent_state_restore_identity: "x"
+            agent_state_restore_from: "x"
+            agent_state_stack_managed: true
+            agent_state_stack_project_dir: /nonexistent
+            agent_state_stack_service: hermes
+            agent_state_health_url: "http://127.0.0.1:1/h"
+            agent_state_restore_quiet_start: true
+            agent_state_quiet_start_env: {}
+        - name: Accepted
+          ansible.builtin.set_fact:
+            _accepted: true
+            _cause: ""
+      rescue:
+        - name: Refused
+          ansible.builtin.set_fact:
+            _accepted: false
+            _cause: "{{ ansible_failed_result.msg | default('') }}"
+
+    - name: HARD GATE — an empty quiet-start env is refused up front, not read as nothing to disable
+      ansible.builtin.assert:
+        that: [not (_accepted | bool), "'empty quiet-start env' in _cause"]
+        fail_msg: "accepted={{ _accepted }} cause={{ _cause }}"
+        quiet: true
+
+    # ------------------------------------------------------------------ 10. the drill
+    - name: Render the drill project
+      ansible.builtin.include_role:
+        name: config_agent_state
+        tasks_from: _render_drill.yml
+      vars:
+        <<: *as_common
+        agent_state_drill_dir: "{{ w }}/drill_render"
+        agent_state_drill_image: "registry.invalid/agent@sha256:{{ '0' * 64 }}"
+        agent_state_drill_env: { HERMES_UID: "10000", HERMES_HOME: /opt/data }
+        agent_state_drill_scratch_secrets: [API_SERVER_KEY]
+        agent_state_drill_readback_key_env: API_SERVER_KEY
+        agent_state_drill_data_path: /opt/data
+
+    - name: Read the rendered drill artifacts
+      ansible.builtin.slurp:
+        src: "{{ w }}/drill_render/{{ item }}"
+      register: _drill_files
+      loop: [docker-compose.yml, drill.env]
+
+    - name: Their modes
+      ansible.builtin.stat:
+        path: "{{ w }}/drill_render/{{ item }}"
+      register: _drill_modes
+      loop: [docker-compose.yml, drill.env]
+
+    - name: HARD GATE — isolated by construction, as parsed structure and not as text
+      vars:
+        _c: "{{ _drill_files.results[0].content | b64decode | from_yaml }}"
+        _e: "{{ _drill_files.results[1].content | b64decode }}"
+      ansible.builtin.assert:
+        that:
+          - "'ports' not in _c.services.drill"
+          - _c.networks.drill.internal == true
+          - _c.services.drill.networks == ['drill']
+          - _c.services.drill.volumes == [w ~ '/drill_render/data:/opt/data:rw']
+          - _c.services.drill.restart == 'no'
+          - "'HERMES_UID=10000' in _e"
+          - "'mirror_deploy_key' not in (_drill_files.results[0].content | b64decode)"
+          - _drill_modes.results[1].stat.mode == '0600'
+          - _e is search('(?m)^API_SERVER_KEY=[A-Za-z0-9]{32}$')
+          - "'API_SERVER_KEY' not in (_drill_files.results[0].content | b64decode)"
+        quiet: true
+
+    - name: A drill env carrying a credential-shaped key
+      block:
+        - name: Drill
+          ansible.builtin.include_role:
+            name: config_agent_state
+            tasks_from: drill
+          vars:
+            <<: *as_common
+            agent_state_drill_confirm: true
+            agent_state_restore_identity: "{{ lookup('ansible.builtin.file', w ~ '/keys/age.txt') }}"
+            agent_state_drill_image: "registry.invalid/agent@sha256:{{ '0' * 64 }}"
+            agent_state_drill_port: 8642
+            agent_state_drill_dir: "{{ w }}/drill_bad"
+            agent_state_drill_env: { SLACK_BOT_TOKEN: "x" }
+        - name: Accepted
+          ansible.builtin.set_fact:
+            _accepted: true
+            _cause: ""
+      rescue:
+        - name: Refused
+          ansible.builtin.set_fact:
+            _accepted: false
+            _cause: "{{ (ansible_failed_result.results | default([]) | map(attribute='msg', default='') | join(' ')) ~ ' ' ~ (ansible_failed_result.msg | default('')) }}"
+
+    - name: Is the scratch directory gone
+      ansible.builtin.stat:
+        path: "{{ w }}/drill_bad"
+      register: _drill_bad
+
+    - name: HARD GATE — refused for carrying a credential, and cleaned up after itself
+      ansible.builtin.assert:
+        that: [not (_accepted | bool), "'looks like a credential' in _cause", not _drill_bad.stat.exists]
+        fail_msg: "accepted={{ _accepted }} cause={{ _cause }}"
+        quiet: true
+
+    - name: A drill with the WRONG identity
+      block:
+        - name: Drill
+          ansible.builtin.include_role:
+            name: config_agent_state
+            tasks_from: drill
+          vars:
+            <<: *as_common
+            agent_state_drill_confirm: true
+            agent_state_restore_identity: "{{ lookup('ansible.builtin.file', w ~ '/keys/wrong.txt') }}"
+            agent_state_drill_image: "registry.invalid/agent@sha256:{{ '0' * 64 }}"
+            agent_state_drill_port: 8642
+            agent_state_drill_dir: "{{ w }}/drill_wrong"
+            agent_state_drill_env: { HERMES_UID: "10000" }
+        - name: Accepted
+          ansible.builtin.set_fact:
+            _accepted: true
+            _cause: ""
+      rescue:
+        - name: Refused
+          ansible.builtin.set_fact:
+            _accepted: false
+            _cause: "{{ ansible_failed_result.stderr | default(ansible_failed_result.msg | default('')) }}"
+
+    - name: HARD GATE — a drill that cannot decrypt fails
+      ansible.builtin.assert:
+        that: [not (_accepted | bool), "'could not decrypt' in _cause"]
+        fail_msg: "accepted={{ _accepted }} cause={{ _cause }}"
+        quiet: true
+
+    - name: The drill end to end on the real archive (restore, validate, render, assert, tear down)
+      ansible.builtin.include_role:
+        name: config_agent_state
+        tasks_from: drill
+      vars:
+        <<: *as_common
+        agent_state_drill_confirm: true
+        agent_state_restore_identity: "{{ lookup('ansible.builtin.file', w ~ '/keys/age.txt') }}"
+        agent_state_drill_image: "registry.invalid/agent@sha256:{{ '0' * 64 }}"
+        agent_state_drill_port: 8642
+        agent_state_drill_dir: "{{ w }}/drill_ok"
+        agent_state_drill_env: { HERMES_UID: "10000" }
+
+    - name: Is the scratch directory gone
+      ansible.builtin.stat:
+        path: "{{ w }}/drill_ok"
+      register: _drill_ok
+
+    - name: HARD GATE — the drill tore itself down
+      ansible.builtin.assert:
+        that: [not _drill_ok.stat.exists]
+        quiet: true
+
+    # ------------------------------------------------------------------ 11. verify entrypoint
+    - name: verify passes on a fresh backup
+      ansible.builtin.include_role:
+        name: config_agent_state
+        tasks_from: verify
+      vars:
+        <<: *as_common
+
+    - name: verify against a share whose ciphertext was altered, and against a stale limit
+      ansible.builtin.include_tasks: _verify_fails.yml
+      loop:
+        - { name: ciphertext-mismatch, target: "{{ w }}/t_flipped-byte/share", max_age: 129600, expect: "ciphertext matches manifest" }
+        - { name: stale, target: "{{ w }}/share", max_age: 1, expect: "limit 1s" }
+        - { name: no-mirror-clone, target: "{{ w }}/share", max_age: 129600, mirror_dir: "{{ w }}/no-such-mirror", expect: "initialised=False" }
+      loop_control:
+        loop_var: vcase
+        label: "{{ vcase.name }}"

@@ -1,6 +1,15 @@
+config_agent_state
+config_hermes_learning
+config_hermes_profile
+config_mcp_servers
 jellyfin_transcode_config
 jellyfin_transcode_reaper
+service_code_reader
+service_coding_worker
+service_hermes
 service_hosting
+service_litellm
+service_model_explorer
 service_postgres
 slack_channels
 slack_message

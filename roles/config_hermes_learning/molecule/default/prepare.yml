@@ -1,0 +1,21 @@
+---
+- name: Prepare a fixture agent home
+  hosts: localhost
+  gather_facts: false
+  vars_files: [vars.yml]
+  tasks:
+    - name: Start clean
+      ansible.builtin.file: { path: "{{ _hl_root }}", state: absent }
+    - name: Agent home layout
+      ansible.builtin.file: { path: "{{ _hl_root }}/home/{{ item }}", state: directory, mode: "0755" }
+      loop: [memories, skills/deploy, pending/memory]
+    - name: One skill
+      ansible.builtin.copy: { dest: "{{ _hl_root }}/home/skills/deploy/SKILL.md", content: "---\nname: deploy\n---\n", mode: "0644" }
+    - name: One staged memory write, two days old
+      ansible.builtin.copy:
+        dest: "{{ _hl_root }}/home/pending/memory/abcd1234.json"
+        mode: "0644"
+        content: >-
+          {{ {'id': 'abcd1234', 'subsystem': 'memory', 'action': 'add', 'summary': 'fixture',
+              'origin': 'foreground', 'created_at': (lookup('pipe', 'date +%s') | int) - 172800,
+              'payload': {'action': 'add', 'target': 'memory', 'content': 'fixture fact'}} | to_json }}

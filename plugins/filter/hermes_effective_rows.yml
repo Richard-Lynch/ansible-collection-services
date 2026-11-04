@@ -1,0 +1,30 @@
+# Copyright: (c) 2026, Richard Lynch
+# GNU General Public License v3.0+ (see https://www.gnu.org/licenses/gpl-3.0.txt)
+---
+DOCUMENTATION:
+  name: hermes_effective_rows
+  short_description: Probe rows from an effective-config probe document
+  author: Richard Lynch (@Richard-Lynch)
+  description:
+    - Returns one C(tier-c:<key>) row per leaf and one C(skill:<name>) row per shared skill, each C(matches)
+      or C(drift).
+    - An unreadable probe, or one that returned no leaves or no skills, gives ONE C(cannot-tell) row for
+      that half, never zero rows (which a gate would read as a pass).
+  options:
+    _input:
+      description: The probe's parsed JSON output (C(leaves) and C(skills)).
+      type: raw
+      required: true
+    rc:
+      description: The probe's exit status; anything but 0 is cannot-tell.
+      type: raw
+EXAMPLES: |
+  - name: Rows from the probe
+    ansible.builtin.set_fact:
+      rows: "{{ probe_doc | richard_lynch.services.hermes_effective_rows(0) }}"
+    vars:
+      probe_doc: {leaves: [], skills: []}
+RETURN:
+  _value:
+    description: A list of mappings with C(check), C(verdict) and C(detail).
+    type: list

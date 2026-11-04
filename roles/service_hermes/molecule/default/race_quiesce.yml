@@ -1,0 +1,14 @@
+---
+# The fixture's quiesce, substituted for the role's docker one through hermes__merge_quiesce_file.
+# It does what `docker compose stop` does to the dashboard: the concurrent writer is told to stop
+# and the task returns only once it HAS (its --final file exists), then records the file as it is
+# at that moment. Anything the writer committed before that point is on disk when the merge
+# re-reads, which is the property the real quiesce exists to provide.
+- name: Stop it and wait for its final report
+  ansible.builtin.include_tasks: race_stop.yml
+
+- name: Record the config exactly as the merge is about to see it
+  ansible.builtin.slurp:
+    src: "{{ hermes_config_dir }}/data/config.yaml"
+  register: race_snapshot
+  no_log: true

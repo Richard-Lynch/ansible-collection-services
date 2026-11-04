@@ -1,0 +1,86 @@
+# Rendered by roles/service_hermes to {{ hermes_config_dir }}/data/config.yaml.
+# Do not edit on the host -- the next converge overwrites it.
+#
+# WHY THIS FILE IS MANAGED AT ALL: Hermes normally writes config.yaml itself, from its
+# INTERACTIVE setup wizard or the dashboard. Neither can be driven from a play, so the model
+# wiring would be hand-made state that a rebuild does not reproduce. The container's cont-init
+# hook only SEEDS a MISSING config.yaml, so a managed file is never clobbered.
+#
+# WHAT IS DELIBERATELY NOT HERE: anything the agent itself owns at run time -- sessions, skills,
+# memories, the profile registry. Those live elsewhere under /opt/data and are the agent's state,
+# not deployment configuration.
+
+{% if hermes_gateway_url | default('') | length > 0 %}
+# ---- the model gateway (LiteLLM, say) as an OpenAI-compatible provider ---------------------
+#
+# `api:` IS THE CORRECT KEY, not `base_url:`. Upstream's configuring-models.md documents
+# `providers.<name>.api` for the dict form; `base_url` belongs to the LEGACY top-level
+# `custom_providers:` LIST, which is auto-migrated. Using the wrong one here is silent -- the
+# entry parses and the endpoint is simply never used.
+#
+# There is also NO generic chat `OPENAI_BASE_URL` environment variable in this project (the only
+# OPENAI_BASE_URL in .env.example is `STT_OPENAI_BASE_URL`, for speech-to-text). So an env-var
+# approach to pointing Hermes at a gateway would be a silent no-op that looks configured.
+# Verified against the repo docs, not the landing page.
+providers:
+  {{ hermes_gateway_provider_name }}:
+    api: {{ hermes_gateway_url }}
+    # The key is NOT in this file. `key_env` names the environment variable Hermes reads it
+    # from, and the value lives only in app.env (0600 root). An inline `api_key:` is retired by the
+    # merge (hermes__retired_all) and read back absent after every converge.
+    key_env: {{ hermes_gateway_key_env }}
+{% if hermes_gateway_session_affinity_header | default('') | length > 0 %}
+    # Carries Hermes' conversation id upstream so the gateway can correlate an agent loop.
+    # Upstream documents this against LiteLLM BY NAME (`x-litellm-session-id`): without it a
+    # session-aware proxy "treat[s] nearly every request as a new conversation, re-sending the
+    # whole history upstream on each turn" -- which on an agent loop is a real token cost, not a
+    # cosmetic detail. Off unless set, because Hermes never sends a session id to an endpoint
+    # that did not ask for one.
+    session_affinity_header: {{ hermes_gateway_session_affinity_header }}
+{% endif %}
+{% if not (hermes_gateway_discover_models | bool) %}
+    # Use ONLY the ids declared below rather than querying the gateway's /models. Relevant here
+    # because the gateway's listing is not the full picture: `openrouter/*` routes but cannot
+    # enumerate on this build, so a model can work perfectly while being absent from /v1/models.
+    discover_models: false
+{% endif %}
+{% if hermes_gateway_models | default([]) | length > 0 %}
+    models:
+{% for _m in hermes_gateway_models %}
+      - {{ _m }}
+{% endfor %}
+{% endif %}
+
+{% endif %}
+# ---- the main model -----------------------------------------------------------------------
+model:
+{% if hermes_gateway_url | default('') | length > 0 %}
+  provider: {{ hermes_gateway_provider_name }}
+{% endif %}
+  default: {{ hermes_default_model }}
+  api_mode: chat_completions
+
+{% if hermes_tool_loop_hard_stop is defined %}
+# ---- guardrails ---------------------------------------------------------------------------
+# Unattended gateway and cron sessions enable tool-loop hard stops BY DEFAULT upstream. Left at
+# the default (true) deliberately: this agent runs unattended and spends real money per request,
+# so a runaway tool loop should stop rather than warn. Set false only with a reason.
+tool_loop_guardrails:
+  non_interactive_hard_stop_enabled: {{ hermes_tool_loop_hard_stop | bool | lower }}
+{% endif %}
+
+# ---- the Webapp (Hermes Desktop in a browser, served by the gateway) ----------------------
+# `enabled` is owned in BOTH states. Owning it only when true would leave a stale `true` in the
+# file after the option is turned off (the merge never removes a leaf it stops owning), so the
+# listener would stay up while the inventory said it was gone. `false` is upstream's default.
+# A wildcard host or a public_url engages the dashboard's sign-in (the basic-auth provider from
+# app.env); without one upstream keeps the Webapp off rather than serving it open.
+webapp:
+  enabled: {{ hermes_webapp_enabled | bool | lower }}
+{% if hermes_webapp_enabled | bool %}
+  host: 0.0.0.0
+  port: {{ hermes_webapp_host_port }}
+{% if hermes_webapp_public_url | length > 0 %}
+  public_url: {{ hermes_webapp_public_url }}
+{% endif %}
+{% endif %}

@@ -1,0 +1,121 @@
+---
+- name: Verify
+  hosts: localhost
+  gather_facts: false
+  vars_files: [vars.yml]
+  tasks:
+    - name: Read what was installed
+      ansible.builtin.slurp: { src: "{{ item }}" }
+      loop:
+        - "{{ _hl_root }}/etc/config.json"
+        - "{{ _hl_root }}/etc/probes.json"
+        - "{{ _hl_root }}/textfile/hermes_learning.prom"
+        - "{{ _hl_root }}/units/hermes-learning-probes.service"
+        - "{{ _hl_root }}/units/hermes-learning-consolidate.timer"
+      register: _r
+
+    - name: Decode
+      ansible.builtin.set_fact:
+        _cfg: "{{ _r.results[0].content | b64decode | from_json }}"
+        _probes: "{{ _r.results[1].content | b64decode | from_json }}"
+        _prom: "{{ _r.results[2].content | b64decode }}"
+        _svc: "{{ _r.results[3].content | b64decode }}"
+        _timer: "{{ _r.results[4].content | b64decode }}"
+
+    - name: The config names env vars and never carries a value, the probes are verbatim, the units run the script
+      ansible.builtin.assert:
+        that:
+          - _cfg.consolidate.key_env == 'EXAMPLE_GATEWAY_API_KEY'
+          - _cfg.ping.token_env == 'SLACK_BOT_TOKEN'
+          - _cfg.consolidate.max_loss == 0.25
+          - "'sk-' not in (_r.results[0].content | b64decode)"
+          - _probes | map(attribute='id') | list == ['p-arith', 'p-canary']
+          - "'hermes_learning.py --config ' ~ _hl_root ~ '/etc/config.json probes' in _svc"
+          - "'OnCalendar=Sun *-*-* 04:00:00' in _timer"
+
+    - name: The read-back's metrics count the fixture's staged write as pending and over 24 h old
+      ansible.builtin.assert:
+        that:
+          - _prom is search('(?m)^hermes_learning_read_ok 1$')
+          - _prom is search('(?m)^hermes_learning_pending[{]subsystem="memory"[}] 1$')
+          - (_prom | regex_findall('(?m)^hermes_learning_pending_oldest_age_seconds[{]subsystem="memory"[}] ([0-9.e+]+)$') | first | float) > 86400
+          - _prom is search('(?m)^hermes_learning_skills_total 1$')
+          - _prom is search('(?m)^hermes_learning_ping_configured 0$')
+
+    # The learning path is the AGENT'S tree, and the role runs as root: a link planted on it must
+    # stop the converge before any file task can follow it (tasks/main.yml HARD GATE), and nothing
+    # outside the tree may change. Near miss: the same converge over the real directory passes.
+    - name: Plant what the agent could plant - learning/ledger as a link to a directory outside
+      ansible.builtin.shell: |
+        set -eu
+        mkdir -p {{ _hl_root }}/outside
+        echo OUTSIDE > {{ _hl_root }}/outside/keep.txt
+        mv {{ _hl_root }}/home/learning/ledger {{ _hl_root }}/ledger.real
+        ln -s {{ _hl_root }}/outside {{ _hl_root }}/home/learning/ledger
+      changed_when: true
+
+    - name: Converge over the planted link
+      block:
+        - name: Re-run the role
+          ansible.builtin.include_role:
+            name: config_hermes_learning
+        - name: Must not get here
+          ansible.builtin.set_fact:
+            _hl_link_converged: true
+      rescue:
+        - name: Record the refusal
+          ansible.builtin.set_fact:
+            _hl_link_task: "{{ ansible_failed_task.name | default('') }}"
+            _hl_link_refusal: >-
+              {{ ansible_failed_result.results | default([]) | selectattr('failed', 'defined')
+                 | selectattr('failed') | map(attribute='msg') | join(' / ') }}
+
+    - name: Read what is outside the tree
+      ansible.builtin.find:
+        paths: "{{ _hl_root }}/outside"
+        hidden: true
+      register: _hl_outside
+
+    - name: The converge refused AT THE GATE, and wrote nothing outside the tree
+      ansible.builtin.assert:
+        that:
+          - not (_hl_link_converged | default(false))
+          - _hl_link_task is search('no link and no foreign owner on the learning path')
+          - _hl_link_refusal is search('/home/learning/ledger is a symlink, not a directory, or owned by')
+          - _hl_outside.files | map(attribute='path') | map('basename') | list == ['keep.txt']
+        fail_msg: "task={{ _hl_link_task | default('none') }} refusal={{ _hl_link_refusal | default('none') }} outside={{ _hl_outside.files | map(attribute='path') | list }}"
+
+    - name: Near miss - put the real directory back
+      ansible.builtin.shell: |
+        set -eu
+        rm {{ _hl_root }}/home/learning/ledger
+        mv {{ _hl_root }}/ledger.real {{ _hl_root }}/home/learning/ledger
+      changed_when: true
+
+    # The gate's own near miss is the converge and idempotence runs above: the same HARD GATE over
+    # the real directories passed twice. (A second include_role here would take the generated
+    # resolver's repeat-call branch and lose this scenario's paths.) What is left to show is that
+    # the host script writes into the restored real directory, as the agent's tree expects.
+    - name: Near miss - the hourly job writes the ledger copy into the real directory
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_playbook_python }}"
+          - "{{ _hl_root }}/lib/hermes_learning.py"
+          - --config
+          - "{{ _hl_root }}/etc/config.json"
+          - hourly
+      register: _hl_near
+      changed_when: false
+
+    - name: Read the ledger directory
+      ansible.builtin.find:
+        paths: "{{ _hl_root }}/home/learning/ledger"
+        patterns: "*.json"
+      register: _hl_ledger
+
+    - name: The near miss wrote its copy where it belongs
+      ansible.builtin.assert:
+        that:
+          - _hl_near.rc == 0
+          - _hl_ledger.matched >= 1
+        fail_msg: "rc={{ _hl_near.rc }} stdout={{ _hl_near.stdout | truncate(300) }}"

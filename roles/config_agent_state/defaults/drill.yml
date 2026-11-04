@@ -1,0 +1,70 @@
+---
+# AUTO-GENERATED defaults file — DO NOT EDIT.
+#
+# Source of truth: roles/config_agent_state/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate config_agent_state
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+# Entrypoint:      drill
+
+# Which agent product this state belongs to (the role is built for Hermes and keeps
+# every product-specific value an option). It names the archives and the metrics
+# label so a second product can share a backup share without colliding. Lowercase
+# letters, digits and hyphens.
+agent_state_product__default: hermes
+
+# Interpreter that runs agent_state.py. It must be 3.12 or newer (tarfile extraction
+# filters); the script refuses an older one rather than extracting unfiltered.
+agent_state_python__default: python3
+
+# Where the role installs agent_state.py on the host.
+agent_state_install_dir__default: /usr/local/lib/agent-state
+
+# Scratch directory the drill restores into. Removed afterwards.
+agent_state_drill_dir__default: /var/tmp/agent-state-drill
+
+# Scratch environment for the drill container. Any key that looks like a credential is
+# REFUSED: the drill must hold no Slack, mail or API tokens and no spendable key.
+agent_state_drill_env__default: {}
+
+# The container command the drill runs (the compose `command:`). Empty leaves the image's
+# own default, which for an agent image is usually an INTERACTIVE shell that exits at once
+# without a TTY (Hermes prints its banner and shuts down). Set it to what the real
+# stack runs (Hermes: gateway run).
+agent_state_drill_command__default: []
+
+# Environment names that receive a RANDOM value generated for this run only (never read
+# from a secret store, never stored). The drill container needs some credential to start its
+# API; it gets a throwaway nobody else holds. Names here are exempt from the
+# credential-name refusal that applies to agent_state_drill_env.
+agent_state_drill_scratch_secrets__default: []
+
+# Which scratch secret the drill's read-backs present as a bearer key (empty: none).
+agent_state_drill_readback_key_env__default: ''
+
+# Path inside the container where the state directory is mounted.
+agent_state_drill_data_path__default: /opt/data
+
+# Path on the drill container that answers 200 once the agent is up.
+agent_state_drill_health_path__default: /health
+
+# Archive to drill: a file name, or latest.
+agent_state_drill_archive__default: latest
+
+# Read-backs against the drill container (same shape as the restore's).
+agent_state_drill_readbacks__default: []
+
+# Paths that must exist in the restored tree or the restore is refused.
+agent_state_required_paths__default: []
+
+# Working clone the mirror commits in. Rebuildable; holds no state of its own.
+agent_state_mirror_dir__default: /var/lib/agent-state/mirror
+
+# Health polls, 5 s apart.
+agent_state_health_retries__default: 30
+
+# Stop and start the compose stack around the restore. False only where there is no
+# docker daemon (the molecule scenario).
+agent_state_stack_managed__default: true

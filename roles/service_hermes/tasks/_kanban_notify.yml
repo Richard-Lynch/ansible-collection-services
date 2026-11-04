@@ -1,0 +1,111 @@
+---
+# Kanban -> Slack card threads: one thread per card, every state change a
+# reply. A guest timer runs scripts/hermes_kanban_notify.py as root: it reads the board's
+# task_events from the host bind mount (sqlite mode=ro) and posts through Hermes's OWN Slack adapter
+# (`docker exec ... hermes send`), so the bot token never leaves the container. Why a poller and not
+# an upstream hook is in the script's docstring.
+#
+# The state file (cursor + card -> thread ts) is root-owned under /var/lib, OUTSIDE every tree the
+# agent can write, so a card's thread cannot be redirected from inside. It is never rewritten here:
+# a converge must not reset the cursor (that would replay or skip events).
+#
+# Included from main.yml when hermes_kanban_notify is non-empty.
+
+- name: HARD GATE - the notifier needs a channel and must not name a token
+  ansible.builtin.assert:
+    that:
+      - hermes_kanban_notify.default_channel | default('') is match('^[CG][A-Z0-9]{8,}$')
+      - (hermes_kanban_notify.channels | default({})).values() | reject('match', '^[CG][A-Z0-9]{8,}$') | list | length == 0
+      - (hermes_kanban_notify.events | default([])) | difference(_kn_events) | length == 0
+      - (hermes_kanban_notify.ping | default([])) | difference(_kn_events) | length == 0
+      - hermes_kanban_notify.keys() | select('search', '(?i)token|secret|password') | list | length == 0
+    fail_msg: >-
+      hermes_kanban_notify needs default_channel (and any channels values) as Slack channel ids,
+      events/ping drawn from {{ _kn_events }}, and no credential key: delivery uses the container's
+      own bot token through `hermes send`.
+    quiet: true
+  vars:
+    _kn_events: [created, started, blocked, needs_input, pr, review, done, terminated, unblocked, moved, archived]
+
+- name: Ensure the notifier's directories exist
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - {path: /usr/local/lib/hermes-kanban-notify, mode: "0755"}
+    - {path: /etc/hermes-kanban-notify, mode: "0755"}
+    - {path: /var/lib/hermes-kanban-notify, mode: "0700"}
+
+- name: Install the notifier
+  ansible.builtin.copy:
+    dest: /usr/local/lib/hermes-kanban-notify/hermes_kanban_notify.py
+    mode: "0755"
+    content: "{{ lookup('ansible.builtin.file', role_path ~ '/scripts/hermes_kanban_notify.py', rstrip=False) }}"
+
+# No credential in here: channels, profile names, URL templates and the Slack user id to mention.
+- name: Render the notifier's configuration
+  ansible.builtin.copy:
+    dest: /etc/hermes-kanban-notify/config.json
+    mode: "0644"
+    content: "{{ _kn_cfg | to_nice_json(sort_keys=true) }}\n"
+  vars:
+    _kn_cfg:
+      board_db: "{{ hermes_config_dir }}/data/kanban.db"
+      container: "{{ hermes_container_name }}"
+      uid: "{{ hermes_uid }}"
+      default_channel: "{{ hermes_kanban_notify.default_channel }}"
+      channels: "{{ hermes_kanban_notify.channels | default({}) }}"
+      assignees: "{{ hermes_kanban_notify.assignees | default([]) }}"
+      events: "{{ hermes_kanban_notify.events | default([]) }}"
+      ping: "{{ hermes_kanban_notify.ping | default([]) }}"
+      owner_user_id: "{{ hermes_kanban_notify.owner_user_id | default('') }}"
+      console_url_template: "{{ hermes_kanban_notify.console_url_template | default('') }}"
+      attach_url_template: "{{ hermes_kanban_notify.attach_url_template | default('') }}"
+
+- name: Render the notifier service and timer
+  ansible.builtin.template:
+    src: "hermes-kanban-notify.{{ item }}.j2"
+    dest: "/etc/systemd/system/hermes-kanban-notify.{{ item }}"
+    mode: "0644"
+  loop: [service, timer]
+  register: hermes__kn_units
+
+- name: Enable the notifier timer
+  ansible.builtin.systemd_service:
+    name: hermes-kanban-notify.timer
+    enabled: true
+    state: started
+    daemon_reload: "{{ hermes__kn_units.changed }}"
+
+# Read back: run one tick now and require it to SUCCEED (a first run records the cursor and posts
+# nothing), and require the state file it writes. "Installed" is proven to be "running against the
+# real board", not assumed from the unit files existing.
+- name: Run one tick (read-back)
+  ansible.builtin.command:
+    argv: [systemctl, start, hermes-kanban-notify.service]
+  changed_when: false
+
+- name: Read the notifier's result and state
+  ansible.builtin.command:
+    argv: [systemctl, show, hermes-kanban-notify.service, --property=Result]
+  register: hermes__kn_result
+  changed_when: false
+
+- name: Read the state file
+  ansible.builtin.slurp:
+    src: /var/lib/hermes-kanban-notify/state.json
+  register: hermes__kn_state
+
+- name: HARD GATE - the tick succeeded and recorded a cursor
+  ansible.builtin.assert:
+    that:
+      - hermes__kn_result.stdout | trim == 'Result=success'
+      - (hermes__kn_state.content | b64decode | from_json).cursor is number
+    fail_msg: >-
+      hermes-kanban-notify did not complete a tick ({{ hermes__kn_result.stdout | trim }}); read
+      `journalctl -u hermes-kanban-notify.service`. A notifier that cannot read the board or post
+      would otherwise sit silent.
+    quiet: true

@@ -1,0 +1,12 @@
+---
+# The default card image's tag is the hash of its rendered Dockerfile, so "is the image current" is
+# "does a tag with this name exist": no timestamp, no `latest`, and a changed base image or package
+# list can never be silently served by an old build. In its own file so the molecule scenario
+# derives the tag with the role's REAL expression (MOLMIRROR-02).
+- name: Render the default card image's Dockerfile in memory
+  ansible.builtin.set_fact:
+    worker_card_dockerfile: "{{ lookup('ansible.builtin.template', 'card-image.Dockerfile.j2') }}"
+
+- name: Name the image after the Dockerfile's hash
+  ansible.builtin.set_fact:
+    worker_card_image: "{{ worker_card_image_name }}:{{ (worker_card_dockerfile | hash('sha256'))[:12] }}"

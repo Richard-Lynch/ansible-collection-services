@@ -1,0 +1,40 @@
+---
+# One authenticated GET of the gateway's models list, asserted on its BODY. `_hp_phase` is before or
+# after. Parsed from `content`, never `.json`: uri fills `.json` only for a JSON content-type, and an
+# unparsed reply must read as a failure rather than as "no models".
+#
+# `_hp_retries` (default 1) is raised by main.yml after a cold restart, when the API needs a moment
+# to come up. failed_when: false + until is deliberate: the ASSERT below is the gate, with the
+# message that names the cause; a retry loop that failed on its own would hide it, and an
+# exhausted `until:` under failed_when: false would continue green without this explicit assert.
+- name: "Read the models list ({{ _hp_phase }})"
+  ansible.builtin.uri:
+    url: "{{ hermes_profile_models_url }}"
+    headers:
+      Authorization: "Bearer {{ hermes_profile_api_key }}"
+    return_content: true
+    status_code: [200, 401, 403, 404, 500, 502, 503]
+    timeout: 15
+  register: _hp_models
+  until: (_hp_models.status | default(0)) == 200
+  retries: "{{ _hp_retries | default(1) | int }}"
+  delay: 5
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: "ASSERT — the API served a models list ({{ _hp_phase }})"
+  vars:
+    _hp_body: "{{ _hp_models.content | default('') }}"
+  ansible.builtin.assert:
+    that:
+      - _hp_models.status | default(0) == 200
+      - (_hp_body | length) > 2
+      - (_hp_body | from_json).data is defined
+      - (_hp_body | from_json).data | length > 0
+    fail_msg: >-
+      {{ 'The gateway API was not serving a models list BEFORE any change (HTTP ' ~ (_hp_models.status | default('none')) ~ '); refusing to create a profile, so a break could not be attributed to it.'
+         if _hp_phase == 'before' else
+         'The gateway API STOPPED serving a models list after the profile was created (HTTP ' ~ (_hp_models.status | default('none')) ~ '). With a named profile present, an API_SERVER_KEY supplied only through the compose env_file is invisible to the gateway (an upstream behaviour). The fix is the key in the DEFAULT profile .env; see the role README. Do not leave the gateway in this state.' }}
+    quiet: true

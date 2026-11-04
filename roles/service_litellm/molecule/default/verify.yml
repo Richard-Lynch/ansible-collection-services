@@ -1,0 +1,455 @@
+---
+# Verify the rendered artifacts. Do not stop at
+# substring matching — also from_yaml-PARSE the result and cross-check it structurally, because
+# a mis-indented Jinja guard produces text that passes every substring assert while being
+# invalid or misplaced YAML.
+- name: Verify the rendered litellm stack
+  hosts: localhost
+  gather_facts: false
+  vars:
+    render_root: /tmp/molecule-litellm
+  tasks:
+    - name: Slurp every rendered artifact
+      ansible.builtin.slurp:
+        src: "{{ render_root }}/{{ item }}"
+      loop:
+        - full/docker-compose.yml
+        - full/config.yaml
+        - full/app.env
+        - minimal/docker-compose.yml
+        - minimal/config.yaml
+        - minimal/app.env
+        - full/postgres.env
+        - full/open-webui.env
+        - full/redis.env
+        - full/redis.conf
+      register: _slurped
+
+    - name: Decode them
+      ansible.builtin.set_fact:
+        full_compose: "{{ _slurped.results[0].content | b64decode }}"
+        full_config: "{{ _slurped.results[1].content | b64decode }}"
+        full_env: "{{ _slurped.results[2].content | b64decode }}"
+        min_compose: "{{ _slurped.results[3].content | b64decode }}"
+        min_config: "{{ _slurped.results[4].content | b64decode }}"
+        min_env: "{{ _slurped.results[5].content | b64decode }}"
+        full_pg_env: "{{ _slurped.results[6].content | b64decode }}"
+        full_webui_env: "{{ _slurped.results[7].content | b64decode }}"
+        full_redis_env: "{{ _slurped.results[8].content | b64decode }}"
+        full_redis_conf: "{{ _slurped.results[9].content | b64decode }}"
+
+    # ---- structural: everything must PARSE ---------------------------------------------
+    - name: Every rendered YAML must be parseable
+      ansible.builtin.assert:
+        that:
+          - full_compose | from_yaml is mapping
+          - min_compose | from_yaml is mapping
+          - full_config | from_yaml is mapping
+          - min_config | from_yaml is mapping
+        fail_msg: >-
+          A rendered file is not valid YAML. This is what a mis-indented conditional produces,
+          and every substring assert below would still pass.
+
+    # ---- images are pinned -------------------------------------------------------------
+    - name: Images must be pinned, never a floating tag
+      ansible.builtin.assert:
+        that:
+          - "':latest' not in full_compose"
+          - "':main' not in full_compose"
+          - "'main-stable' not in full_compose"
+          - "'ghcr.io/berriai/litellm:v1.104.2' in full_compose"
+          - "'postgres:16.4-alpine' in full_compose"
+          - "'ghcr.io/open-webui/open-webui:v0.11.4' in full_compose"
+        fail_msg: >-
+          A container image is unpinned or wrong. An unpinned LLM gateway silently changes
+          behaviour under you on the next pull.
+
+    # ---- the three services, the network, the port maps --------------------------------
+    - name: The compose project must declare all three services on the external network
+      ansible.builtin.assert:
+        that:
+          - (full_compose | from_yaml).services.keys() | sort
+            == ['litellm', 'litellm-postgres', 'litellm-redis', 'open-webui']
+          - (full_compose | from_yaml).networks['gateway-net'].external | bool
+          - "'4000:4000' in full_compose"
+          - "'127.0.0.1:8089:8080' in (full_compose | from_yaml).services['open-webui'].ports"
+          - "'8089:8080' in (min_compose | from_yaml).services['open-webui'].ports"
+        fail_msg: >-
+          The stack does not declare exactly litellm + litellm-postgres + litellm-redis +
+          open-webui on an external gateway-net network with both host ports mapped.
+
+    # ---- the ordering guard that stops litellm racing its DB ---------------------------
+    - name: LiteLLM must wait for a HEALTHY postgres, not merely a started one
+      ansible.builtin.assert:
+        that:
+          - >-
+            (full_compose | from_yaml).services.litellm.depends_on['litellm-postgres'].condition
+            == 'service_healthy'
+          - "'pg_isready' in full_compose"
+        fail_msg: >-
+          litellm must depend on postgres with condition service_healthy and postgres must
+          declare a pg_isready healthcheck. Without both, litellm races the DB on a cold boot.
+
+    # ---- redis: the shared state that makes budgets mean what they say -----------------
+    - name: Redis must be authenticated, durable, and depended on as HEALTHY
+      ansible.builtin.assert:
+        that:
+          # litellm must wait for redis, not merely start beside it: a worker that boots without
+          # its shared store falls back to per-worker state, which is the exact defect redis is
+          # here to prevent, and nothing would report it.
+          - >-
+            (full_compose | from_yaml).services.litellm.depends_on['litellm-redis'].condition
+            == 'service_healthy'
+          # The password is in redis.conf (0600), never on redis-server's or redis-cli's argv.
+          - "'requirepass \"molecule-redis-password\"' in full_redis_conf"
+          - (full_compose | from_yaml).services['litellm-redis'].command == ['redis-server', '/usr/local/etc/redis/redis.conf']
+          - "'--requirepass' not in full_compose and ' -a ' not in full_compose"
+          - "'REDISCLI_AUTH=molecule-redis-password' in full_redis_env"
+          # appendonly: a restart must not silently reset every budget counter to zero.
+          - "'appendonly yes' in full_redis_conf"
+          # noeviction: evicting a spend counter to free memory would silently stop enforcing a
+          # budget — the same failure as having no redis, but harder to notice.
+          - "'maxmemory-policy noeviction' in full_redis_conf"
+          # The proxy finds redis through REDIS_* env vars, NOT a config.yaml cache block.
+          - "'REDIS_HOST=litellm-redis' in full_env"
+          - "'REDIS_PASSWORD=molecule-redis-password' in full_env"
+          - "'redis' not in full_config"
+        fail_msg: >-
+          The redis wiring is wrong. Without an authenticated, durable, depended-on redis each
+          proxy worker keeps its own rate limits and budgets, so spend overshoots by roughly the
+          worker count.
+
+    # ---- no credential in the compose file: deployment_config writes it 0640 -------------
+    - name: The compose file names each service's credential env file and carries no credential value
+      vars:
+        _svc: "{{ (full_compose | from_yaml).services }}"
+      ansible.builtin.assert:
+        that:
+          - _svc['litellm-postgres'].env_file == ['/tmp/molecule-litellm/full/postgres.env']
+          - _svc['open-webui'].env_file == ['/tmp/molecule-litellm/full/open-webui.env']
+          - _svc['litellm-redis'].env_file == ['/tmp/molecule-litellm/full/redis.env']
+          - "'POSTGRES_PASSWORD' not in _svc['litellm-postgres'].environment"
+          - "'OPENAI_API_KEY' not in _svc['open-webui'].environment"
+          - "'WEBUI_SECRET_KEY' not in _svc['open-webui'].environment"
+          - "'POSTGRES_PASSWORD=molecule-pg-password' in full_pg_env"
+          - "'OPENAI_API_KEY=sk-molecule-master-key-placeholder' in full_webui_env"
+          - "'WEBUI_SECRET_KEY=molecule-webui-secret' in full_webui_env"
+          # every credential placeholder, in both variants' compose files
+          - "'molecule-pg-password' not in full_compose and 'molecule-pg-password' not in min_compose"
+          - "'molecule-redis-password' not in full_compose and 'molecule-redis-password' not in min_compose"
+          - "'sk-molecule-master-key-placeholder' not in full_compose and 'sk-molecule-master-key-placeholder' not in min_compose"
+          - "'molecule-webui-secret' not in full_compose and 'molecule-webui-secret' not in min_compose"
+        fail_msg: >-
+          A credential is rendered into docker-compose.yml (0640) or missing from its 0600 env file.
+
+    # ---- the pairing: Open WebUI actually points AT litellm ----------------------------
+    - name: Open WebUI must be wired to the gateway over the compose network
+      ansible.builtin.assert:
+        that:
+          - >-
+            (full_compose | from_yaml).services['open-webui'].environment.OPENAI_API_BASE_URL
+            == 'http://litellm:4000/v1'
+          - >-
+            (full_compose | from_yaml).services['open-webui'].environment.ENABLE_SIGNUP
+            == 'false'
+          # ENABLE_SIGNUP is computed as `False if not WEBUI_AUTH else getenv(...)`, so with auth
+          # off the signup setting above is inert AND the UI needs no login. Asserting it keeps
+          # the disable from being silently defeated by a change to the other variable.
+          - >-
+            (full_compose | from_yaml).services['open-webui'].environment.WEBUI_AUTH
+            == 'true'
+          # The display name comes from litellm_open_webui_name, never a hardcoded brand.
+          - >-
+            (full_compose | from_yaml).services['open-webui'].environment.WEBUI_NAME
+            == 'Example LLM'
+        fail_msg: >-
+          Open WebUI is not pointed at the litellm service by name, or auth/signup are wrong.
+          Without the first, the UI shows no models; without the others, a LAN-reachable UI
+          accepts new accounts or requires no login at all.
+
+    # ---- NEVER poll the billed health endpoint -----------------------------------------
+    - name: The healthcheck must use the unprotected liveness probe, never /health
+      ansible.builtin.assert:
+        that:
+          - "'/health/liveliness' in full_compose"
+          - "\"urlopen('http://localhost:4000/health')\" not in full_compose"
+        fail_msg: >-
+          The compose healthcheck must hit /health/liveliness. /health requires auth AND issues
+          a real billed API call to every configured model per hit — polling it costs money.
+
+    # ---- provider conditionals, proven in BOTH directions ------------------------------
+    - name: FULL variant must advertise every configured provider
+      ansible.builtin.assert:
+        that:
+          - (full_config | from_yaml).model_list | map(attribute='model_name') | sort
+            == ['anthropic/*', 'elevenlabs/*', 'gemini/*', 'gw-cheap', 'gw-default',
+                'gw-fallback', 'llama3.1:8b', 'openai/*', 'openrouter/*', 'qwen2.5:14b']
+        fail_msg: >-
+          With every upstream configured the model_list must carry all of them, INCLUDING the
+          elevenlabs wildcard — ElevenLabs is a native provider on this build, so TTS routes
+          through model_list rather than through a block of its own. Got:
+          {{ (full_config | from_yaml).model_list | map(attribute='model_name') | list }}
+
+    - name: "Aliases use their own provider key and fall back across providers"
+      vars:
+        _ml: "{{ (full_config | from_yaml).model_list }}"
+        _def: "{{ _ml | selectattr('model_name', 'equalto', 'gw-default') | first }}"
+        _fb: "{{ _ml | selectattr('model_name', 'equalto', 'gw-fallback') | first }}"
+        _fbs: "{{ (full_config | from_yaml).router_settings.fallbacks }}"
+      ansible.builtin.assert:
+        that:
+          - _def.litellm_params.model == 'anthropic/example-model-large'
+          - _def.litellm_params.api_key == 'os.environ/ANTHROPIC_API_KEY'
+          - _fb.litellm_params.api_key == 'os.environ/OPENAI_API_KEY'
+          - "_fbs == [{'gw-default': ['gw-fallback']}]"
+        quiet: true
+
+    - name: "With no aliases declared, MINIMAL renders no alias entry and no fallbacks key"
+      ansible.builtin.assert:
+        that:
+          - "'gw-' not in min_config"
+          - "'fallbacks' not in min_config"
+        quiet: true
+
+    - name: MINIMAL variant must OMIT every unconfigured provider
+      ansible.builtin.assert:
+        that:
+          - (min_config | from_yaml).model_list | map(attribute='model_name') | list
+            == ['anthropic/*']
+          - "'openai/*' not in min_config"
+          - "'openrouter/*' not in min_config"
+          - "'gemini/*' not in min_config"
+          - "'ollama/' not in min_config"
+          - "'elevenlabs' not in min_config"
+        fail_msg: >-
+          A provider with no key must be omitted entirely, not rendered with an empty api_key —
+          that loads fine and only fails at request time. Got:
+          {{ (min_config | from_yaml).model_list | map(attribute='model_name') | list }}
+
+    - name: No model_list entry may carry an empty api_key
+      ansible.builtin.assert:
+        that:
+          - >-
+            (full_config | from_yaml).model_list
+            | map(attribute='litellm_params')
+            | selectattr('api_key', 'defined')
+            | selectattr('api_key', 'equalto', '')
+            | list | length == 0
+        fail_msg: An entry rendered with an empty api_key — the silent-misconfiguration shape.
+
+    # ---- secrets go to env, never into the config file ---------------------------------
+    - name: Credentials must be referenced from the environment, never inlined in config.yaml
+      ansible.builtin.assert:
+        that:
+          - "'os.environ/LITELLM_MASTER_KEY' in full_config"
+          - "'os.environ/ANTHROPIC_API_KEY' in full_config"
+          - "'os.environ/DATABASE_URL' in full_config"
+          - "'sk-ant-molecule-placeholder' not in full_config"
+          - "'sk-molecule-master-key-placeholder' not in full_config"
+          - "'molecule-pg-password' not in full_config"
+        fail_msg: >-
+          config.yaml must reference credentials as os.environ/NAME only. A literal value here
+          would be readable on the host (config lands 0640) and quotable in a log.
+
+    - name: app.env must carry the real values, and only for configured providers
+      ansible.builtin.assert:
+        that:
+          - "'LITELLM_MASTER_KEY=sk-molecule-master-key-placeholder' in full_env"
+          - "'LITELLM_SALT_KEY=sk-molecule-salt-key-placeholder' in full_env"
+          - "'ANTHROPIC_API_KEY=sk-ant-molecule-placeholder' in full_env"
+          - "'OPENAI_API_KEY=sk-proj-molecule-placeholder' in full_env"
+          # The URL is assembled here rather than written out, so no user:password@host literal
+          # sits in the repository for a secret scanner to flag.
+          - >-
+            ('DATABASE_URL=postgresql://litellm' ~ ':' ~ 'molecule-pg-password'
+             ~ '@litellm-postgres:5432/litellm') in full_env
+          # TypeSafe (Jev) is a PASS-THROUGH upstream: its key belongs in app.env but it must
+          # NOT appear in config.yaml's model_list, because Jev serves typed decisions from its
+          # own endpoint rather than chat completions.
+          - "'TYPESAFE_API_KEY=apikey_molecule-typesafe-placeholder' in full_env"
+          - "'typesafe' not in full_config"
+          # the minimal variant must not export an empty-valued provider line
+          - "'ANTHROPIC_API_KEY=' in min_env"
+          - "'OPENAI_API_KEY=' not in min_env"
+          - "'GEMINI_API_KEY=' not in min_env"
+          - "'OPENROUTER_API_KEY=openrouter-molecule-placeholder' in full_env"
+          - "'OPENROUTER_API_KEY=' not in min_env"
+          - "'TYPESAFE_API_KEY=' not in min_env"
+          # ElevenLabs and Brave: the key goes to app.env under the EXACT name litellm's own
+          # transformation reads (ELEVENLABS_API_KEY / BRAVE_API_KEY, both taken from the
+          # v1.104.2 source), and neither value may appear in config.yaml.
+          - "'ELEVENLABS_API_KEY=sk_molecule-elevenlabs-placeholder' in full_env"
+          - "'ELEVENLABS_API_KEY=' not in min_env"
+          - "'BRAVE_API_KEY=BSA-molecule-brave-placeholder' in full_env"
+          - "'BRAVE_API_KEY=' not in min_env"
+        fail_msg: >-
+          app.env must export exactly the configured providers. An exported-but-empty variable
+          reads to LiteLLM as a configured provider that cannot authenticate.
+
+    # ---- the two capabilities that are NOT model_list entries --------------------------
+    # Both are separate top-level blocks, and both fail the same silent way: a block whose shape
+    # is wrong is accepted and ignored rather than rejected, so the assertions check the PARSED
+    # structure (not a substring) and check the absent direction too.
+    - name: FULL variant must carry a correctly-shaped Brave search tool
+      ansible.builtin.assert:
+        that:
+          - (full_config | from_yaml).search_tools | length == 1
+          - (full_config | from_yaml).search_tools[0].search_tool_name == 'brave-search'
+          - >-
+            (full_config | from_yaml).search_tools[0].litellm_params.search_provider
+            == 'brave'
+          # os.environ reference, never the literal key — same rule as every model entry.
+          - >-
+            (full_config | from_yaml).search_tools[0].litellm_params.api_key
+            == 'os.environ/BRAVE_API_KEY'
+          # And it must NOT have been rendered as a model: `brave` is not an LLM provider on
+          # this build, and a model_list entry for it would never route.
+          - >-
+            (full_config | from_yaml).model_list
+            | map(attribute='model_name') | select('search', 'brave') | list | length == 0
+        fail_msg: >-
+          The Brave search tool must render as a top-level search_tools entry with
+          search_provider: brave and an os.environ api_key reference. Got:
+          {{ (full_config | from_yaml).search_tools | default('ABSENT') }}
+
+    - name: MINIMAL variant must omit search_tools ENTIRELY
+      ansible.builtin.assert:
+        that:
+          - (min_config | from_yaml).search_tools is not defined
+          - "'search_tools' not in min_config"
+          - "'brave' not in min_config"
+        fail_msg: >-
+          With no Brave key the search_tools block must be absent altogether, not present and
+          empty — an empty search tool would advertise a route that cannot authenticate.
+
+    - name: FULL variant must register Context7 as a DICT-keyed MCP server
+      ansible.builtin.assert:
+        that:
+          # A MAPPING keyed by server name, which is load-bearing rather than stylistic:
+          # load_servers_from_config iterates `.items()`, so a LIST here does not load at all.
+          - (full_config | from_yaml).mcp_servers is mapping
+          - (full_config | from_yaml).mcp_servers.keys() | list == ['context7']
+          - >-
+            (full_config | from_yaml).mcp_servers.context7.url
+            == 'https://mcp.context7.com/mcp'
+          - (full_config | from_yaml).mcp_servers.context7.transport == 'http'
+          # `none`, because Context7 needs no credential. An api_key auth_type would make
+          # LiteLLM send `Authorization: ApiKey ...` with nothing to put in it.
+          - (full_config | from_yaml).mcp_servers.context7.auth_type == 'none'
+        fail_msg: >-
+          mcp_servers must be a mapping keyed by server name carrying one http-transport
+          context7 entry. A list, or a wrong transport, is accepted by the YAML and silently
+          registers nothing. Got:
+          {{ (full_config | from_yaml).mcp_servers | default('ABSENT') }}
+
+    - name: MINIMAL variant must omit mcp_servers ENTIRELY
+      ansible.builtin.assert:
+        that:
+          - (min_config | from_yaml).mcp_servers is not defined
+          - "'mcp_servers' not in min_config"
+          - "'context7' not in min_config"
+        fail_msg: >-
+          With the MCP gateway disabled the mcp_servers block must be absent altogether. A
+          registered server with no reachable endpoint exposes no tools, which is
+          indistinguishable from an unconfigured gateway.
+
+    # ---- prometheus + the settings that make the gateway usable ------------------------
+    - name: Prometheus callback and router settings must be present
+      ansible.builtin.assert:
+        that:
+          - "'prometheus' in (full_config | from_yaml).litellm_settings.callbacks"
+          - (full_config | from_yaml).general_settings.store_model_in_db | bool
+          # The master key must not also be a console login. Asserted on the PARSED config, not
+          # as a substring: this exact setting was once applied by hand to the deployed file and
+          # silently reverted by the next converge, because nothing rendered it and nothing
+          # checked for it.
+          - (full_config | from_yaml).general_settings.disable_env_credential_login | bool
+          - (full_config | from_yaml).router_settings.num_retries | int == 2
+          - (full_config | from_yaml).litellm_settings.drop_params | bool
+          - not ((full_config | from_yaml).litellm_settings.telemetry | bool)
+        fail_msg: >-
+          The gateway must expose /metrics via the prometheus callback, persist UI-added models,
+          retry, drop unsupported params, and leave upstream telemetry off.
+
+    # ---- branding, proven in BOTH directions -------------------------------------------
+    - name: FULL variant must render every branding env var and mount
+      ansible.builtin.assert:
+        that:
+          - >-
+            (full_compose | from_yaml).services.litellm.environment.UI_LOGO_PATH
+            == 'https://example.com/example-logo.png'
+          - >-
+            (full_compose | from_yaml).services.litellm.environment.UI_LOGO_PATH_DARK
+            == '/app/branding/logo-dark.png'
+          - >-
+            (full_compose | from_yaml).services.litellm.environment.LITELLM_FAVICON_URL
+            == 'https://example.com/example-favicon.ico'
+          - >-
+            (full_compose | from_yaml).services['open-webui'].volumes
+            | select('search', '/app/backend/open_webui/static/logo.png:ro$') | list | length == 1
+          - >-
+            (full_compose | from_yaml).services['open-webui'].volumes
+            | select('search', '/app/backend/open_webui/static/favicon.png:ro$') | list | length == 1
+        fail_msg: >-
+          With every branding option configured, litellm must carry UI_LOGO_PATH,
+          UI_LOGO_PATH_DARK and LITELLM_FAVICON_URL, and open-webui must bind-mount both
+          static assets read-only. A missing mount here is the exact shape of a config that
+          sets a variable the app ignores: it would deploy clean and render nothing.
+
+    - name: MINIMAL variant must omit every branding env var and mount
+      ansible.builtin.assert:
+        that:
+          - "'UI_LOGO_PATH' not in min_compose"
+          - "'UI_LOGO_PATH_DARK' not in min_compose"
+          - "'LITELLM_FAVICON_URL' not in min_compose"
+          - "'open_webui/static/logo.png' not in min_compose"
+          - "'open_webui/static/favicon.png' not in min_compose"
+        fail_msg: >-
+          With no branding option configured, nothing branding-shaped may appear in the
+          compose file — litellm must get no environment block at all from this feature,
+          and open-webui must get no extra bind mount. Proving this direction is what
+          distinguishes a real conditional guard from one that always renders.
+
+    # ---- open_webui_connections merge (cases written by converge.yml) -----------------------
+    - name: Read the merge cases
+      ansible.builtin.set_fact:
+        owui_append: "{{ lookup('ansible.builtin.file', render_root ~ '/owui_append.json') | from_json }}"
+        owui_converged: "{{ lookup('ansible.builtin.file', render_root ~ '/owui_converged.json') | from_json }}"
+        owui_replace: "{{ lookup('ansible.builtin.file', render_root ~ '/owui_replace.json') | from_json }}"
+
+    - name: Append — the new url goes LAST and the gateway connection keeps index 0, key and config
+      ansible.builtin.assert:
+        that:
+          - owui_append.changed | bool
+          - owui_append.merged.OPENAI_API_BASE_URLS == ['http://litellm:4000/v1', 'https://agent.example.com/v1']
+          - owui_append.merged.OPENAI_API_KEYS == ['sk-molecule-gateway', 'molecule-agent-key-new']
+          - "'0' not in owui_append.merged.OPENAI_API_CONFIGS"
+          - "owui_append.merged.OPENAI_API_CONFIGS['1'] == {'enable': true, 'model_ids': ['agent-model'], 'prefix_id': ''}"
+          - owui_append.summary | map(attribute='key') | select('search', 'molecule') | list | length == 0
+        fail_msg: "Append case: {{ owui_append.merged.OPENAI_API_BASE_URLS }} / configs {{ owui_append.merged.OPENAI_API_CONFIGS }}"
+
+    - name: Converged — re-merging the merged list is NOT a change
+      ansible.builtin.assert:
+        that:
+          - not (owui_converged.changed | bool)
+          - owui_converged.merged == owui_append.merged
+        fail_msg: >-
+          Merging an already-converged list reported a change, so every run would POST and report
+          changed — a dishonest changed count.
+
+    - name: Replace — the key is replaced in place, other config keys survive, the gateway is untouched
+      ansible.builtin.assert:
+        that:
+          - owui_replace.changed | bool
+          - owui_replace.merged.OPENAI_API_BASE_URLS == ['https://agent.example.com/v1', 'http://litellm:4000/v1']
+          # The short key list was padded for the gateway rather than shifted onto it.
+          - owui_replace.merged.OPENAI_API_KEYS == ['molecule-agent-key-new', '']
+          - owui_replace.merged.OPENAI_API_CONFIGS['0'].enable
+          - "owui_replace.merged.OPENAI_API_CONFIGS['0'].tags == [{'name': 'agent'}]"
+          - "owui_replace.merged.OPENAI_API_CONFIGS['1'] == {'enable': true, 'prefix_id': 'gw'}"
+        fail_msg: "Replace case: {{ owui_replace.merged.OPENAI_API_CONFIGS }}"
+
+    - name: Clean up the render root
+      ansible.builtin.file:
+        path: "{{ render_root }}"
+        state: absent

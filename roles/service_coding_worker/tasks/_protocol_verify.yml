@@ -1,0 +1,124 @@
+---
+# Read-backs for protocol mode: the properties a protocol card and an MCP client depend on, read from
+# the thing itself. The end-to-end cancel (5 s, effects cease, resume, cwd refusal) needs a real
+# card and model spend, so it is an acceptance test run on demand, not a converge step.
+- name: Enable and start acpx-mcp
+  ansible.builtin.systemd:
+    name: worker-acpx-mcp
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Read the installed acpx version
+  ansible.builtin.command: "{{ worker_node_bin }}/acpx --version"
+  register: _worker_acpx_version
+  changed_when: false
+
+- name: Read the globally installed packages
+  ansible.builtin.command: "{{ worker_node_bin }}/npm ls -g --depth=0 --json"
+  register: _worker_npm_ls
+  changed_when: false
+  environment:
+    PATH: "{{ worker_node_bin }}:/usr/bin:/bin"
+
+- name: ASSERT — acpx and both adapters are the pinned versions, and the adapters are executable
+  vars:
+    _deps: "{{ (_worker_npm_ls.stdout | from_json).dependencies | default({}) }}"
+  ansible.builtin.assert:
+    that:
+      - _worker_acpx_version.stdout | trim == worker_tools.acpx_version
+      - _deps['acpx'].version | default('') == worker_tools.acpx_version
+      - _deps['@agentclientprotocol/claude-agent-acp'].version | default('') == worker_tools.claude_agent_acp_version
+      - _deps['@agentclientprotocol/codex-acp'].version | default('') == worker_tools.codex_acp_version
+    fail_msg: >-
+      acpx reports '{{ _worker_acpx_version.stdout | trim }}' (pinned {{ worker_tools.acpx_version }});
+      npm has {{ _deps | dict2items | selectattr('key', 'search', 'acp') | items2dict | to_json }}.
+    quiet: true
+
+- name: Stat the adapter entrypoints sessiond names in acpx's config
+  ansible.builtin.stat:
+    path: "{{ worker_node_bin }}/{{ item }}"
+  loop: [claude-agent-acp, codex-acp, acpx]
+  register: _worker_acp_bins
+
+- name: ASSERT — each entrypoint exists and is executable (a missing one would make acpx fall back to nothing)
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.executable
+    fail_msg: "{{ item.item }} is not an executable in {{ worker_node_bin }}"
+    quiet: true
+  loop: "{{ _worker_acp_bins.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: ASSERT — acpx-mcp answers /healthz
+  ansible.builtin.uri:
+    url: "http://{{ worker_probe_acpx_mcp_host }}:{{ worker_acpx_mcp_port }}/healthz"
+    status_code: [200]
+  register: _worker_acpx_mcp_health
+  changed_when: false
+  until: _worker_acpx_mcp_health.status == 200
+  retries: 10
+  delay: 2
+
+- name: ASSERT — acpx-mcp refuses an MCP request that carries no token
+  ansible.builtin.uri:
+    url: "http://{{ worker_probe_acpx_mcp_host }}:{{ worker_acpx_mcp_port }}/mcp"
+    method: POST
+    body_format: json
+    body: {jsonrpc: "2.0", id: 1, method: tools/list}
+    status_code: [401]
+  changed_when: false
+
+- name: List acpx-mcp's tools WITH the token
+  ansible.builtin.uri:
+    url: "http://{{ worker_probe_acpx_mcp_host }}:{{ worker_acpx_mcp_port }}/mcp"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ worker_acpx_mcp_token }}"
+    body_format: json
+    body: {jsonrpc: "2.0", id: 1, method: tools/list}
+    return_content: true
+  register: _worker_acpx_tools
+  changed_when: false
+  no_log: true
+
+- name: Ask sessiond (through acpx-mcp, so the loopback hop and its token are proven too) for the protocol sessions
+  ansible.builtin.uri:
+    url: "http://{{ worker_probe_acpx_mcp_host }}:{{ worker_acpx_mcp_port }}/mcp"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ worker_acpx_mcp_token }}"
+    body_format: json
+    body: {jsonrpc: "2.0", id: 2, method: tools/call, params: {name: session_list, arguments: {}}}
+    return_content: true
+  register: _worker_acpx_list
+  changed_when: false
+  no_log: true
+
+- name: ASSERT — exactly the six tools, and session_list reached sessiond
+  vars:
+    _tools: "{{ (_worker_acpx_tools.content | from_json).result.tools | map(attribute='name') | list }}"
+    _list: "{{ (_worker_acpx_list.content | from_json).result }}"
+  ansible.builtin.assert:
+    that:
+      - _tools == ['session_new', 'session_prompt', 'session_cancel', 'session_list', 'session_resume', 'session_status']
+      - not _list.isError
+      - _list.structuredContent.capabilities.available
+      - _list.structuredContent.capabilities.pins.acpx_version == worker_tools.acpx_version
+    fail_msg: >-
+      acpx-mcp lists {{ _tools }}; session_list said isError={{ _list.isError }}
+      {{ _list.structuredContent.error | default('') }}
+    quiet: true
+
+- name: Stat acpx-mcp's credential file
+  ansible.builtin.stat:
+    path: "{{ worker_conf_dir }}/acpx-mcp.env"
+  register: _worker_acpx_env_mode
+
+- name: ASSERT — acpx-mcp's credential file is 0600
+  ansible.builtin.assert:
+    that: [_worker_acpx_env_mode.stat.mode == '0600']
+    fail_msg: "{{ worker_conf_dir }}/acpx-mcp.env is {{ _worker_acpx_env_mode.stat.mode }}, not 0600"
+    quiet: true

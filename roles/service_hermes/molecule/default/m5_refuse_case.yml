@@ -1,0 +1,49 @@
+---
+# One automations input the role must REFUSE (same shape as refuse_case.yml): override facts, run the
+# automation gates, require the named failure, and put the facts back whatever happened.
+# set_fact rather than task vars, because the resolver bound these as facts (a fact outranks vars).
+- name: "Refuse: {{ m5_case.why }}"
+  block:
+    - name: Remember the resolved values
+      ansible.builtin.set_fact:
+        _m5_saved:
+          hermes_webhook_secret: "{{ hermes_webhook_secret }}"
+          hermes_webhook_routes: "{{ hermes_webhook_routes }}"
+          hermes_managed_enforce: "{{ hermes_managed_enforce }}"
+          hermes_email_enabled: "{{ hermes_email_enabled }}"
+      no_log: true
+
+    # EXPLICIT keys: handing set_fact a templated dict is silently a no-op (refuse_case.yml).
+    - name: Override only what this case names
+      ansible.builtin.set_fact:
+        hermes_webhook_secret: "{{ m5_case.facts.hermes_webhook_secret | default(hermes_webhook_secret) }}"
+        hermes_webhook_routes: "{{ m5_case.facts.hermes_webhook_routes | default(hermes_webhook_routes) }}"
+        hermes_managed_enforce: "{{ m5_case.facts.hermes_managed_enforce | default(hermes_managed_enforce) }}"
+        hermes_email_enabled: "{{ m5_case.facts.hermes_email_enabled | default(hermes_email_enabled) }}"
+      no_log: true
+
+    - name: Run the automation gates with the bad input
+      ansible.builtin.include_role:
+        name: service_hermes
+        tasks_from: _automations_leaves
+        public: true
+
+    - name: The role accepted it
+      ansible.builtin.fail:
+        msg: "ACCEPTED: {{ m5_case.why }}"
+  rescue:
+    - name: It must have refused for the stated reason
+      ansible.builtin.assert:
+        that:
+          - "'ACCEPTED' not in (ansible_failed_result.msg | default(''))"
+          - m5_case.expect in (ansible_failed_result.msg | default(''))
+        fail_msg: "{{ m5_case.why }}: failed, but not with '{{ m5_case.expect }}': {{ ansible_failed_result.msg | default('?') }}"
+        quiet: true
+  always:
+    - name: Put the resolved values back
+      ansible.builtin.set_fact:
+        hermes_webhook_secret: "{{ _m5_saved.hermes_webhook_secret }}"
+        hermes_webhook_routes: "{{ _m5_saved.hermes_webhook_routes }}"
+        hermes_managed_enforce: "{{ _m5_saved.hermes_managed_enforce }}"
+        hermes_email_enabled: "{{ _m5_saved.hermes_email_enabled }}"
+      no_log: true

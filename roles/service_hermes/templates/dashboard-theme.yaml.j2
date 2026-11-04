@@ -1,0 +1,52 @@
+# {{ ansible_managed | default('Managed by Ansible (service_hermes)') }}
+#
+{# A readable Hermes dashboard theme. Rendered by service_hermes to
+   data/dashboard-themes/<hermes_dashboard_theme_name>.yaml; the file is the role's and is
+   rewritten on drift. Which theme is ACTIVE is the user's choice in the dashboard
+   (dashboard.theme in config.yaml); the role only seeds it when absent. #}
+# Schema measured from the running image (v0.22.5, hermes_cli/web_server_dashboard.py
+# _normalise_theme_definition): `name` is the selection key; palette layers are background /
+# midground (the TEXT colour) / foreground (an overlay, alpha 0 in Hermes Teal); typography keys
+# fontSans, fontMono, fontDisplay, fontUrl, baseSize, lineHeight, letterSpacing; customCSS is
+# clipped at 32768 bytes and not sanitised.
+name: {{ hermes_dashboard_theme_name }}
+label: {{ hermes_dashboard_theme_name | capitalize }}
+description: Hermes Teal without the all-caps, letter-spaced headings — readable at a glance
+palette:
+  background: {hex: "#041c1c", alpha: 1}
+  midground: {hex: "#ffe6cb", alpha: 1}
+  foreground: {hex: "#ffffff", alpha: 0}
+typography:
+  fontSans: 'Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif'
+  fontDisplay: 'Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif'
+  baseSize: 16px
+  lineHeight: "1.55"
+  letterSpacing: "0"
+layout:
+  radius: 0.5rem
+  density: comfortable
+# What makes the stock look hard to read, measured in the running bundle's CSS
+# (web_dist/assets/index-*.css):
+#   .text-display{text-transform:uppercase;letter-spacing:.05em}   .uppercase{...uppercase}
+#   .tracking-[0.08em] .. .tracking-[0.4em], .tracking-wide/wider/widest
+#   .font-expanded / .font-compressed / .font-mondwest -> var(--font-rules-expanded) etc., the
+#   "Rules Expanded"/"Rules Compressed"/"Mondwest" display faces set on :root.
+# The bundle's rules are class selectors and :root, so !important is what guarantees these win
+# whatever order the theme's <style> lands in.
+customCSS: |
+  :root {
+    --font-rules-expanded: var(--theme-font-sans) !important;
+    --font-rules-compressed: var(--theme-font-sans) !important;
+    --font-mondwest: var(--theme-font-sans) !important;
+    --font-sans: var(--theme-font-sans) !important;
+  }
+  .text-display, .uppercase {
+    text-transform: none !important;
+    letter-spacing: normal !important;
+  }
+  [class*="tracking-"] {
+    letter-spacing: normal !important;
+  }
+  .font-expanded, .font-compressed, .font-mondwest {
+    font-family: var(--theme-font-sans) !important;
+  }

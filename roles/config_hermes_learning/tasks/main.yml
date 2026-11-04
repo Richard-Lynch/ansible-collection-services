@@ -1,0 +1,220 @@
+---
+# config_hermes_learning main — install the learning loop.
+#
+# Converging this changes no agent state by itself: it installs a script, a secret-free config
+# and three timers, then runs the hourly job ONCE as its read-back (that job only reads). With
+# hermes_learning_memory_plugin set it also installs that plugin at a pinned commit and opens the
+# live store once so its database exists before the backup has to declare it.
+- name: Resolve declared options over their generated defaults
+  ansible.builtin.include_tasks: _resolve_defaults.yml
+
+- name: Apply the generated argspec guards
+  ansible.builtin.include_tasks: _argspec_guards.yml
+
+- name: HARD GATE — the probe set is well formed (ids unique, every probe checkable)
+  vars:
+    _ids: "{{ hermes_learning_probes | map(attribute='id') | list }}"
+    _uncheckable: >-
+      {{ hermes_learning_probes
+         | rejectattr('expect.contains', 'defined') | rejectattr('expect.regex', 'defined')
+         | rejectattr('expect.tool', 'defined') | map(attribute='id') | list }}
+  ansible.builtin.assert:
+    that:
+      - hermes_learning_probes | length > 0
+      - _ids | length == _ids | unique | length
+      - hermes_learning_probes | rejectattr('prompt', 'defined') | list | length == 0
+      - _uncheckable | length == 0
+    fail_msg: >-
+      The probe set must have unique ids, a prompt each, and at least one positive check
+      (contains, regex or tool) each; a probe with only not_contains passes on silence.
+      Uncheckable: {{ _uncheckable }}.
+    quiet: true
+
+- name: HARD GATE — a memory plugin is pinned to an exact commit
+  ansible.builtin.assert:
+    that:
+      - hermes_learning_memory_plugin_ref is match('^[0-9a-f]{40}$')
+      - hermes_learning_memory_plugin_version | length > 0
+    fail_msg: >-
+      hermes_learning_memory_plugin={{ hermes_learning_memory_plugin }} needs
+      hermes_learning_memory_plugin_ref (40 hex) and hermes_learning_memory_plugin_version: the
+      live catalog moves, and an unpinned install is a different plugin on every rebuild.
+    quiet: true
+  when: hermes_learning_memory_plugin | length > 0
+
+- name: Directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ hermes_learning_install_dir }}", mode: "0755" }
+    - { path: "{{ hermes_learning_config_dir }}", mode: "0755" }
+    - { path: "{{ hermes_learning_state_dir }}", mode: "0700" }
+    - { path: "{{ hermes_learning_textfile_dir }}", mode: "0755" }
+    - { path: "{{ hermes_learning_unit_dir }}", mode: "0755" }
+  loop_control: { label: "{{ item.path }}" }
+
+# The mirror copies live under the agent's tree, which the AGENT can write while this play (and the
+# host script) run as root. So every directory on that path is the agent's, and the host script
+# writes into it only after dropping to the agent's uid (hermes_learning.py agent_write). Root
+# touches these paths here and nowhere else: each is stat'ed WITHOUT following links and refused if
+# it is a link, not a directory, or owned by anyone but the agent (a readable early refusal). The
+# directories are then made BY THE AGENT once the scripts and config are installed (below), because
+# a root stat-then-`file` by name is a race the agent can win (follow: false protects only the LAST
+# component) and a root chown re-owns whatever is there.
+- name: Stat the learning path without following links
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+  loop: "{{ [hermes_learning_host_home] + _hl_learning_dirs }}"
+  register: hermes_learning__tree
+
+- name: HARD GATE — no link and no foreign owner on the learning path
+  ansible.builtin.assert:
+    that:
+      - not (item.stat.islnk | default(false))
+      - not item.stat.exists or item.stat.isdir
+      - >-
+        hermes_learning_exec_mode == 'local' or not item.stat.exists
+        or item.item == hermes_learning_host_home
+        or (item.stat.uid | string) == ((hermes_learning_exec_user | string).split(':') | first)
+    fail_msg: >-
+      {{ item.item }} is a symlink, not a directory, or owned by uid {{ item.stat.uid | default('?') }}
+      (expected the agent, {{ hermes_learning_exec_user }}). Root follows no link in the agent's tree
+      and re-owns nothing in it: a root-owned learning directory (an older converge made them as
+      root) must be re-owned to the agent deliberately, after checking it is the directory you think
+      it is, before converging again.
+    quiet: true
+  loop: "{{ hermes_learning__tree.results }}"
+  loop_control: { label: "{{ item.item }}" }
+
+- name: Install the scripts
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "{{ hermes_learning_install_dir }}/{{ item }}"
+    mode: "{{ '0755' if item == 'hermes_learning.py' else '0644' }}"
+  loop:
+    - hermes_learning.py
+    - inner_ledger.py
+    - inner_probes.py
+    - inner_ping.py
+    - inner_consolidate.py
+    - inner_recall.py
+    - confined_io.py # hermes_learning.py imports it (the confined-write module, vendored)
+
+- name: Render the config (names of env vars, never their values)
+  ansible.builtin.template:
+    src: config.json.j2
+    dest: "{{ hermes_learning_config_dir }}/config.json"
+    mode: "0644"
+
+# The learning directories, made AS THE AGENT by the script just installed (`ensure-dirs`): root
+# forks, drops to hermes_learning_exec_user for good (confined_io.run_as), and the child walks from
+# the agent's home with O_NOFOLLOW at every component, creating what is missing. So root does no
+# mkdir, chown or chmod in the agent's tree, and the agent can do nothing it could not already: an
+# existing directory owned by anyone but the agent (a root-owned one renamed into place, a legacy
+# one) is REFUSED with an operator message, never re-owned.
+- name: Learning directories under the agent's home (made by the agent, never by name)
+  ansible.builtin.command:
+    argv: >-
+      {{ ['python3' if hermes_learning_exec_mode == 'docker' else ansible_playbook_python,
+          hermes_learning_install_dir ~ '/hermes_learning.py',
+          '--config', hermes_learning_config_dir ~ '/config.json', 'ensure-dirs']
+         + (_hl_learning_dirs | map('regex_replace', '^' ~ (hermes_learning_host_home | regex_escape) ~ '/', '') | list) }}
+  register: hermes_learning__dirs
+  changed_when: >-
+    (hermes_learning__dirs.stdout | from_json).created | length > 0
+    or (hermes_learning__dirs.stdout | from_json).repaired | length > 0
+
+- name: Write the probe set
+  ansible.builtin.copy:
+    content: "{{ hermes_learning_probes | to_nice_json(indent=1) }}\n"
+    dest: "{{ hermes_learning_config_dir }}/probes.json"
+    mode: "0644"
+
+- name: Memory provider plugin
+  ansible.builtin.include_tasks: _memory_provider.yml
+  when:
+    - hermes_learning_memory_plugin | length > 0
+    - hermes_learning_exec_mode == 'docker'
+
+- name: Render the units and timers
+  ansible.builtin.template:
+    src: "job.{{ item.1 }}.j2"
+    dest: "{{ hermes_learning_unit_dir }}/hermes-learning-{{ item.0.name }}.{{ item.1 }}"
+    mode: "0644"
+  vars:
+    _job: "{{ item.0 }}"
+  loop: "{{ _hl_jobs | product(['service', 'timer']) | list }}"
+  loop_control: { label: "hermes-learning-{{ item.0.name }}.{{ item.1 }}" }
+  register: hermes_learning__units
+
+- name: Enable the timers
+  ansible.builtin.systemd_service:
+    name: "hermes-learning-{{ item.name }}.timer"
+    enabled: true
+    state: started
+    daemon_reload: "{{ hermes_learning__units.changed }}"
+  loop: "{{ _hl_jobs }}"
+  loop_control: { label: "{{ item.name }}" }
+  when: hermes_learning_enable_timers | bool
+
+- name: Read back the timers from systemd
+  ansible.builtin.command:
+    argv:
+      [
+        systemctl,
+        show,
+        "hermes-learning-{{ item.name }}.timer",
+        # ONE argument: a bare `ActiveState` after it is read as a second UNIT name, and the gate
+        # below then never sees ActiveState= at all.
+        "--property=UnitFileState,ActiveState",
+      ]
+  loop: "{{ _hl_jobs }}"
+  loop_control: { label: "{{ item.name }}" }
+  register: hermes_learning__timers
+  changed_when: false
+  when: hermes_learning_enable_timers | bool
+
+- name: HARD GATE — every timer is enabled and active
+  ansible.builtin.assert:
+    that:
+      - "'UnitFileState=enabled' in item.stdout"
+      - "'ActiveState=active' in item.stdout"
+    fail_msg: "{{ item.item.name }}: {{ item.stdout | replace('\n', ' ') }}"
+    quiet: true
+  loop: "{{ hermes_learning__timers.results }}"
+  loop_control: { label: "{{ item.item.name }}" }
+  when: hermes_learning_enable_timers | bool
+
+# The read-back: "installed" must be "producing". The hourly job only reads, so running it here is
+# safe; its metrics file must carry read_ok 1, which needs the container (or the fixture home) to
+# be readable for real.
+- name: Run the hourly job once (read-back)
+  ansible.builtin.command:
+    argv:
+      - "{{ 'python3' if hermes_learning_exec_mode == 'docker' else ansible_playbook_python }}"
+      - "{{ hermes_learning_install_dir }}/hermes_learning.py"
+      - --config
+      - "{{ hermes_learning_config_dir }}/config.json"
+      - hourly
+  register: hermes_learning__hourly
+  changed_when: false
+  failed_when: false
+
+- name: Read the metrics it wrote
+  ansible.builtin.slurp:
+    src: "{{ hermes_learning_textfile_dir }}/hermes_learning.prom"
+  register: hermes_learning__prom
+
+- name: HARD GATE — the ledger read the agent's state
+  ansible.builtin.assert:
+    that:
+      - hermes_learning__hourly.rc == 0
+      - (hermes_learning__prom.content | b64decode) is search('(?m)^hermes_learning_read_ok 1$')
+      - (hermes_learning__prom.content | b64decode) is search('(?m)^hermes_learning_pending[{]subsystem="memory"[}] ')
+    fail_msg: >-
+      The hourly job did not read the agent's state (rc={{ hermes_learning__hourly.rc }}):
+      {{ hermes_learning__hourly.stdout | default('') | truncate(300) }}
+    quiet: true

@@ -1,0 +1,206 @@
+---
+# restore - this order, and no other: stop; unpack to a stage; validate WHILE STOPPED; swap;
+# quiet start; healthy; re-write layer 2; read back; remove the overlay; restart; read back.
+# Ansible loads ONLY defaults/main.yml on its own. This entrypoint's generated defaults are in
+# defaults/restore.yml, so without this the resolver would find no `__default` for any option declared
+# only here and leave it undefined.
+- name: Load this entrypoint's generated defaults
+  ansible.builtin.include_vars:
+    file: "{{ role_path }}/defaults/restore.yml"
+
+- name: Resolve declared options over their generated defaults
+  ansible.builtin.include_tasks: _resolve_defaults.yml
+
+- name: Apply the generated argspec guards
+  ansible.builtin.include_tasks: _argspec_guards.yml
+
+- name: Shape-check the declared values
+  ansible.builtin.include_tasks: _gates.yml
+
+- name: The role is installed
+  ansible.builtin.include_tasks: _installed.yml
+
+- name: HARD GATE — the confirm flag is set and the scope's inputs are present
+  ansible.builtin.assert:
+    that:
+      - agent_state_restore_confirm | bool
+      - agent_state_restore_identity | length > 0 or agent_state_restore_scope == 'mind'
+      - agent_state_restore_scope == 'mind' or (agent_state_restore_from | default('') | length > 0)
+      - agent_state_restore_scope == 'mind' or (agent_state_backup_target | default('') | length > 0)
+      - agent_state_restore_scope == 'runtime' or (agent_state_repo_url | default('') | length > 0)
+      - agent_state_restore_scope == 'runtime' or (agent_state_deploy_key | default('') | length > 0)
+      - not (agent_state_stack_managed | bool) or (agent_state_stack_project_dir | length > 0 and agent_state_health_url | length > 0)
+      - not (agent_state_restore_quiet_start | bool and agent_state_stack_managed | bool) or (agent_state_quiet_start_env | length > 0 and agent_state_stack_service | length > 0)
+    fail_msg: >-
+      restore refused: it needs agent_state_restore_confirm=true, the identity and an archive
+      name for runtime/both scope, the repo and deploy key for mind/both scope, and - with the
+      stack managed - the project dir, service, health URL and (for quiet start) a non-empty
+      quiet-start env. An empty quiet-start env is refused, not read as 'nothing to disable'.
+    quiet: true
+
+- name: Build the argument lists
+  ansible.builtin.include_tasks: _argv.yml
+
+- name: Mirror deploy key (mind and both scope)
+  ansible.builtin.include_tasks: _deploy_key.yml
+  when: agent_state_restore_scope != 'runtime'
+
+- name: Restore
+  block:
+    - name: Private scratch directory for the identity
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: agent-state-id-
+      register: _as_idir
+      changed_when: false
+      when: agent_state_restore_scope != 'mind'
+
+    - name: Identity file (0600)
+      ansible.builtin.copy:
+        dest: "{{ _as_idir.path }}/identity.txt"
+        content: "{{ agent_state_restore_identity | trim }}\n"
+        mode: "0600"
+      no_log: true
+      changed_when: false
+      when: agent_state_restore_scope != 'mind'
+
+    - name: Stop the stack (nothing may write while the tree is replaced)
+      community.docker.docker_compose_v2:
+        project_src: "{{ agent_state_stack_project_dir }}"
+        files: ["{{ agent_state_stack_compose_file }}"]
+        state: stopped
+      when: agent_state_stack_managed | bool
+
+    - name: Unpack, validate and swap the runtime tree
+      # All validation happens in a stage directory BEFORE the live tree is moved aside. A
+      # corrupt or tampered archive exits 2 here and the live tree is exactly as it was.
+      ansible.builtin.command:
+        argv: >-
+          {{ [agent_state_python, agent_state_install_dir ~ '/agent_state.py', 'restore',
+              '--archive', agent_state_backup_target ~ '/' ~ agent_state_restore_from,
+              '--identity', _as_idir.path ~ '/identity.txt',
+              '--root', agent_state_root]
+             + (['--required'] | product(agent_state_required_paths) | list | flatten)
+             + (['--exclude'] | product(agent_state_backup_exclude) | list | flatten) }}
+      register: _as_restore
+      when: agent_state_restore_scope != 'mind'
+      changed_when: _as_restore.rc == 0 and (_as_restore.stdout_lines[-1] | from_json).changed | bool
+
+    - name: Restore layer 2 from the mirror
+      ansible.builtin.command:
+        argv: >-
+          {{ [agent_state_python, agent_state_install_dir ~ '/agent_state.py', 'mind-restore',
+              '--root', agent_state_root, '--remote-url', agent_state_repo_url,
+              '--ref', agent_state_restore_ref, '--ssh-key', agent_state_key_dir ~ '/mirror_deploy_key',
+              '--paths'] + agent_state_mirror_paths }}
+      register: _as_mind
+      changed_when: _as_mind.rc == 0 and (_as_mind.stdout_lines[-1] | from_json).restored | int > 0
+      when: agent_state_restore_scope != 'runtime'
+
+    - name: Quiet-start overlay
+      ansible.builtin.template:
+        src: quiet-start.overlay.yml.j2
+        dest: "{{ agent_state_stack_project_dir }}/docker-compose.restore-quiet.yml"
+        mode: "0600"
+      when: agent_state_stack_managed | bool and agent_state_restore_quiet_start | bool
+
+    - name: Start (quiet when requested)
+      community.docker.docker_compose_v2:
+        project_src: "{{ agent_state_stack_project_dir }}"
+        files: "{{ [agent_state_stack_compose_file] + (['docker-compose.restore-quiet.yml'] if agent_state_restore_quiet_start | bool else []) }}"
+        state: present
+        recreate: always
+      when: agent_state_stack_managed | bool
+
+    - name: Wait for healthy
+      ansible.builtin.uri:
+        url: "{{ agent_state_health_url }}"
+        status_code: 200
+      register: _as_health
+      until: _as_health.status | default(0) == 200
+      retries: "{{ agent_state_health_retries | int }}"
+      delay: 5
+      failed_when: false
+      when: agent_state_stack_managed | bool
+
+    - name: HARD GATE — it came up (the retry loop above exits green on exhaustion)
+      ansible.builtin.assert:
+        that: _as_health.status | default(0) == 200
+        fail_msg: "the agent never became healthy at {{ agent_state_health_url }} after the restore. It is still in QUIET START; nothing was enabled."
+        quiet: true
+      when: agent_state_stack_managed | bool
+
+    - name: Re-write layer-2 files in place (a daemon may only load a file on WRITE)
+      ansible.builtin.command:
+        argv: >-
+          {{ [agent_state_python, agent_state_install_dir ~ '/agent_state.py', 'rewrite',
+              '--root', agent_state_root, '--paths'] + agent_state_mirror_paths }}
+      changed_when: _as_rw.rc == 0 and (_as_rw.stdout_lines[-1] | from_json).rewritten | int > 0
+      register: _as_rw
+      when: _as_restore is changed or _as_mind is changed
+
+    - name: Read back while quiet
+      ansible.builtin.include_tasks: _readbacks.yml
+      vars:
+        _as_readbacks: "{{ agent_state_readback_checks }}"
+        _as_readback_phase: quiet
+        _as_readback_base: ""
+        _as_readback_key: "{{ agent_state_readback_api_key }}"
+      when: agent_state_stack_managed | bool
+
+    - name: Remove the overlay
+      ansible.builtin.file:
+        path: "{{ agent_state_stack_project_dir }}/docker-compose.restore-quiet.yml"
+        state: absent
+      when: agent_state_stack_managed | bool and agent_state_restore_quiet_start | bool
+
+    - name: Restart with delivery enabled
+      community.docker.docker_compose_v2:
+        project_src: "{{ agent_state_stack_project_dir }}"
+        files: ["{{ agent_state_stack_compose_file }}"]
+        state: present
+        recreate: always
+      when: agent_state_stack_managed | bool and agent_state_restore_quiet_start | bool
+
+    - name: Wait for healthy again
+      ansible.builtin.uri:
+        url: "{{ agent_state_health_url }}"
+        status_code: 200
+      register: _as_health2
+      until: _as_health2.status | default(0) == 200
+      retries: "{{ agent_state_health_retries | int }}"
+      delay: 5
+      failed_when: false
+      when: agent_state_stack_managed | bool
+
+    - name: HARD GATE — healthy after the final restart
+      ansible.builtin.assert:
+        that: _as_health2.status | default(0) == 200
+        fail_msg: "the agent is not healthy at {{ agent_state_health_url }} after the final restart."
+        quiet: true
+      when: agent_state_stack_managed | bool
+
+    - name: Read back again, delivery enabled
+      ansible.builtin.include_tasks: _readbacks.yml
+      vars:
+        _as_readbacks: "{{ agent_state_readback_checks }}"
+        _as_readback_phase: final
+        _as_readback_base: ""
+        _as_readback_key: "{{ agent_state_readback_api_key }}"
+      when: agent_state_stack_managed | bool
+  rescue:
+    - name: Say what state the restore left behind
+      ansible.builtin.fail:
+        msg: >-
+          restore FAILED and the stack was left as it is (stopped, or in quiet start if it got
+          that far). A validation refusal happens before the live tree is touched; a swap leaves
+          the previous tree beside the root as <root>.pre-restore-<epoch>. Nothing has been
+          re-enabled. Fix the cause and re-run, or start the stack yourself.
+          Cause: {{ ansible_failed_result.stderr | default(ansible_failed_result.msg | default('unknown')) | trim }}
+  always:
+    - name: Remove the identity file
+      ansible.builtin.file:
+        path: "{{ _as_idir.path }}"
+        state: absent
+      changed_when: false
+      when: _as_idir is defined and _as_idir.path is defined

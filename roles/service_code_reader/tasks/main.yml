@@ -1,0 +1,101 @@
+---
+# service_code_reader -- a one-shot verification-code sidecar for the browser filler.
+#
+# Shape follows service_hermes: resolve defaults, gate on what fails silently, render, converge,
+# restart only on a real change, then PROVE the result by reading the sidecar's own /healthz.
+
+- name: Resolve declared options over their generated defaults
+  ansible.builtin.include_tasks: _resolve_defaults.yml
+
+- name: Apply the generated argspec guards
+  ansible.builtin.include_tasks: _argspec_guards.yml
+
+- name: Run the preflight gates
+  ansible.builtin.include_tasks: _preflight.yml
+
+- name: Store vars
+  ansible.builtin.set_fact:
+    code_reader_files: "{{ role_path }}/files"
+
+# config.json and code_reader.py land under app/, which the container mounts as a DIRECTORY.
+# test_code_reader.py rides along (it is in files/ so CI can run it); it is inert on the guest.
+- name: Deploy the sidecar's code and config
+  ansible.builtin.include_role:
+    name: richard_lynch.common.deployment_config
+  vars:
+    deployment_config_source: "{{ code_reader_files }}"
+    deployment_config_destination: "{{ code_reader_config_dir }}/app"
+    deployment_config_file_mode: "0644"
+
+# The credentials. Own task, own mode, in templates/ so deployment_config never sees it (it would
+# otherwise render the file a second time at the shared mode).
+- name: Render the credentials file (0600, never group-readable)
+  ansible.builtin.template:
+    src: code-reader.env.j2
+    dest: "{{ code_reader_config_dir }}/code-reader.env"
+    owner: root
+    group: root
+    mode: "0600"
+  register: code_reader__env_file
+  no_log: true
+
+- name: Render the compose project
+  ansible.builtin.template:
+    src: docker-compose.yml.j2
+    dest: "{{ code_reader_config_dir }}/docker-compose.yml"
+    owner: root
+    group: root
+    mode: "0640"
+  register: code_reader__compose_file
+
+- name: Ensure the shared docker network exists
+  community.docker.docker_network:
+    name: "{{ code_reader_network }}"
+    attachable: true
+    state: present
+
+- name: Deploy the stack
+  community.docker.docker_compose_v2:
+    project_src: "{{ code_reader_config_dir }}"
+    state: present
+    recreate: auto
+
+# `restarted` and not `docker_container restart: true`, which would recreate the container
+# outside compose's knowledge. A changed env file or config.json needs a restart: env_file is read
+# at container creation, and the app reads config.json once at start.
+- name: Restart the stack when its config changed
+  community.docker.docker_compose_v2:
+    project_src: "{{ code_reader_config_dir }}"
+    state: restarted
+  when: >-
+    (deployment_config_changed | default(false) | bool)
+    or (code_reader__env_file.changed | default(false))
+    or (code_reader__compose_file.changed | default(false))
+
+# Read-back from the sidecar's OWN health endpoint, not from the task results above. /healthz is
+# 200 only after a successful IMAP login and poll, so this proves the mailbox credentials work --
+# which "the container is running" does not.
+- name: Read the sidecar's health
+  ansible.builtin.uri:
+    url: "http://{{ code_reader_bind }}:{{ code_reader_port }}/healthz"
+    status_code: [200, 503]
+    return_content: true
+  register: code_reader__health
+  retries: 6
+  delay: 10
+  until: code_reader__health.status | default(0) == 200
+  failed_when: false
+  changed_when: false
+
+- name: HARD GATE — the sidecar must be polling its mailbox successfully
+  ansible.builtin.assert:
+    that:
+      - code_reader__health.status | default(0) == 200
+      - code_reader__health.json is defined
+      - code_reader__health.json.ok | default(false)
+    fail_msg: >-
+      The code reader did not report a successful mailbox poll (HTTP
+      {{ code_reader__health.status | default('no response') }},
+      last_error={{ code_reader__health.json.last_error | default('unknown') }}). The usual cause
+      is the IMAP login: check the mailbox exists and code_reader_imap_password is current.
+    quiet: true

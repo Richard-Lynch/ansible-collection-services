@@ -1,0 +1,142 @@
+---
+# The FILE half of the role (tasks/_files.yml), run for real against a temp data directory. What
+# this cannot cover is stated: `hermes profile create`, the before/after models probe and the CLI
+# read-backs need a live gateway container and are not exercised here.
+#
+# Setup is idempotent on purpose (copy with force: false), so the molecule idempotence step is a real
+# test of the role: any `changed` on the second run is the role rewriting something it should not.
+- name: Converge — the file half, applied and previewed
+  hosts: localhost
+  gather_facts: true
+  vars:
+    # The data directory sits one level below a directory the runner owns (0755): that parent is the
+    # anchor of the role's confined walk, which refuses a group/other-writable anchor such as /tmp.
+    anchor: /tmp/molecule-hermes-profile
+    root: /tmp/molecule-hermes-profile/data
+    uid: "{{ ansible_facts.user_uid }}"
+    gid: "{{ ansible_facts.user_gid }}"
+    spec:
+      toolsets: [terminal, file, kanban, todo]
+      known_toolsets: [browser, code_execution, connections, cronjob, delegation, file, image_gen, memory, session_search, skills, terminal, todo, vision, web, kanban]
+      approvals_mode: smart
+      approvals_deny: ["rm -rf /*", "git push --force*"]
+      terminal: {backend: ssh, host: worker.example}
+      external_dirs: [/opt/shared-skills]
+  tasks:
+    - name: The anchor, owned by the runner and 0755
+      ansible.builtin.file: {path: "{{ anchor }}", state: directory, mode: "0755"}
+
+    - name: Directories for the applied and previewed profiles, and the planted-link traps
+      ansible.builtin.file: {path: "{{ root }}/profiles/{{ item }}", state: directory, mode: "0755"}
+      loop: [coder, preview, fresh, trap-env, trap-config]
+
+    - name: A directory OUTSIDE the data directory
+      ansible.builtin.file: {path: "{{ anchor }}/outside", state: directory, mode: "0755"}
+
+    - name: Files OUTSIDE the data directory that a planted link points at (must stay untouched)
+      ansible.builtin.copy:
+        dest: "{{ anchor }}/outside/{{ item }}"
+        content: "untouched {{ item }}\n"
+        mode: "0600"
+        force: false
+      loop: [env-target, config-target]
+
+    - name: Plant the links the agent could plant (a profile's .env, a profile's config.yaml, a whole profile dir)
+      ansible.builtin.file: {src: "{{ item.src }}", dest: "{{ item.dest }}", state: link, force: true}
+      loop:
+        - {src: "{{ anchor }}/outside/env-target", dest: "{{ root }}/profiles/trap-env/.env"}
+        - {src: "{{ anchor }}/outside/config-target", dest: "{{ root }}/profiles/trap-config/config.yaml"}
+        - {src: "{{ anchor }}/outside", dest: "{{ root }}/profiles/trap-dir"}
+      loop_control: {label: "{{ item.dest | basename }}"}
+
+    - name: A config.yaml the AGENT has been writing (must survive), and a .env with a foreign line
+      ansible.builtin.copy:
+        dest: "{{ root }}/profiles/{{ item.profile }}/{{ item.file }}"
+        content: "{{ item.content }}"
+        mode: "0600"
+        force: false
+      loop:
+        - {profile: coder, file: config.yaml, content: "memory:\n  write_approval: true\nterminal:\n  cwd: /srv/work\nskills:\n  guard_agent_created: true\n"}
+        - {profile: coder, file: .env, content: "OTHER_TOOL_KEY='keep-me'\n"}
+        - {profile: coder, file: SOUL.md, content: "A SOUL an operator already curated.\n"}
+        - {profile: preview, file: config.yaml, content: "memory:\n  write_approval: true\n"}
+        - {profile: fresh, file: SOUL.md, content: "The SOURCE profile's SOUL, cloned in.\n"}
+        # what `--clone-from default` leaves behind: the source's .env (its API key, a chat token) and
+        # a platform_toolsets map with a shell on a platform the caller's leaves do not name
+        - {profile: fresh, file: .env, content: "API_SERVER_KEY='cloned-gateway-key-NOT-REAL'\nSLACK_BOT_TOKEN='cloned-NOT-REAL'\n"}
+        - {profile: fresh, file: config.yaml, content: "platform_toolsets:\n  cli: [web, code_execution]\n  slack: [web, browser, code_execution]\n  discord: [web, code_execution]\nmodel:\n  provider: cloned\n"}
+      loop_control: {label: "{{ item.profile }}/{{ item.file }}"}
+
+    - name: Build the coder leaves with the real filter
+      ansible.builtin.set_fact:
+        coder_leaves: "{{ spec | richard_lynch.services.hermes_coder_profile_leaves }}"
+
+    # ---------------------------------------------------------------- APPLY, to an existing profile
+    - name: Apply to the coder profile (file half)
+      ansible.builtin.include_role:
+        name: config_hermes_profile
+        tasks_from: _files
+      vars:
+        hermes_profile_name: coder
+        hermes_profile_data_dir: "{{ root }}"
+        hermes_profile_anchor_uid: "{{ uid }}"
+        hermes_profile_uid: "{{ uid }}"
+        hermes_profile_gid: "{{ gid }}"
+        hermes_profile_leaves: "{{ coder_leaves }}"
+        hermes_profile_env: {GH_TOKEN: "molecule-NOT-A-REAL-TOKEN-0001", WORKER_SESSIOND_URL: "http://worker.example:7690"}
+        hermes_profile_soul: "A SOUL the role must NOT write over an existing one.\n"
+        hermes_profile_apply: true
+        _hp_dir: "{{ root }}/profiles/coder"
+        _hp_stat: {stat: {exists: true}}
+
+    # ---------------------------------------------------------------- a profile THIS run created
+    - name: A profile created in this run gets the SOUL even though a cloned one is there
+      ansible.builtin.include_role:
+        name: config_hermes_profile
+        tasks_from: _files
+      vars:
+        hermes_profile_name: fresh
+        hermes_profile_data_dir: "{{ root }}"
+        hermes_profile_anchor_uid: "{{ uid }}"
+        hermes_profile_uid: "{{ uid }}"
+        hermes_profile_gid: "{{ gid }}"
+        hermes_profile_leaves: "{{ coder_leaves }}"
+        hermes_profile_env: {WORKER_TERM_URL: "https://term.example"}
+        hermes_profile_platform_toolsets: [terminal, kanban, todo]
+        hermes_profile_soul: "Own SOUL of the fresh profile.\n"
+        hermes_profile_apply: true
+        _hp_dir: "{{ root }}/profiles/fresh"
+        _hp_stat: {stat: {exists: true}}
+        _hp_created: true
+
+    # ---------------------------------------------------------------- PREVIEW writes nothing
+    - name: Preview against the other profile (apply false)
+      ansible.builtin.include_role:
+        name: config_hermes_profile
+        tasks_from: _files
+      vars:
+        hermes_profile_name: preview
+        hermes_profile_data_dir: "{{ root }}"
+        hermes_profile_anchor_uid: "{{ uid }}"
+        hermes_profile_uid: "{{ uid }}"
+        hermes_profile_gid: "{{ gid }}"
+        hermes_profile_leaves: "{{ coder_leaves }}"
+        hermes_profile_env: {GH_TOKEN: "molecule-NOT-A-REAL-TOKEN-0002"}
+        hermes_profile_soul: "must not be written in preview"
+        hermes_profile_apply: false
+        _hp_dir: "{{ root }}/profiles/preview"
+        _hp_stat: {stat: {exists: true}}
+
+    # ---------------------------------------------------------------- refusals, each for ITS reason
+    - name: Each bad input must be refused, and for the right reason
+      ansible.builtin.include_tasks: _bad_case.yml
+      loop:
+        - {id: env-value-with-quote, expect: are refused, env: {GH_TOKEN: "abc'def"}}
+        - {id: env-value-with-newline, expect: are refused, env: {GH_TOKEN: "abc\ndef"}}
+        - {id: env-lowercase-name, expect: are refused, env: {gh_token: "abcdef"}}
+        - {id: env-empty-value, expect: are refused, env: {GH_TOKEN: ""}}
+        # a link the agent planted: refused by the confined walk, never written or read through
+        - {id: link-at-env, expect: "", profile: trap-env, env: {GH_TOKEN: "molecule-NOT-A-REAL-TOKEN-0003"}}
+        - {id: link-at-config, expect: "", profile: trap-config, env: {}}
+        - {id: link-at-profile-dir, expect: "", profile: trap-dir, env: {}}
+      loop_control: {label: "{{ item.id }}"}

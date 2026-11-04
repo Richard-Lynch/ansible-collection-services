@@ -1,0 +1,9 @@
+---
+- name: Converge
+  hosts: localhost
+  gather_facts: false
+  vars_files: [vars.yml]
+  tasks:
+    - name: Install the learning loop
+      ansible.builtin.include_role:
+        name: config_hermes_learning

@@ -1,0 +1,69 @@
+---
+# Render-only scenario. This role's real converge needs a Docker daemon and a built Vite bundle,
+# neither reproducible on a GitHub-hosted runner — so coverage here is honestly PARTIAL: it
+# proves the templates render correct, parseable artifacts for more than one variable
+# combination, not that the container runs. (render-only coverage.) The live
+# behaviour is asserted by the role's own read-backs, which check that the served page is the
+# APP and that the served catalogue parses and carries models.
+#
+# Two variants are rendered because the values that vary are the ones a second caller would
+# change, and a single render cannot distinguish a template that uses its variables from one
+# that hardcodes a particular installation's values.
+- name: Converge — render the model explorer templates (no docker)
+  hosts: localhost
+  gather_facts: false
+  vars:
+    # DELIBERATELY NOT /tmp/molecule-model-explorer. The render root is interpolated into the
+    # compose file as the volume source path, so a root CONTAINING the first variant's container
+    # name would make verify's "nothing is hardcoded" assert match its own scaffolding and fail a
+    # correct template. Keep this path free of any value the second variant asserts is absent.
+    render_root: /tmp/molecule-mx
+  tasks:
+    - name: Ensure a clean render root
+      ansible.builtin.file:
+        path: "{{ render_root }}"
+        state: absent
+
+    - name: Create the render directories
+      ansible.builtin.file:
+        path: "{{ render_root }}/{{ item }}"
+        state: directory
+        mode: "0755"
+      loop: [first, second]
+
+    # ---- variant: the role's defaults, on a shared network -----------------------------
+    - name: Render the FIRST variant
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../files/compose/{{ item.src }}"
+        dest: "{{ render_root }}/first/{{ item.dest }}"
+        mode: "0644"
+      loop:
+        - { src: "docker-compose.yml.j2", dest: "docker-compose.yml" }
+        - { src: "nginx.conf.j2", dest: "nginx.conf" }
+      vars:
+        model_explorer_container_name: model-explorer
+        model_explorer_image: "nginx:1.29.3-alpine"
+        model_explorer_config_dir: "{{ render_root }}/first"
+        model_explorer_network: explorer-net
+        model_explorer_host_port: 8092
+        model_explorer_timezone: "Etc/UTC"
+
+    # ---- variant: a DIFFERENT caller, to prove nothing is hardcoded --------------------
+    # Every value differs from the first variant. verify.yml then asserts that none of the first
+    # variant's values appears in this render — which is what proves the role would work on a
+    # second machine with only inventory changes, rather than being right by coincidence.
+    - name: Render the SECOND-CALLER variant
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../files/compose/{{ item.src }}"
+        dest: "{{ render_root }}/second/{{ item.dest }}"
+        mode: "0644"
+      loop:
+        - { src: "docker-compose.yml.j2", dest: "docker-compose.yml" }
+        - { src: "nginx.conf.j2", dest: "nginx.conf" }
+      vars:
+        model_explorer_container_name: other-explorer
+        model_explorer_image: "nginx:1.28.0-alpine"
+        model_explorer_config_dir: "{{ render_root }}/second"
+        model_explorer_network: othernet
+        model_explorer_host_port: 9191
+        model_explorer_timezone: "Etc/GMT+5"

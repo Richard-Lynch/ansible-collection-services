@@ -1,0 +1,51 @@
+---
+# Gates shared by every entrypoint: shape checks on caller-declared values, so a malformed
+# inventory fails here, on the controller's first task, and not halfway through a restore.
+- name: HARD GATE — the declared paths are absolute and contain no parent reference
+  ansible.builtin.assert:
+    that:
+      - agent_state_root is match('/')
+      - "'..' not in agent_state_root.split('/')"
+      - agent_state_install_dir is match('/')
+    fail_msg: >-
+      agent_state_root and agent_state_install_dir must be absolute paths with no '..' component.
+    quiet: true
+
+- name: HARD GATE — mirror paths are relative and stay inside the state root
+  ansible.builtin.assert:
+    that:
+      - item is not match('/')
+      - "'..' not in item.split('/')"
+      - item | length > 0
+    fail_msg: "mirror path {{ item | quote }} must be relative to the state root with no '..'."
+    quiet: true
+  loop: "{{ agent_state_mirror_paths | default([]) }}"
+
+- name: HARD GATE — the age recipient is a PUBLIC key
+  # The private half starts AGE-SECRET-KEY-; pasting it here would put the decryption key in
+  # inventory and on the guest, which is exactly what encrypting to a recipient is meant to avoid.
+  ansible.builtin.assert:
+    that:
+      - agent_state_backup_recipient is match('age1[a-z0-9]{50,}\Z')
+    fail_msg: >-
+      agent_state_backup_recipient must be an age public key (age1...). The private key belongs in
+      a secret store and never lives in inventory or on the host.
+    quiet: true
+  when: agent_state_backup_recipient is defined and agent_state_backup_recipient | length > 0
+
+- name: HARD GATE — the operator-supplied inputs were actually declared (a blank is not a value)
+  # These come from the operator (a mounted share, a generated age key, a created repo) and may be
+  # blank in inventory until then. Refusing here, by name, beats the script discovering it halfway.
+  ansible.builtin.assert:
+    that:
+      - item.value | length > 0
+    fail_msg: "{{ item.key }} is blank in inventory. It is an operator-supplied value: a mounted backup share, an age public key, or the mirror repository URL."
+    quiet: true
+  loop: "{{ _as_operator_inputs | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  vars:
+    _as_operator_inputs: >-
+      {{ ({'agent_state_backup_target': agent_state_backup_target} if agent_state_backup_target is defined else {})
+         | combine({'agent_state_repo_url': agent_state_repo_url} if agent_state_repo_url is defined else {})
+         | combine({'agent_state_backup_recipient': agent_state_backup_recipient} if agent_state_backup_recipient is defined else {}) }}

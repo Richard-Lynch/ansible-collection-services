@@ -1,0 +1,107 @@
+---
+# hermes_gateway_healthy for the textfile collector: a minute timer on the guest that
+# reads /api/status (unauthenticated by design -- no credential on the host) and writes the gauge.
+# A gateway-unhealthy alert reads it. Installed only when hermes_preflight_textfile_dir is set.
+- name: Ensure the probe directory exists
+  ansible.builtin.file:
+    path: /usr/local/lib/hermes-health
+    state: directory
+    mode: "0755"
+
+- name: Install the gateway health probe
+  ansible.builtin.copy:
+    dest: /usr/local/lib/hermes-health/hermes_health_textfile.py
+    mode: "0755"
+    content: "{{ lookup('ansible.builtin.file', role_path ~ '/scripts/hermes_health_textfile.py', rstrip=False) }}"
+  register: hermes__health_py
+
+# The unit passes each expected hook as ONE double-quoted systemd argument ("--hooks-expect=<cmd>").
+# Inside double quotes systemd still expands % specifiers, $VAR/${VAR} and C-style backslash
+# escapes, and a quote or a line break would end the item early -- each of which would hand the
+# probe a command that is not the one `hermes hooks list` prints, so the hooks gauge would read 0
+# forever. None of them belongs in a hook command, so refuse them rather than escape them.
+- name: HARD GATE — every expected hook command is safe inside one quoted systemd argument
+  ansible.builtin.assert:
+    that:
+      - item | list | intersect(_hermes_unit_unsafe_chars | list) | length == 0
+    fail_msg: >-
+      hermes_hooks_expected entry {{ item | to_json }} carries a character systemd would expand or
+      split on inside a quoted ExecStart argument (one of % $ backslash double-quote, or a line
+      break). Hook commands are an interpreter, flags and a script path; none needs them.
+    quiet: true
+  loop: "{{ hermes_hooks_expected }}"
+  vars:
+    _hermes_unit_unsafe_chars: "%$\"\\\n\r"
+
+- name: Render the gateway health service and timer
+  ansible.builtin.template:
+    src: "hermes-health-textfile.{{ item }}.j2"
+    dest: "/etc/systemd/system/hermes-health-textfile.{{ item }}"
+    mode: "0644"
+  loop: [service, timer]
+  register: hermes__health_units
+
+- name: Enable the gateway health timer
+  ansible.builtin.systemd_service:
+    name: hermes-health-textfile.timer
+    enabled: true
+    state: started
+    daemon_reload: "{{ hermes__health_units.changed }}"
+
+# Read back: run it once now and require the file to carry the gauge, so "installed" is proven
+# to be "producing", not assumed from the unit files existing.
+- name: Run the probe once (read-back)
+  ansible.builtin.command:
+    argv: [systemctl, start, hermes-health-textfile.service]
+  changed_when: false
+
+- name: Read the gauge it wrote
+  ansible.builtin.slurp:
+    src: "{{ hermes_preflight_textfile_dir }}/hermes_gateway.prom"
+  register: hermes__health_prom
+
+- name: HARD GATE — the health textfile must carry the gauge
+  ansible.builtin.assert:
+    that:
+      - (hermes__health_prom.content | b64decode) is search('(?m)^hermes_gateway_healthy [01]$')
+    fail_msg: "{{ hermes_preflight_textfile_dir }}/hermes_gateway.prom does not carry hermes_gateway_healthy; the alert would have nothing to read."
+    quiet: true
+
+# An UNREGISTERED hook denies nothing, and Hermes says so only in a log line. So when
+# the hook is enabled, the converge does not finish until `hermes hooks list` shows every expected
+# command allowed -- read through the same textfile probe the alert reads, not a second parser.
+- name: Wait for the expected hooks to be registered (the same script and file the alert reads)
+  ansible.builtin.command:
+    argv: >-
+      {{ ['/usr/bin/env', 'python3', '/usr/local/lib/hermes-health/hermes_health_textfile.py',
+          '--url', 'http://127.0.0.1:' ~ hermes_dashboard_host_port ~ '/api/status',
+          '--out', hermes_preflight_textfile_dir ~ '/hermes_gateway.prom',
+          '--hooks-container', hermes_container_name, '--hooks-user', hermes_uid | string]
+         + (hermes_hooks_expected | map('regex_replace', '^', '--hooks-expect=') | list) }}
+  register: hermes__hooks_prom
+  retries: 12
+  delay: 10
+  until: >-
+    (hermes__hooks_prom.stdout | default('') | regex_findall('hermes_hooks_registered=([0-9]+)')
+     | default(['-1'], true) | first | int) == (hermes_hooks_expected | length)
+  changed_when: false
+  failed_when: false
+  when:
+    - hermes_policy_hook_enabled | bool
+    - hermes_hooks_expected | length > 0
+
+- name: HARD GATE — every expected hook is registered
+  ansible.builtin.assert:
+    that:
+      - >-
+        (hermes__hooks_prom.stdout | default('') | regex_findall('hermes_hooks_registered=([0-9]+)')
+         | default(['-1'], true) | first | int) == (hermes_hooks_expected | length)
+    fail_msg: >-
+      `hermes hooks list` in {{ hermes_container_name }} does not show all {{ hermes_hooks_expected | length }}
+      expected hook(s) allowed ({{ hermes__hooks_prom.stdout | default('no output') }}). A hook that is
+      configured but not registered denies nothing. Check hooks_auto_accept and `docker logs
+      {{ hermes_container_name }}` for "not allowlisted".
+    quiet: true
+  when:
+    - hermes_policy_hook_enabled | bool
+    - hermes_hooks_expected | length > 0

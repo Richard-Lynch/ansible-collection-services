@@ -1,0 +1,24 @@
+# Rendered by config_agent_state drill - ISOLATED BY CONSTRUCTION, torn down afterwards.
+#  - no `ports:` at all: nothing is published on any host interface
+#  - the only network is `internal: true`: no route out, so no Slack, mail or model call
+#  - the env file holds only what agent_state_drill_env declares, and a credential-shaped key
+#    in it is refused before this file is written
+#  - the mirror deploy key is never mounted
+name: agent-state-drill
+services:
+  drill:
+    image: {{ agent_state_drill_image }}
+    container_name: agent-state-drill
+    restart: "no"
+{% if agent_state_drill_command | length > 0 %}
+    command: {{ agent_state_drill_command | to_json }}
+{% endif %}
+    env_file:
+      - ./drill.env
+    volumes:
+      - {{ agent_state_drill_dir }}/data:{{ agent_state_drill_data_path }}:rw
+    networks:
+      - drill
+networks:
+  drill:
+    internal: true

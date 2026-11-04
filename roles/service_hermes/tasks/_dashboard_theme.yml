@@ -1,0 +1,46 @@
+---
+# The dashboard theme: templates/dashboard-theme.yaml.j2 ->
+# data/dashboard-themes/<hermes_dashboard_theme_name>.yaml.
+#
+# The dashboard discovers every data/dashboard-themes/*.yaml on each GET /api/dashboard/themes
+# (v0.22.5 _discover_user_themes),
+# so a new or changed theme needs NO restart. Which theme is active is a separate key
+# (dashboard.theme), seeded by _config_merge.yml only when absent.
+#
+# NOT `template:`. data/ is the agent's tree, and dashboard-themes/ is a directory BELOW it that
+# the agent can replace with a link, which `follow: false` on the leaf does not see (AGENTTREE-01).
+# agent_dir.py --write-file walks from the root-owned config dir by fd, refuses a link at any
+# component, and renames a new file over the name; unchanged content writes nothing.
+
+- name: Render the dashboard theme on the controller
+  ansible.builtin.set_fact:
+    hermes__theme_doc: "{{ lookup('ansible.builtin.template', 'dashboard-theme.yaml.j2') }}"
+
+# The dashboard SKIPS a theme it cannot parse or normalise (no name) with no log line, so a broken
+# file reads as "the theme is not offered" rather than as an error. Caught here instead, against
+# the same two conditions _normalise_theme_definition applies, plus its customCSS cap.
+- name: HARD GATE - the rendered theme is a named mapping within the customCSS cap
+  ansible.builtin.assert:
+    that:
+      - (hermes__theme_doc | from_yaml) is mapping
+      - (hermes__theme_doc | from_yaml).name | default('') == hermes_dashboard_theme_name
+      - ((hermes__theme_doc | from_yaml).customCSS | default('') | length) <= 32768
+    fail_msg: >-
+      templates/dashboard-theme.yaml.j2 did not render to a mapping named
+      '{{ hermes_dashboard_theme_name }}' with a
+      customCSS of at most 32768 bytes; the dashboard would silently not offer it.
+    quiet: true
+
+- name: Write the theme into the agent's tree, refusing any link (agent_dir.py)
+  ansible.builtin.script:
+    cmd: >-
+      {{ role_path }}/scripts/agent_dir.py
+      --anchor {{ hermes_config_dir | quote }}
+      --anchor-uid {{ hermes__estate_uid | default(0) | int }}
+      --uid {{ hermes_state_uid | int }} --gid {{ hermes_state_gid | int }}
+      --write-file data/dashboard-themes/{{ hermes_dashboard_theme_name | quote }}.yaml --file-mode 0644
+    executable: python3
+  environment:
+    AGENT_DIR_CONTENT: "{{ hermes__theme_doc }}"
+  register: hermes__theme_write
+  changed_when: (hermes__theme_write.stdout | default('{}', true) | from_json).changed | default(false)

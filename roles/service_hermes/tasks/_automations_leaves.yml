@@ -1,0 +1,130 @@
+---
+# The automation leaves: the webhook listener and its static routes, the send
+# gate's shell hook, and the cron scripts' env passthrough. ALL TIER C, because each is a
+# privilege boundary: a route's `toolsets` decides what an HTTP POST may run, the hook IS the send
+# gate, and env_passthrough decides which credentials reach a script. Tier C puts them in the
+# managed scope, so `hermes config set` refuses them from inside and the preflight refuses a
+# container whose pinned copy was altered.
+#
+# Included by _config_merge.yml before the owned set is assembled. Pure: reads options, sets facts.
+
+- name: HARD GATE - the webhook listener needs a long global secret
+  ansible.builtin.assert:
+    that:
+      - hermes_webhook_secret | length >= 32
+    fail_msg: >-
+      hermes_webhook_enabled is true but hermes_webhook_secret is {{ hermes_webhook_secret | length }}
+      characters. Every route falls back to it, and upstream signs or compares with it; read it from
+      your secret store.
+    quiet: true
+  # No no_log: the message carries the secret's LENGTH only, and hiding the task would hide the
+  # refusal's reason too (the molecule refuse case asserts on it).
+  when: hermes_webhook_enabled | bool
+
+# A route name becomes a URL path segment (/webhooks/<name>) AND a config key. A dot would split
+# into a nested key; anything else unusual is a path the sender then has to escape.
+- name: HARD GATE - route names are slugs, and no route carries its own secret inline
+  vars:
+    _bad_names: "{{ hermes_webhook_routes.keys() | reject('match', '^[a-z0-9][a-z0-9-]{0,62}$') | list }}"
+    _inline: "{{ hermes_webhook_routes | dict2items | selectattr('value.secret', 'defined') | map(attribute='key') | list }}"
+    _bad_env: >-
+      {{ hermes_webhook_routes | dict2items | selectattr('value.secret_env', 'defined')
+         | rejectattr('value.secret_env', 'in', hermes_webhook_route_secrets.keys() | list)
+         | map(attribute='key') | list }}
+  ansible.builtin.assert:
+    that:
+      - _bad_names | length == 0
+      - _inline | length == 0
+      - _bad_env | length == 0
+    fail_msg: >-
+      {{ ('route names must be lowercase slugs: ' ~ _bad_names ~ '. ') if _bad_names else '' }}{{
+         ('routes carry an inline secret, which would land in the world-readable managed file: ' ~ _inline
+          ~ ' (use secret_env). ') if _inline else '' }}{{
+         ('routes name a secret_env with no value in hermes_webhook_route_secrets: ' ~ _bad_env) if _bad_env else '' }}
+    quiet: true
+  when: hermes_webhook_enabled | bool
+
+# A deliver_only route with deliver=log is refused by the adapter at STARTUP (the whole listener
+# fails, not just the route), so catch it here, before the converge restarts anything.
+- name: HARD GATE - a deliver_only route must deliver somewhere real
+  vars:
+    _bad: >-
+      {{ hermes_webhook_routes | dict2items | selectattr('value.deliver_only', 'defined')
+         | selectattr('value.deliver_only') | rejectattr('value.deliver', 'defined') | map(attribute='key') | list
+         + (hermes_webhook_routes | dict2items | selectattr('value.deliver_only', 'defined')
+            | selectattr('value.deliver_only') | selectattr('value.deliver', 'defined')
+            | selectattr('value.deliver', 'equalto', 'log') | map(attribute='key') | list) }}
+  ansible.builtin.assert:
+    that: [_bad | length == 0]
+    fail_msg: "deliver_only routes {{ _bad }} need a deliver target other than log (upstream refuses them at startup)."
+    quiet: true
+  when: hermes_webhook_enabled | bool
+
+- name: HARD GATE - the send gate lives in the read-only policy mount
+  ansible.builtin.assert:
+    that:
+      - hermes_managed_enforce | bool
+      - hermes_hub_gate_protected_paths | length > 0
+    fail_msg: >-
+      hermes_hub_gate_enabled needs hermes_managed_enforce (the hook and its config are staged in
+      the policy directory, which is mounted read-only only when the managed scope is enforced) and
+      a non-empty hermes_hub_gate_protected_paths (an empty list makes the path rule vacuous).
+    quiet: true
+  when: hermes_hub_gate_enabled | bool
+
+- name: HARD GATE - the email adapter needs a complete, allowlisted, authenticated mailbox
+  vars:
+    _missing: >-
+      {{ {'hermes_email_address': hermes_email_address, 'hermes_email_password': hermes_email_password,
+          'hermes_email_imap_host': hermes_email_imap_host, 'hermes_email_smtp_host': hermes_email_smtp_host,
+          'hermes_email_authserv_id': hermes_email_authserv_id}
+         | dict2items | rejectattr('value') | map(attribute='key') | list
+         + ([] if hermes_email_allowed_users | length > 0 else ['hermes_email_allowed_users']) }}
+  ansible.builtin.assert:
+    that: [_missing | length == 0]
+    fail_msg: >-
+      hermes_email_enabled is true but {{ _missing }} are empty. An empty allowlist is open access
+      (anyone who can send mail drives the agent), and without EMAIL_AUTHSERV_ID upstream drops every
+      message, so the adapter would look configured and do nothing.
+    quiet: true
+  when: hermes_email_enabled | bool
+
+# One route at a time: a route's `secret_env` (ours, not upstream's) becomes
+# `secret: ${env:NAME}`, which the gateway loader and the managed overlay both expand against the
+# process env, i.e. app.env. Reset first, so a second include in one play starts clean.
+- name: Start the rendered route table empty
+  ansible.builtin.set_fact:
+    hermes__routes_rendered: {}
+
+- name: Render each static route
+  ansible.builtin.set_fact:
+    hermes__routes_rendered: >-
+      {{ hermes__routes_rendered | combine({item.key:
+           (item.value | dict2items | rejectattr('key', 'equalto', 'secret_env') | items2dict)
+           | combine({'secret': '${env:' ~ item.value.secret_env ~ '}'} if item.value.secret_env is defined else {})}) }}
+  loop: "{{ hermes_webhook_routes | dict2items }}"
+  loop_control: { label: "{{ item.key }}" }
+  when: hermes_webhook_enabled | bool
+
+# Rendered as a nested document and flattened with the same filter as the role's own wiring, so a
+# route's fields become separate leaves (a dict value cannot be owned: it would delete siblings).
+- name: Build the automation fragment
+  ansible.builtin.set_fact:
+    hermes__automation_doc: >-
+      {{ ({'platforms': {'webhook': {'enabled': true, 'extra': {
+              'port': hermes_webhook_port | int,
+              'routes': hermes__routes_rendered}}}} if hermes_webhook_enabled | bool else {})
+         | combine({'hooks': {'pre_tool_call': [{
+              'matcher': hermes_hub_gate_matcher,
+              'command': '/opt/hermes/.venv/bin/python -I -B /opt/hermes-policy/hub_gate.py',
+              'timeout': 10,
+              'fail_closed': true}]}} if hermes_hub_gate_enabled | bool else {})
+         | combine({'terminal': {'env_passthrough': hermes_cron_env_passthrough}}
+                   if hermes_cron_env_passthrough | length > 0 else {}) }}
+
+- name: Flatten it into tier-C owned leaves
+  ansible.builtin.set_fact:
+    hermes__automation_leaves: >-
+      {{ (hermes__automation_doc | richard_lynch.services.hermes_config_leaves([], 'C')) if hermes__automation_doc | length > 0 else [] }}
+    hermes__automation_retired: >-
+      {{ hermes_webhook_retired_routes | map('regex_replace', '^', 'platforms.webhook.extra.routes.') | list }}

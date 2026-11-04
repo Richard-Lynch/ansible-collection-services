@@ -1,0 +1,169 @@
+---
+# Asserts on what the converge LEFT ON DISK, parsed as data. Every assertion is about a property that
+# would be silently wrong rather than loudly broken: an agent-written key erased, a credential in a
+# readable file, a preview that wrote, a SOUL overwritten.
+- name: Verify — the profile files
+  hosts: localhost
+  gather_facts: false
+  vars:
+    anchor: /tmp/molecule-hermes-profile
+    root: /tmp/molecule-hermes-profile/data
+  tasks:
+    - name: Read the applied profile's files and the previewed profile's config
+      ansible.builtin.slurp:
+        src: "{{ root }}/profiles/{{ item }}"
+      loop: [coder/config.yaml, coder/.env, coder/SOUL.md, preview/config.yaml, fresh/SOUL.md, fresh/.env, fresh/config.yaml]
+      register: _f
+
+    - name: Parse
+      ansible.builtin.set_fact:
+        coder: "{{ _f.results[0].content | b64decode | from_yaml }}"
+        coder_env: "{{ _f.results[1].content | b64decode }}"
+        coder_soul: "{{ _f.results[2].content | b64decode }}"
+        preview: "{{ _f.results[3].content | b64decode | from_yaml }}"
+        fresh_soul: "{{ _f.results[4].content | b64decode }}"
+        fresh_env: "{{ _f.results[5].content | b64decode }}"
+        fresh: "{{ _f.results[6].content | b64decode | from_yaml }}"
+
+    - name: ASSERT — the leaves are set AND the agent's own keys survived
+      ansible.builtin.assert:
+        that:
+          - coder.platform_toolsets.cli == ['terminal', 'file', 'kanban', 'todo']
+          - coder.approvals.mode == 'smart'
+          - coder.approvals.deny == ['rm -rf /*', 'git push --force*']
+          - coder.terminal.backend == 'ssh' and coder.terminal.host == 'worker.example'
+          - coder.skills.external_dirs == ['/opt/shared-skills']
+          # the agent's keys, including one SIBLING of a leaf the role set (terminal.cwd)
+          - coder.memory.write_approval == true
+          - coder.terminal.cwd == '/srv/work'
+          - coder.skills.guard_agent_created == true
+        quiet: true
+
+    - name: ASSERT — kanban is in the coder profile's toolsets and the forbidden ones are not
+      ansible.builtin.assert:
+        that:
+          - "'kanban' in coder.platform_toolsets.cli"
+          - coder.platform_toolsets.cli | intersect(['code_execution', 'browser', 'delegation', 'cronjob', 'connections']) | length == 0
+        quiet: true
+
+    - name: ASSERT — .env got the managed lines and kept the foreign one
+      ansible.builtin.assert:
+        that:
+          - "\"GH_TOKEN='molecule-NOT-A-REAL-TOKEN-0001'\" in coder_env"
+          - "\"WORKER_SESSIOND_URL='http://worker.example:7690'\" in coder_env"
+          - "\"OTHER_TOOL_KEY='keep-me'\" in coder_env"
+          # each name once, even though converge ran twice (molecule's idempotence step)
+          - coder_env | regex_findall('(?m)^GH_TOKEN=') | length == 1
+        quiet: true
+
+    - name: Stat the applied files
+      ansible.builtin.stat:
+        path: "{{ root }}/profiles/coder/{{ item }}"
+      loop: [.env, config.yaml]
+      register: _st
+
+    - name: ASSERT — credentials files are 0600
+      ansible.builtin.assert:
+        that: _st.results | map(attribute='stat') | map(attribute='mode') | unique | list == ['0600']
+        quiet: true
+
+    - name: ASSERT — an existing SOUL.md was not overwritten
+      ansible.builtin.assert:
+        that:
+          - "'curated' in coder_soul"
+          - "'must NOT write over' not in coder_soul"
+        quiet: true
+
+    - name: ASSERT — a SOUL cloned into a profile created THIS run was replaced (and the curated one above was not)
+      ansible.builtin.assert:
+        that:
+          - "'Own SOUL of the fresh profile' in fresh_soul"
+          - "'SOURCE profile' not in fresh_soul"
+        quiet: true
+
+    - name: ASSERT — a profile created THIS run holds ONLY its managed .env lines (the clone's are gone)
+      ansible.builtin.assert:
+        that:
+          - "fresh_env == \"WORKER_TERM_URL='https://term.example'\\n\""
+          - "'cloned' not in fresh_env"
+          # and the EXISTING profile above kept its foreign line: the prune is creation-only
+          - "\"OTHER_TOOL_KEY='keep-me'\" in coder_env"
+        fail_msg: "fresh .env is {{ fresh_env | regex_replace('=.*', '=...') }}"
+        quiet: true
+
+    - name: ASSERT — every cloned platform key was swept to the declared list; the explicit cli leaf won; other keys survived
+      ansible.builtin.assert:
+        that:
+          - fresh.platform_toolsets.cli == ['terminal', 'file', 'kanban', 'todo']
+          - fresh.platform_toolsets.slack == ['terminal', 'kanban', 'todo']
+          - fresh.platform_toolsets.discord == ['terminal', 'kanban', 'todo']
+          - fresh.platform_toolsets | dict2items | map(attribute='value') | map('intersect', ['code_execution', 'browser']) | map('length') | sum == 0
+          - fresh.model.provider == 'cloned'
+        quiet: true
+
+    - name: ASSERT — the PREVIEW wrote nothing (no leaves, no .env, no SOUL, agent key intact)
+      ansible.builtin.assert:
+        that:
+          - "preview == {'memory': {'write_approval': true}}"
+        quiet: true
+
+    - name: Stat the previewed profile's other files
+      ansible.builtin.stat:
+        path: "{{ root }}/profiles/preview/{{ item }}"
+      loop: [.env, SOUL.md]
+      register: _pst
+
+    - name: ASSERT — no .env or SOUL.md appeared in the previewed profile
+      ansible.builtin.assert:
+        that: _pst.results | map(attribute='stat') | map(attribute='exists') | unique | list == [false]
+        quiet: true
+
+    - name: Read each refusal's outcome
+      ansible.builtin.slurp:
+        src: "{{ root }}/outcome-{{ item }}.json"
+      loop: [env-value-with-quote, env-value-with-newline, env-lowercase-name, env-empty-value, link-at-env, link-at-config, link-at-profile-dir]
+      register: _o
+
+    - name: ASSERT — every bad input was refused, and by the check that exists for it
+      vars:
+        outs: "{{ _o.results | map(attribute='content') | map('b64decode') | map('from_json') | list }}"
+      ansible.builtin.assert:
+        that:
+          - outs | length == 7
+          - outs | selectattr('refused') | list | length == 7
+          - outs | selectattr('right_reason') | list | length == 7
+        fail_msg: "outcomes: {{ outs }}"
+        quiet: true
+
+    - name: ASSERT — a refused write left the credential files exactly as they were
+      ansible.builtin.assert:
+        that:
+          - "\"GH_TOKEN='molecule-NOT-A-REAL-TOKEN-0001'\" in coder_env"
+          - coder_env | regex_findall('(?m)^GH_TOKEN=') | length == 1
+        quiet: true
+
+    - name: Read the files the planted links point at
+      ansible.builtin.slurp:
+        src: "{{ anchor }}/outside/{{ item }}"
+      loop: [env-target, config-target]
+      register: _targets
+
+    - name: Stat the planted links
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        follow: false
+      loop:
+        - "{{ root }}/profiles/trap-env/.env"
+        - "{{ root }}/profiles/trap-config/config.yaml"
+        - "{{ root }}/profiles/trap-dir"
+      register: _links
+
+    - name: ASSERT — nothing was written, chowned or read THROUGH a planted link (the links are still links)
+      ansible.builtin.assert:
+        that:
+          - (_targets.results[0].content | b64decode | trim) == 'untouched env-target'
+          - (_targets.results[1].content | b64decode | trim) == 'untouched config-target'
+          - _links.results | map(attribute='stat') | map(attribute='islnk') | unique | list == [true]
+          - _links.results | map(attribute='stat') | map(attribute='lnk_source') | select('search', '/outside') | list | length == 3
+        fail_msg: "a planted link was followed"
+        quiet: true

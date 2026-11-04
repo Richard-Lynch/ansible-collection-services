@@ -1,0 +1,289 @@
+---
+# AUTO-GENERATED argument spec — DO NOT EDIT.
+#
+# Source of truth: roles/config_hermes_learning/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate config_hermes_learning
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+argument_specs:
+  main:
+    short_description: 'Install the Hermes learning loop: ledger, probe set, consolidation, ping'
+    description:
+      - Installs a host script and three timers that read the agent's own state through
+      - 'its own interpreter (docker exec): an hourly ledger with pending-approval ages and'
+      - a Slack ping for anything waiting over 24 h, a nightly fixed probe set through
+      - /v1/runs, and a weekly MEMORY.md consolidation proposal that is refused above a loss
+      - cap and otherwise staged for approval, never written. Optionally installs the
+      - memory provider plugin at a pinned commit. Metrics go to the textfile collector.
+    version_added: '1.0'
+    author: Collection maintainers
+    options:
+      hermes_learning_host_home:
+        description:
+          - Host path of the agent's state directory (the directory the container mounts as
+          - HERMES_HOME). The ledger and probe summaries are written under it for the mirror.
+        type: str
+        required: true
+      hermes_learning_textfile_dir:
+        description:
+          - Directory the node exporter's textfile collector reads.
+        type: str
+        required: true
+      hermes_learning_probes:
+        description:
+          - 'The fixed probe set: each a dict of id, prompt and expect (contains, regex,'
+          - not_contains, tool lists), optionally model and timeout_s. Tasks with a checkable
+          - outcome, written for the agent's own work. Judged on the host; the expectation never
+          - enters the container.
+        type: list
+        required: true
+        elements: dict
+      hermes_learning_consolidate_gateway_url:
+        description:
+          - OpenAI-compatible base URL (ending /v1) the consolidation job calls for its one
+          - aux-model request, from inside the container.
+        type: str
+        required: true
+      hermes_learning_consolidate_key_env:
+        description:
+          - NAME of the container environment variable holding the gateway key. The value is
+          - read inside the container and never seen by the host or this role.
+        type: str
+        required: true
+      hermes_learning_container:
+        description:
+          - The agent's container name.
+        type: str
+        required: false
+        default: hermes
+      hermes_learning_container_python:
+        description:
+          - The agent's own interpreter inside the container.
+        type: str
+        required: false
+        default: /opt/hermes/.venv/bin/python
+      hermes_learning_container_workdir:
+        description:
+          - Working directory inside the container (the app checkout).
+        type: str
+        required: false
+        default: /opt/hermes
+      hermes_learning_exec_user:
+        description:
+          - uid the inner scripts run as, so anything staged is owned by the agent exactly as
+          - its own writes are. 10000 is the image's hermes uid.
+        type: str
+        required: false
+        default: '10000'
+      hermes_learning_home:
+        description:
+          - HERMES_HOME as the container sees it.
+        type: str
+        required: false
+        default: /opt/data
+      hermes_learning_exec_mode:
+        description:
+          - docker runs each inner script through docker exec. local runs it with the host
+          - 'interpreter against hermes_learning_host_home: the molecule scenario only.'
+        type: str
+        required: false
+        default: docker
+        choices:
+          - docker
+          - local
+      hermes_learning_hermes_cli:
+        description:
+          - The hermes CLI inside the container (plugin install and read-back).
+        type: str
+        required: false
+        default: hermes
+      hermes_learning_install_dir:
+        description:
+          - Where the scripts go.
+        type: str
+        required: false
+        default: /usr/local/lib/hermes-learning
+      hermes_learning_config_dir:
+        description:
+          - config.json and probes.json. Secret-free by construction.
+        type: str
+        required: false
+        default: /etc/hermes-learning
+      hermes_learning_state_dir:
+        description:
+          - 'Root-only state: the weekly ledger, probe history, ping de-duplication.'
+        type: str
+        required: false
+        default: /var/lib/hermes-learning
+      hermes_learning_dir:
+        description:
+          - Directory under the state root for the mirror copies (ledger, probes, consolidation
+          - proposals). Add it to agent_state_mirror_paths to have it committed nightly.
+        type: str
+        required: false
+        default: learning
+      hermes_learning_recall_scratch:
+        description:
+          - Container path of the recall test's scratch store. Exclude it from the backup and
+          - "the mirror: it holds test notes, not the user's memory."
+        type: str
+        required: false
+        default: /opt/data/learning/recall-scratch
+      hermes_learning_skip_names_file:
+        description:
+          - Path under the state root listing bundled skill names, left out of skills_total.
+        type: str
+        required: false
+        default: ''
+      hermes_learning_api_url:
+        description:
+          - The agent's API server as seen from inside its own container.
+        type: str
+        required: false
+        default: http://127.0.0.1:8642
+      hermes_learning_api_key_env:
+        description:
+          - NAME of the container env var holding the API server key.
+        type: str
+        required: false
+        default: API_SERVER_KEY
+      hermes_learning_probe_model:
+        description:
+          - Model (or gateway alias) the probe runs ask for; a cheap model keeps the nightly
+          - set affordable.
+        type: str
+        required: true
+      hermes_learning_probe_timeout_s:
+        description:
+          - Per-probe wait for a terminal run.
+        type: int
+        required: false
+        default: 180
+      hermes_learning_consolidate_model:
+        description:
+          - Model (or gateway alias) for the consolidation request.
+        type: str
+        required: true
+      hermes_learning_consolidate_max_loss:
+        description:
+          - 'The loss cap: a proposal leaving more than this fraction of prior MEMORY.md'
+          - entries uncited is refused and never staged.
+        type: float
+        required: false
+        default: 0.25
+      hermes_learning_consolidate_min_entries:
+        description:
+          - Below this many entries there is nothing worth consolidating.
+        type: int
+        required: false
+        default: 8
+      hermes_learning_ping_age_s:
+        description:
+          - A pending write older than this pings Slack (24 h by default).
+        type: int
+        required: false
+        default: 86400
+      hermes_learning_ping_repeat_s:
+        description:
+          - The same pending write is pinged again at most this often.
+        type: int
+        required: false
+        default: 86400
+      hermes_learning_slack_token_env:
+        description:
+          - NAME of the container env var holding the Slack bot token.
+        type: str
+        required: false
+        default: SLACK_BOT_TOKEN
+      hermes_learning_slack_channel_env:
+        description:
+          - NAME of the container env var holding the Slack channel id to post to.
+        type: str
+        required: false
+        default: SLACK_HOME_CHANNEL
+      hermes_learning_claims_window_s:
+        description:
+          - Window the weak-model guard reads state.db over for memory claims with no memory
+          - tool call. 0 disables the read.
+        type: int
+        required: false
+        default: 90000
+      hermes_learning_enable_timers:
+        description:
+          - Enable and start the three timers. False only where there is no systemd.
+        type: bool
+        required: false
+        default: true
+      hermes_learning_unit_dir:
+        description:
+          - Where the units are written.
+        type: str
+        required: false
+        default: /etc/systemd/system
+      hermes_learning_hourly_oncalendar:
+        description:
+          - Ledger, pending ages and the 24 h ping.
+        type: str
+        required: false
+        default: hourly
+      hermes_learning_probes_oncalendar:
+        description:
+          - The nightly probe set.
+        type: str
+        required: false
+        default: '*-*-* 03:30:00'
+      hermes_learning_consolidate_oncalendar:
+        description:
+          - The weekly consolidation proposal.
+        type: str
+        required: false
+        default: Sun *-*-* 04:00:00
+      hermes_learning_stack_dir:
+        description:
+          - The compose project directory restarted after a plugin install.
+        type: str
+        required: false
+        default: /opt/hermes
+      hermes_learning_health_url:
+        description:
+          - Host-side URL that answers 200 once the agent is back after that restart.
+        type: str
+        required: false
+        default: http://127.0.0.1:8642/health
+      hermes_learning_memory_plugin:
+        description:
+          - 'Catalog name of the memory provider plugin to install, pinned (empty: built-in'
+          - memory only). Its activation is memory.provider in config.yaml, owned by
+          - service_hermes through hermes_config_owned.
+        type: str
+        required: false
+        default: ''
+      hermes_learning_memory_plugin_section:
+        description:
+          - config.yaml section the plugin reads its settings from (plugins.<section>);
+          - Holographic's is hermes-memory-store.
+        type: str
+        required: false
+        default: ''
+      hermes_learning_memory_plugin_settings:
+        description:
+          - Scalar settings written under plugins.<section> with the agent's own
+          - '`hermes config set`, read back with `hermes config get`. Env-var NAMES only, never'
+          - 'a credential: the plugin reads the key from the variable it is told to.'
+        type: dict
+        required: false
+        default: {}
+      hermes_learning_memory_plugin_ref:
+        description:
+          - The 40-character commit the plugin is installed at (hermes plugins install --ref).
+        type: str
+        required: false
+        default: ''
+      hermes_learning_memory_plugin_version:
+        description:
+          - The version label the read-back requires hermes plugins list to report.
+        type: str
+        required: false
+        default: ''

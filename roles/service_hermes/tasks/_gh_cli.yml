@@ -1,0 +1,65 @@
+---
+# Provide the GitHub CLI to the gateway container, READ-ONLY.
+#
+# WHY: the Kanban PR completion contract (upstream hermes_cli/kanban_pr_acceptance.py) gathers its
+# evidence with `gh api` as a subprocess of the process that calls kanban_complete, i.e. INSIDE this
+# container, presenting the assignee profile's own GH_TOKEN. The published image ships no `gh`, so
+# subprocess.run raises FileNotFoundError, upstream's `except OSError` classes it "infra", and every
+# contract card fails "GitHub acceptance evidence unavailable or incomplete" however good its
+# metadata. (A missing or refused credential reads "auth", not "infra".)
+#
+# HOW: the official release tarball, sha256-pinned, unpacked root-owned under
+# <hermes_config_dir>/tools — outside data/, so nothing the agent can write decides what lands
+# there (AGENTTREE-01) — and FILE-mounted `:ro` at /usr/local/bin/gh (on the image's PATH). The
+# source path carries the version, so an upgrade is a different compose file and a recreate, never
+# the file-bind inode trap (a rewritten file the running container never sees).
+#
+# The binary holds no credential and gets none from here: each call presents the assignee profile's
+# GH_TOKEN, which config_hermes_profile writes into that profile's 0600 .env.
+- name: HARD GATE - a gh version needs its tarball's sha256
+  ansible.builtin.assert:
+    that:
+      - hermes_gh_cli_version is match('^[0-9]+[.][0-9]+[.][0-9]+$')
+      - hermes_gh_cli_sha256 is match('^[0-9a-f]{64}$')
+    fail_msg: >-
+      hermes_gh_cli_version '{{ hermes_gh_cli_version }}' needs a semver and hermes_gh_cli_sha256 the
+      64-hex sha256 of gh_<version>_linux_{{ hermes_gh_cli_arch }}.tar.gz (the release's
+      gh_<version>_checksums.txt). Leave the version empty to provide no gh.
+    quiet: true
+
+- name: Ensure the tools directory exists (root-owned, outside the agent's tree)
+  ansible.builtin.file:
+    path: "{{ hermes_config_dir }}/tools"
+    state: directory
+    mode: "0755"
+
+- name: Download the gh release tarball (sha256-verified)
+  ansible.builtin.get_url:
+    url: "https://github.com/cli/cli/releases/download/v{{ hermes_gh_cli_version }}/{{ hermes__gh_stem }}.tar.gz"
+    dest: "{{ hermes_config_dir }}/tools/{{ hermes__gh_stem }}.tar.gz"
+    checksum: "sha256:{{ hermes_gh_cli_sha256 }}"
+    mode: "0644"
+    timeout: 60
+
+- name: Unpack gh (once per version)
+  ansible.builtin.unarchive:
+    src: "{{ hermes_config_dir }}/tools/{{ hermes__gh_stem }}.tar.gz"
+    dest: "{{ hermes_config_dir }}/tools"
+    remote_src: true
+    creates: "{{ hermes__gh_bin }}"
+
+- name: Read back the unpacked binary
+  ansible.builtin.stat:
+    path: "{{ hermes__gh_bin }}"
+  register: hermes__gh_stat
+
+# What the container needs is a regular file it can EXECUTE as the gateway uid (not root): the
+# other-execute bit, since the file is root-owned. Present-and-readable would pass on a 0644 file.
+- name: HARD GATE - gh is a regular file the gateway uid can execute
+  ansible.builtin.assert:
+    that:
+      - hermes__gh_stat.stat.exists
+      - hermes__gh_stat.stat.isreg
+      - hermes__gh_stat.stat.xoth
+    fail_msg: "{{ hermes__gh_bin }} is missing, not a regular file, or not world-executable."
+    quiet: true

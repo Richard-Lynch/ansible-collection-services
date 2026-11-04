@@ -1,0 +1,27 @@
+# Copyright: (c) 2026, Richard Lynch
+# GNU General Public License v3.0+ (see https://www.gnu.org/licenses/gpl-3.0.txt)
+---
+DOCUMENTATION:
+  name: hermes_toolset_leaves
+  short_description: One tier-C platform_toolsets leaf per platform from a core set and subtractions
+  author: Richard Lynch (@Richard-Lynch)
+  description:
+    - Returns one owned leaf C(platform_toolsets.<platform>) of tier C per platform, valued the core set
+      minus that platform's subtractions (hermes_toolset_floor).
+  options:
+    _input:
+      description: The full core toolset names.
+      type: list
+      required: true
+    subtract_by_platform:
+      description: Mapping of platform name to the toolset names to remove there.
+      type: dict
+      required: true
+EXAMPLES: |
+  - name: Toolset leaves
+    ansible.builtin.set_fact:
+      leaves: "{{ ['web', 'terminal', 'memory'] | richard_lynch.services.hermes_toolset_leaves({'api_server': ['terminal']}) }}"
+RETURN:
+  _value:
+    description: A list of mappings with C(key), C(value) and C(tier).
+    type: list

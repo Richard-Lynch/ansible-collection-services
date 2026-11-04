@@ -1,0 +1,7 @@
+---
+# Run the real merge against whatever is on disk now. Needs vars/merge.yml in scope.
+- name: Merge the owned leaves
+  ansible.builtin.include_role:
+    name: service_hermes
+    tasks_from: _config_merge
+    public: true

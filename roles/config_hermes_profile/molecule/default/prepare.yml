@@ -1,0 +1,12 @@
+---
+# A clean slate for the FIRST converge only (molecule runs prepare once, before converge, not again
+# before the idempotence step). Without it a leftover directory from a previous run makes the first
+# converge a no-op, and the idempotence step then proves nothing.
+- name: Prepare — remove what a previous run left
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Remove the scratch data directory
+      ansible.builtin.file:
+        path: /tmp/molecule-hermes-profile
+        state: absent

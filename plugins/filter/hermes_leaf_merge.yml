@@ -1,0 +1,29 @@
+# Copyright: (c) 2026, Richard Lynch
+# GNU General Public License v3.0+ (see https://www.gnu.org/licenses/gpl-3.0.txt)
+---
+DOCUMENTATION:
+  name: hermes_leaf_merge
+  short_description: Set named leaves in a Hermes config.yaml text and keep every other key
+  author: Richard Lynch (@Richard-Lynch)
+  description:
+    - Sets each given leaf in a profile's C(config.yaml) text and leaves every other key exactly as it
+      is, because the agent and the dashboard write the same file.
+    - Returns the input text UNCHANGED when the merge changes nothing, so an unchanged converge is byte-identical
+      rather than a re-serialisation that reorders keys.
+  options:
+    _input:
+      description: The current file contents, or an empty string for a new file.
+      type: str
+      required: true
+    leaves:
+      description: List of mappings with C(key) (a dotted string or a list of path segments) and C(value).
+      type: list
+      required: true
+EXAMPLES: |
+  - name: Set one leaf
+    ansible.builtin.set_fact:
+      merged: "{{ 'model: {default: a}\n' | richard_lynch.services.hermes_leaf_merge([{'key': 'approvals.mode', 'value': 'smart'}]) }}"
+RETURN:
+  _value:
+    description: The merged config.yaml text.
+    type: str

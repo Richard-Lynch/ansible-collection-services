@@ -1,0 +1,339 @@
+---
+# Render-only scenario. This role's real converge needs a Docker daemon and a reachable Hermes
+# container, neither of which is reproducible on a GitHub-hosted runner — so coverage here is
+# honestly PARTIAL: it proves the templates render correct, parseable artifacts for several
+# variable combinations, not that the agent runs. (render-only coverage.)
+#
+# Three variants are rendered because the interesting logic is CONDITIONAL:
+#   full/        dashboard + API server + a gateway base URL
+#   minimal/     dashboard only                        -> no API server block, no base URL
+#   headless/    dashboard DISABLED, API server only   -> no dashboard block, no healthcheck
+#
+# Rendering only one variant would let a broken `if` pass: an always-true guard and a correct
+# guard are indistinguishable from a single render. The headless variant exists specifically
+# because `ports:` and `healthcheck:` are BOTH conditional on the dashboard — a compose file
+# that renders an empty `ports:` key, or a healthcheck probing a port nothing publishes, is
+# valid YAML and silently wrong.
+- name: Converge — render the hermes templates (no docker)
+  hosts: localhost
+  gather_facts: false
+  vars:
+    render_root: /tmp/molecule-hermes
+    # Shared, non-secret-shaped placeholders. These are TEST values, not real deployment values.
+    hermes_container_name: hermes
+    hermes_image_repo: nousresearch/hermes-agent
+    hermes_image_tag: v0.21.6
+    hermes_image_digest: "sha256:55e192fba0cd4fde61142abbff5adeacff40efdb482ccd0ff877924bd274f909"
+    hermes_network: example-net
+    hermes_timezone: "Etc/UTC"
+    hermes_api_host_port: 8642
+    hermes_dashboard_host_port: 9119
+    hermes_dashboard_username: admin
+    hermes_dashboard_password: "molecule-dashboard-password"
+    hermes_dashboard_auth_secret: "molecule-dashboard-secret"
+    hermes_default_model: "example-provider/model-large"
+    hermes_state_uid: 10000
+    hermes_state_gid: 10000
+    hermes_gateway_provider_name: example-gateway
+    hermes_gateway_key_env: HERMES_LITELLM_API_KEY
+    hermes_gateway_session_affinity_header: x-litellm-session-id
+    hermes_tool_loop_hard_stop: true
+    # The compose template's estate-skills mount is conditional on this, so it is set per variant
+    # (full: on, the other two: off) -- one render cannot tell an always-true guard from a correct one.
+    hermes_skills_source: ""
+    hermes_skills_mount_path: /opt/example-skills
+    hermes_uid: 10000
+    # The managed scope is conditional too, so it is set per variant: full = on with
+    # the preflight textfile mount, headless = on WITHOUT it, minimal = off. That proves each of the
+    # template's two guards in both directions.
+    hermes_managed_enforce: false
+    hermes_managed_mount_dir: /etc/hermes-managed
+    hermes_preflight_textfile_dir: ""
+    # The FULL variant turns the settings service on, so one render proves the conditional
+    # renders it and the other two prove it omits it.
+    hermes_settings_service_enabled: false
+    hermes_settings_service_container_name: hermes-settings
+    hermes_settings_service_port: 8650
+    hermes_settings_profiles: [default]
+    hermes_settings_github_repo: ""
+    # The webhook listener is OFF unless a variant turns it on (full: on, every interface;
+    # headless: on, one bind address; minimal: off), so its port and secret are proved absent too.
+    # (Merged once, above.)
+    hermes_email_enabled: false
+    hermes_webhook_enabled: false
+    hermes_webhook_port: 8644
+    hermes_webhook_bind_address: ""
+    # The API server, dashboard and Webapp publish on loopback (the role's default) in every
+    # variant but minimal, which sets the dashboard's to "" so one render proves the every-interface
+    # form (the shape an internal guest behind its own firewall pins) is still `port:port`.
+    hermes_api_bind_address: "127.0.0.1"
+    hermes_dashboard_bind_address: "127.0.0.1"
+    hermes_webapp_bind_address: "127.0.0.1"
+    # The read-only subscription store mount: ON at the role default (full renders it), OFF in
+    # headless, so one variant proves the conditional omits it while the listener is still on.
+    hermes_webhook_subscriptions_readonly: true
+    # No cron scripts in the render variants; the automations play renders the mount (verify.yml).
+    hermes_cron_scripts_source: ""
+    # The Webapp is OFF unless a variant turns it on (full: on, with a public_url), so its port
+    # and its config block are proved absent in minimal/headless and present in full.
+    hermes_webapp_enabled: false
+    hermes_webapp_host_port: 9120
+    hermes_webapp_public_url: ""
+    # The gh CLI mount (the PR completion contract): full renders it, minimal/headless prove it absent.
+    hermes_gh_cli_version: ""
+    hermes_gh_cli_arch: amd64
+  tasks:
+    - name: Create the render directories
+      ansible.builtin.file:
+        path: "{{ render_root }}/{{ item }}"
+        state: directory
+        mode: "0755"
+      loop: [full, minimal, headless]
+
+    # ---- variant: everything on -----------------------------------------------------------
+    - name: Render the FULL variant (dashboard + API server + the gateway)
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../{{ item.src }}"
+        dest: "{{ render_root }}/full/{{ item.dest }}"
+        mode: "0644"
+      loop:
+        # app.env.j2 lives in templates/ rather than files/, because deployment_config renders
+        # every .j2 under files/ and would otherwise write the credential file a second time at
+        # the wrong mode. Each entry therefore names its own source directory.
+        - { src: "files/docker-compose.yml.j2", dest: "docker-compose.yml" }
+        - { src: "templates/app.env.j2", dest: "app.env" }
+        - { src: "templates/config.yaml.j2", dest: "config.yaml" }
+      vars:
+        hermes_config_dir: "{{ render_root }}/full"
+        hermes_skills_source: "{{ playbook_dir }}/fixtures/skills"
+        hermes_gh_cli_version: "2.103.3"
+        hermes_settings_service_enabled: true
+        hermes_settings_profiles: [default, settings, coder]
+        hermes_settings_github_repo: "example/settings"
+        hermes_dashboard_enabled: true
+        hermes_api_server_enabled: true
+        hermes_api_server_key: "molecule-api-server-key-at-least-32-chars"
+        hermes_gateway_url: "http://litellm.example.com:4000/v1"
+        hermes_gateway_api_key: "sk-molecule-virtual-key-placeholder"
+        hermes_gateway_discover_models: true
+        hermes_gateway_models: ["example-provider/model-large", "example-aggregator/vendor/model-alt"]
+        # rendered here only, so the OMISSION in minimal/headless is also proved.
+        hermes_observability_prometheus_url: "http://prom.example.com:9090"
+        hermes_observability_loki_url: "http://loki.example.com:3100"
+        hermes_observability_grafana_url: "https://grafana.example.com"
+        hermes_observability_grafana_token: "glsa_molecule_viewer_token_placeholder"
+        # Slack on here only, so its absence elsewhere is proved too.
+        hermes_slack_enabled: true
+        hermes_slack_bot_token: "xoxb-molecule-placeholder"
+        hermes_slack_app_token: "xapp-molecule-placeholder"
+        hermes_slack_allow_from: [U0MOLECULE1, U0MOLECULE2]
+        hermes_webhook_enabled: true
+        hermes_webhook_secret: "molecule-webhook-global-secret-0123456789"
+        hermes_webhook_route_secrets: {HERMES_WEBHOOK_HA_SECRET: "molecule-ha-route-placeholder-value"}
+        hermes_cron_env: {EXAMPLE_POLL_TOKEN: "ghp_molecule_placeholder_token"}
+        hermes_email_enabled: true
+        hermes_email_address: "agent@example.com"
+        hermes_email_password: "molecule-mailbox-app-password"
+        hermes_email_imap_host: "imap.example.com"
+        hermes_email_smtp_host: "smtp.example.com"
+        hermes_email_imap_port: 993
+        hermes_email_smtp_port: 587
+        hermes_email_allowed_users: ["owner@example.com", "other@example.com"]
+        hermes_email_authserv_id: "mx.example.com"
+        hermes_managed_enforce: true
+        hermes_preflight_textfile_dir: /var/lib/node_exporter/textfile
+        hermes_webapp_enabled: true
+        hermes_webapp_public_url: "https://agent.example.com"
+
+    # The health timer's unit, with multi-word hook commands as a deployment declares them (an
+    # interpreter, -I -B, then the script). verify.yml parses its ExecStart through the probe's
+    # own argparse: an unquoted render splits each command and the timer exits 2 on every run.
+    - name: Render the health textfile unit (FULL variant, hooks expected)
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../templates/hermes-health-textfile.service.j2"
+        dest: "{{ render_root }}/full/hermes-health-textfile.service"
+        mode: "0644"
+      vars:
+        hermes_preflight_textfile_dir: /var/lib/node_exporter/textfile
+        hermes_hooks_expected:
+          - /opt/hermes/.venv/bin/python -I -B /opt/hermes-policy/hermes_policy_hook.py
+          - /opt/hermes/.venv/bin/python -I -B /opt/hermes-policy/hermes_audit_hook.py
+
+    # ---- variant: the deployed default ----------------------------------------------------
+    - name: Render the MINIMAL variant (dashboard only)
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../{{ item.src }}"
+        dest: "{{ render_root }}/minimal/{{ item.dest }}"
+        mode: "0644"
+      loop:
+        # app.env.j2 lives in templates/ rather than files/, because deployment_config renders
+        # every .j2 under files/ and would otherwise write the credential file a second time at
+        # the wrong mode. Each entry therefore names its own source directory.
+        - { src: "files/docker-compose.yml.j2", dest: "docker-compose.yml" }
+        - { src: "templates/app.env.j2", dest: "app.env" }
+        - { src: "templates/config.yaml.j2", dest: "config.yaml" }
+      vars:
+        hermes_config_dir: "{{ render_root }}/minimal"
+        hermes_dashboard_enabled: true
+        hermes_dashboard_bind_address: ""
+        # OFF, so the scenario proves the conditional OMITS the API server block rather than
+        # only that it renders one.
+        hermes_api_server_enabled: false
+        hermes_api_server_key: ""
+        hermes_gateway_url: "http://litellm.example.com:4000/v1"
+        hermes_gateway_api_key: "sk-molecule-virtual-key-placeholder"
+        # discovery OFF here, so the scenario proves `discover_models: false` is RENDERED in one
+        # variant and ABSENT in the others — an always-true guard is indistinguishable from a
+        # correct one in a single render.
+        hermes_gateway_discover_models: false
+        hermes_gateway_models: ["example-provider/model-small"]
+
+    # ---- variant: dashboard off -----------------------------------------------------------
+    - name: Render the HEADLESS variant (no dashboard, API server only)
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../{{ item.src }}"
+        dest: "{{ render_root }}/headless/{{ item.dest }}"
+        mode: "0644"
+      loop:
+        # app.env.j2 lives in templates/ rather than files/, because deployment_config renders
+        # every .j2 under files/ and would otherwise write the credential file a second time at
+        # the wrong mode. Each entry therefore names its own source directory.
+        - { src: "files/docker-compose.yml.j2", dest: "docker-compose.yml" }
+        - { src: "templates/app.env.j2", dest: "app.env" }
+        - { src: "templates/config.yaml.j2", dest: "config.yaml" }
+      vars:
+        hermes_config_dir: "{{ render_root }}/headless"
+        hermes_managed_enforce: true
+        hermes_preflight_textfile_dir: ""
+        hermes_dashboard_enabled: false
+        hermes_webhook_enabled: true
+        hermes_webhook_bind_address: "192.0.2.5"
+        hermes_webhook_subscriptions_readonly: false
+        hermes_webhook_secret: "molecule-webhook-global-secret-0123456789"
+        hermes_api_server_enabled: true
+        hermes_api_server_key: "molecule-api-server-key-at-least-32-chars"
+        hermes_gateway_url: "http://litellm.example.com:4000/v1"
+        hermes_gateway_api_key: "sk-molecule-virtual-key-placeholder"
+        # Discovery ON here, matching `full`. Only `minimal` disables it, so exactly one variant
+        # renders `discover_models: false` and two omit it — which is what makes the conditional
+        # testable in both directions.
+        hermes_gateway_discover_models: true
+        hermes_gateway_models: ["example-provider/model-small"]
+
+# ---------------------------------------------------------------------------------------------
+# Play 2 - the role's real owned-leaf merge, run against the file prepare.yml seeded.
+- name: Converge - run the role's real merge against the seeded file
+  hosts: localhost
+  gather_facts: false
+  vars_files: [vars/merge.yml]
+  tasks:
+    - name: Resolve the role's declared options
+      ansible.builtin.include_role:
+        name: service_hermes
+        tasks_from: _resolve_defaults
+        public: true
+
+    - name: Merge the owned leaves
+      ansible.builtin.include_tasks: merge_case.yml
+
+    # Order matters: the managed scope is built from the owned list the merge just assembled.
+    - name: Stage the managed scope and its preflight
+      ansible.builtin.include_role:
+        name: service_hermes
+        tasks_from: _managed_scope
+        public: true
+
+    - name: Deliver the delivered skills read-only
+      ansible.builtin.include_role:
+        name: service_hermes
+        tasks_from: _estate_skills
+        public: true
+
+    # Through the confined writer, as on the guest. Re-run by molecule's idempotence step, which
+    # is what proves an unchanged theme writes nothing.
+    - name: Deliver the dashboard theme
+      ansible.builtin.include_role:
+        name: service_hermes
+        tasks_from: _dashboard_theme
+        public: true
+
+# ---------------------------------------------------------------------------------------------
+# Play 3 - the policy hook and its gate, against a fresh policy directory.
+# The settings-service half of _hub_policy.yml chowns to the agent's uid and needs root, so it is
+# off here; its compose rendering is covered by the FULL variant above (its code is the caller's).
+- name: Converge - stage the policy files
+  hosts: localhost
+  gather_facts: false
+  vars:
+    hub_root: /tmp/molecule-hermes-hub
+  tasks:
+    - name: Resolve the role's declared options
+      ansible.builtin.include_role:
+        name: service_hermes
+        tasks_from: _resolve_defaults
+        public: true
+
+    - name: Set the policy-hook inputs (set_fact, so they outrank the resolver's set_fact)
+      ansible.builtin.set_fact:
+        hermes_config_dir: "{{ hub_root }}"
+        hermes_managed_enforce: true
+        hermes_policy_hook_enabled: true
+        hermes__owned_all:
+          - {key: hooks_auto_accept, value: true, tier: C}
+          - {key: approvals.mode, value: smart, tier: C}
+
+    - name: Ensure the policy directory exists
+      ansible.builtin.file:
+        path: "{{ hub_root }}/policy"
+        state: directory
+        mode: "0755"
+
+    - name: Stage the policy files
+      ansible.builtin.include_role:
+        name: service_hermes
+        tasks_from: _hub_policy
+
+# ---------------------------------------------------------------------------------------------
+# Play 3 - the webhook routes, the send gate and the cron scripts through the role's
+# real merge, managed-scope staging and delivery (no docker: the reconcile half talks to a running
+# daemon and is proved on a live guest, not here).
+# The merge play before this one ran the resolver on localhost, and set_fact persists across
+# plays: its facts would outrank this play's vars_files, and the resolver's re-entry branch would
+# rebind defaults over them (meta: clear_facts does not clear set_fact facts -- measured). So this
+# play runs on its OWN host, a local-connection alias with no facts at all.
+- name: Add a fact-free local host for the automations play
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Add m5-local
+      ansible.builtin.add_host:
+        name: m5-local
+        ansible_connection: local
+        ansible_python_interpreter: "{{ ansible_playbook_python }}"
+      changed_when: false
+
+- name: Converge - automations through the real merge and delivery
+  hosts: m5-local
+  gather_facts: false
+  vars_files: [vars/automations.yml]
+  tasks:
+    - name: Resolve the role's declared options
+      ansible.builtin.include_role:
+        name: service_hermes
+        tasks_from: _resolve_defaults
+        public: true
+
+    - name: Merge the owned leaves (routes, hook and passthrough are tier C)
+      ansible.builtin.include_tasks: merge_case.yml
+
+    - name: Stage the managed scope
+      ansible.builtin.include_role:
+        name: service_hermes
+        tasks_from: _managed_scope
+        public: true
+
+    - name: Deliver the send gate and the cron scripts
+      ansible.builtin.include_role:
+        name: service_hermes
+        tasks_from: _automations_deliver
+        public: true

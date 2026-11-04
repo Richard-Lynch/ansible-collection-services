@@ -1,0 +1,28 @@
+---
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Restart worker-sessiond
+  # The unit uses KillMode=process, so this restarts the supervisor alone: live tmux sessions and
+  # the agents in them are not touched. sessions.json is on disk and is re-read on start.
+  ansible.builtin.systemd:
+    name: worker-sessiond
+    state: restarted
+
+- name: Restart worker-ttyd
+  ansible.builtin.systemd:
+    name: worker-ttyd
+    state: restarted
+
+- name: Reload sshd
+  # reload, not restart: live ssh sessions (and the tmux sessions attached through them) survive.
+  ansible.builtin.systemd:
+    name: ssh
+    state: reloaded
+
+- name: Restart worker-acpx-mcp
+  ansible.builtin.systemd:
+    name: worker-acpx-mcp
+    state: restarted
+  when: worker_acp_enabled | bool

@@ -1,0 +1,14 @@
+# Managed by Ansible (service_coding_worker). Card containers must not reach the VM itself.
+#
+# A card's container sits on a docker bridge (docker0 or a per-card br-*). Traffic from the bridge to
+# an address OF THE VM goes through INPUT, which accepts it by default, so without this table a card
+# could reach sessiond (stop/launch/done for every card), ttyd (a tmux client) and sshd. Traffic
+# the card sends THROUGH the VM to the network is FORWARD and is untouched: egress is unchanged.
+# Replies to connections the VM opened stay allowed (conntrack).
+table inet hermes_worker {
+  chain input {
+    type filter hook input priority -10; policy accept;
+    ct state established,related accept
+    iifname { "docker0", "br-*" } counter drop comment "card bridge -> the VM itself"
+  }
+}

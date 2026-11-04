@@ -1,0 +1,8 @@
+# Rendered by roles/service_litellm to {{ litellm_config_dir }}/redis/redis.conf, mode 0600, owned
+# by the image's redis uid (the server drops to it before reading this file). LIVE CREDENTIAL:
+# requirepass lives HERE and not on redis-server's argv, where `ps` and `docker inspect` show it.
+requirepass "{{ litellm_redis_password }}"
+# A restart must not silently reset every budget counter to zero.
+appendonly yes
+# Evicting a spend counter to free memory would make a budget silently stop being enforced.
+maxmemory-policy noeviction

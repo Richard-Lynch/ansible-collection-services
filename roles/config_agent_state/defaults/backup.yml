@@ -1,0 +1,40 @@
+---
+# AUTO-GENERATED defaults file — DO NOT EDIT.
+#
+# Source of truth: roles/config_agent_state/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate config_agent_state
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+# Entrypoint:      backup
+
+# Which agent product this state belongs to (the role is built for Hermes and keeps
+# every product-specific value an option). It names the archives and the metrics
+# label so a second product can share a backup share without colliding. Lowercase
+# letters, digits and hyphens.
+agent_state_product__default: hermes
+
+# Interpreter that runs agent_state.py. It must be 3.12 or newer (tarfile extraction
+# filters); the script refuses an older one rather than extracting unfiltered.
+agent_state_python__default: python3
+
+# Where the role installs agent_state.py on the host.
+agent_state_install_dir__default: /usr/local/lib/agent-state
+
+# Newest archives kept (the ring).
+agent_state_backup_keep__default: 14
+
+# How many months' FIRST archive are kept beyond the ring.
+agent_state_backup_keep_monthly__default: 12
+
+# fnmatch patterns left out of the runtime tar (caches, logs, sandboxes, browser
+# profiles). A pattern ending in a slash matches a directory name.
+agent_state_backup_exclude__default: []
+
+# SQLite files (relative to the root) copied with the online-backup API instead of a
+# file copy, then integrity-checked. A live database copied as a file loses its WAL.
+agent_state_sqlite_files__default: []
+
+# Label in the archive name, e.g. pre-upgrade.
+agent_state_backup_label__default: manual

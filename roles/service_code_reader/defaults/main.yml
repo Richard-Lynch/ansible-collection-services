@@ -1,0 +1,47 @@
+---
+# AUTO-GENERATED defaults file — DO NOT EDIT.
+#
+# Source of truth: roles/service_code_reader/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate service_code_reader
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+# Entrypoint:      main
+
+# Container name.
+code_reader_container_name__default: code-reader
+
+# Host directory holding the rendered compose project and config.
+code_reader_config_dir__default: /opt/code-reader
+
+# Pinned base image. The sidecar is one stdlib-only Python file mounted into it,
+# so there is nothing to build. A floating tag is rejected by the role's gate.
+code_reader_image__default: python:3.12.7-slim
+
+# Host address the sidecar's port is PUBLISHED on. Must be loopback: this service
+# hands out login codes, and its only authentication is a bearer token. The role
+# refuses anything but 127.x or ::1.
+code_reader_bind__default: 127.0.0.1
+
+# Port the sidecar listens on (container) and publishes (host loopback).
+code_reader_port__default: 8645
+
+# Container timezone.
+code_reader_timezone__default: Etc/UTC
+
+# IMAP over TLS port.
+code_reader_imap_port__default: 993
+
+# Mailbox folder to watch.
+code_reader_imap_folder__default: INBOX
+
+# Seconds between IMAP polls.
+code_reader_poll_seconds__default: 15
+
+# How long a received code stays available. Each code is also one-shot.
+code_reader_ttl_seconds__default: 600
+
+# Extra regular expressions, group 1 being the code, tried before the built-ins.
+# Empty means the built-in patterns only (digits 4-8 near the word code).
+code_reader_code_patterns__default: []

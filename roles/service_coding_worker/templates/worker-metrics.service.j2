@@ -1,0 +1,12 @@
+# {{ ansible_managed }}
+[Unit]
+Description=worker-metrics: file worker-sessiond's stuck-card metrics for the textfile collector
+After=worker-sessiond.service
+
+[Service]
+Type=oneshot
+# Root on purpose: sessiond runs as the agents' own user, and the collector directory must not be
+# writable by it (an agent could forge any host metric). The token comes from the same 0600 file
+# sessiond reads, so there is one home for it.
+EnvironmentFile={{ worker_conf_dir }}/sessiond.env
+ExecStart=/usr/bin/python3 {{ worker_lib_dir }}/worker_metrics_pull.py --url http://{{ worker_probe_sessiond_host }}:{{ worker_sessiond_port }}/v1/metrics --out {{ worker_metrics_textfile }}

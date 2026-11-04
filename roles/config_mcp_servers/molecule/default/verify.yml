@@ -1,0 +1,75 @@
+---
+- name: Verify - the rendered catalogue, and the refusals
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Read the document
+      ansible.builtin.slurp:
+        src: /tmp/molecule-mcp/policy/mcp-catalogue.json
+      register: doc_raw
+
+    - name: Stat it
+      ansible.builtin.stat:
+        path: /tmp/molecule-mcp/policy/mcp-catalogue.json
+      register: doc_stat
+
+    - name: The document is the catalogue the settings service reads
+      vars:
+        doc: "{{ doc_raw.content | b64decode | from_json }}"
+      ansible.builtin.assert:
+        that:
+          - doc_stat.stat.mode == '0644'
+          - doc.servers.keys() | sort == ['context7', 'github-ro']
+          - "doc.servers.context7.config == {'url': 'https://mcp.context7.com/mcp', 'tools': {'include': ['resolve-library-id', 'query-docs']}}"
+          - doc.servers['github-ro'].env_names == ['MCP_GITHUB_RO_API_KEY']
+          - "doc.enabled == {'coder': ['context7']}"
+        quiet: true
+
+    - name: MUST FAIL - an entry still marked pending review
+      block:
+        - name: Render a pending entry
+          ansible.builtin.include_role:
+            name: config_mcp_servers
+          vars:
+            mcp_clients_file: /tmp/molecule-mcp/bad/mcp-catalogue.json
+            mcp_servers:
+              - {name: new-one, transport: http, url: "https://x.example/mcp", tools_include: [a],
+                 clients: [coder], reviewed_by: pending}
+        - name: Not reached
+          ansible.builtin.set_fact:
+            pending_case: passed
+      rescue:
+        - name: Record
+          ansible.builtin.set_fact:
+            pending_case: refused
+
+    - name: MUST FAIL - a literal token in a header
+      block:
+        - name: Render a literal credential
+          ansible.builtin.include_role:
+            name: config_mcp_servers
+          vars:
+            mcp_clients_file: /tmp/molecule-mcp/bad/mcp-catalogue.json
+            mcp_servers:
+              - {name: leaky, transport: http, url: "https://x.example/mcp", tools_include: [a],
+                 headers: {Authorization: "Bearer not-a-reference"}, clients: [coder], reviewed_by: molecule}
+        - name: Not reached
+          ansible.builtin.set_fact:
+            literal_case: passed
+      rescue:
+        - name: Record
+          ansible.builtin.set_fact:
+            literal_case: refused
+
+    - name: Stat the bad destination
+      ansible.builtin.stat:
+        path: /tmp/molecule-mcp/bad/mcp-catalogue.json
+      register: bad_stat
+
+    - name: Both were refused, and nothing was written for either
+      ansible.builtin.assert:
+        that:
+          - pending_case == 'refused'
+          - literal_case == 'refused'
+          - not bad_stat.stat.exists
+        quiet: true

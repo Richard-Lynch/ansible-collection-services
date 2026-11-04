@@ -1,0 +1,21 @@
+---
+# AUTO-GENERATED defaults file — DO NOT EDIT.
+#
+# Source of truth: roles/service_code_reader/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate service_code_reader
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+# Entrypoint:      probe
+
+# Container name.
+code_reader_container_name__default: code-reader
+
+# Host address the sidecar's port is PUBLISHED on. Must be loopback: this service
+# hands out login codes, and its only authentication is a bearer token. The role
+# refuses anything but 127.x or ::1.
+code_reader_bind__default: 127.0.0.1
+
+# Port the sidecar listens on (container) and publishes (host loopback).
+code_reader_port__default: 8645

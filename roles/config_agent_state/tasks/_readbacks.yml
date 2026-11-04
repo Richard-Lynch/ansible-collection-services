@@ -1,0 +1,25 @@
+---
+# Read-backs against the running agent. Inputs: _as_readbacks (list of name/url-or-path/status/contains), _as_readback_phase (a label),
+# _as_readback_base (prefix for a relative path) and _as_readback_key (bearer, may be empty). The
+# key is an explicit input so the drill can pass NONE: the production key must never reach it.
+- name: "READ BACK ({{ _as_readback_phase }}) — query each declared check"
+  ansible.builtin.uri:
+    url: "{{ _as_readback_base | default('') }}{{ item.url | default(item.path) }}"
+    headers: "{{ {'Authorization': 'Bearer ' ~ _as_readback_key} if _as_readback_key | default('') | length > 0 else {} }}"
+    status_code: "{{ item.status | default(200) }}"
+    return_content: true
+  register: _as_rb
+  loop: "{{ _as_readbacks }}"
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: "{{ _as_readback_key | default('') | length > 0 }}"
+
+- name: "HARD GATE ({{ _as_readback_phase }}) — each body contains what was expected"
+  ansible.builtin.assert:
+    that:
+      - item.item.contains | default('') in (item.content | default(''))
+    fail_msg: "read-back {{ item.item.name }} answered, but its body lacks the expected text."
+    quiet: true
+  loop: "{{ _as_rb.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.name }}"

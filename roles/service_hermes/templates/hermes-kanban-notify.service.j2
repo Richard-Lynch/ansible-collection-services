@@ -1,0 +1,10 @@
+# Rendered by roles/service_hermes. One Kanban -> Slack tick: new task_events into card threads.
+[Unit]
+Description=Hermes Kanban -> Slack card threads (one tick)
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/env python3 /usr/local/lib/hermes-kanban-notify/hermes_kanban_notify.py --config /etc/hermes-kanban-notify/config.json --state /var/lib/hermes-kanban-notify/state.json{% if hermes_preflight_textfile_dir | length > 0 %} --metrics {{ hermes_preflight_textfile_dir }}/hermes_kanban_notify.prom{% endif %}
+
+TimeoutStartSec=300

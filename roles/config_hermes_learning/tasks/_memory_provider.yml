@@ -1,0 +1,172 @@
+---
+# The catalog memory provider, installed at a PINNED commit. Its activation (memory.provider) is a
+# config.yaml leaf owned by service_hermes through hermes_config_owned, so the order is: the
+# service_hermes converge (config), then this (plugin + restart + read-back + the live store's
+# first open).
+#
+# v0.22.5 facts this relies on: `hermes plugins list --json` rows carry name, version and source
+# (`catalog:<tier>@<sha8>` or `git pinned@<sha8>`); `hermes plugins install <name> --ref <sha>
+# --yes-deps --enable` installs non-interactively; `hermes memory status` names the active
+# provider. With security.allow_lazy_installs on (the default) a gateway start would install the
+# catalog's CURRENT pin by itself, which is exactly why the pin is checked here on every converge.
+- name: Read the installed plugins
+  community.docker.docker_container_exec:
+    container: "{{ hermes_learning_container }}"
+    user: "{{ hermes_learning_exec_user }}"
+    argv: ["{{ hermes_learning_hermes_cli }}", plugins, list, --json]
+  register: hermes_learning__plugins
+  changed_when: false
+
+- name: Find the plugin's row
+  ansible.builtin.set_fact:
+    hermes_learning__row: >-
+      {{ (hermes_learning__plugins.stdout[hermes_learning__plugins.stdout.find('['):] | from_json)
+         | selectattr('name', 'equalto', hermes_learning_memory_plugin) | first | default({}) }}
+
+- name: Decide whether the pin is installed
+  ansible.builtin.set_fact:
+    hermes_learning__pinned: >-
+      {{ (hermes_learning__row.version | default('') | string) == hermes_learning_memory_plugin_version
+         and (hermes_learning__row.source | default('')) is search('@' ~ hermes_learning_memory_plugin_ref[:8] ~ '$') }}
+
+- name: Install the plugin at the pinned commit
+  community.docker.docker_container_exec:
+    container: "{{ hermes_learning_container }}"
+    user: "{{ hermes_learning_exec_user }}"
+    argv: >-
+      {{ [hermes_learning_hermes_cli, 'plugins', 'install', hermes_learning_memory_plugin,
+          '--ref', hermes_learning_memory_plugin_ref, '--yes-deps', '--enable']
+         + (['--force'] if hermes_learning__row | length > 0 else []) }}
+  register: hermes_learning__install
+  when: not hermes_learning__pinned | bool
+
+- name: Read the plugins back
+  community.docker.docker_container_exec:
+    container: "{{ hermes_learning_container }}"
+    user: "{{ hermes_learning_exec_user }}"
+    argv: ["{{ hermes_learning_hermes_cli }}", plugins, list, --json]
+  register: hermes_learning__plugins_after
+  changed_when: false
+
+- name: HARD GATE — the plugin is at the pinned version and commit
+  vars:
+    _row: >-
+      {{ (hermes_learning__plugins_after.stdout[hermes_learning__plugins_after.stdout.find('['):] | from_json)
+         | selectattr('name', 'equalto', hermes_learning_memory_plugin) | first | default({}) }}
+  ansible.builtin.assert:
+    that:
+      - _row | length > 0
+      - (_row.version | default('') | string) == hermes_learning_memory_plugin_version
+      - (_row.source | default('')) is search('@' ~ hermes_learning_memory_plugin_ref[:8] ~ '$')
+    fail_msg: >-
+      {{ hermes_learning_memory_plugin }} reads back as {{ _row | to_json }}, not version
+      {{ hermes_learning_memory_plugin_version }} at {{ hermes_learning_memory_plugin_ref[:8] }}.
+    quiet: true
+
+# The plugin's own settings. Written with the agent's CLI (it knows the file's format and the
+# managed overlay), only when the read-back differs, so a second converge is changed=0. These keys
+# are not in hermes_config_owned: service_hermes's merge passes them through untouched, and THIS
+# role is their one owner.
+- name: Read the plugin settings
+  community.docker.docker_container_exec:
+    container: "{{ hermes_learning_container }}"
+    user: "{{ hermes_learning_exec_user }}"
+    argv: ["{{ hermes_learning_hermes_cli }}", config, get, "plugins.{{ hermes_learning_memory_plugin_section }}.{{ item.key }}"]
+  loop: "{{ hermes_learning_memory_plugin_settings | dict2items }}"
+  loop_control: { label: "{{ item.key }}" }
+  register: hermes_learning__settings
+  changed_when: false
+  failed_when: false
+
+- name: Write the settings that differ
+  community.docker.docker_container_exec:
+    container: "{{ hermes_learning_container }}"
+    user: "{{ hermes_learning_exec_user }}"
+    argv: ["{{ hermes_learning_hermes_cli }}", config, set, "plugins.{{ hermes_learning_memory_plugin_section }}.{{ item.item.key }}", "{{ item.item.value | string }}"]
+  loop: "{{ hermes_learning__settings.results }}"
+  loop_control: { label: "{{ item.item.key }}" }
+  # booleans compare by meaning: YAML may hand `on` back as True, and the CLI may print either
+  when: >-
+    (item.stdout | default('') | trim | lower | regex_replace('^(on|yes|true)$', 'true') | regex_replace('^(off|no|false)$', 'false'))
+    != (item.item.value | string | lower | regex_replace('^(on|yes|true)$', 'true') | regex_replace('^(off|no|false)$', 'false'))
+  register: hermes_learning__settings_set
+
+- name: Read the settings back
+  community.docker.docker_container_exec:
+    container: "{{ hermes_learning_container }}"
+    user: "{{ hermes_learning_exec_user }}"
+    argv: ["{{ hermes_learning_hermes_cli }}", config, get, "plugins.{{ hermes_learning_memory_plugin_section }}.{{ item.key }}"]
+  loop: "{{ hermes_learning_memory_plugin_settings | dict2items }}"
+  loop_control: { label: "{{ item.key }}" }
+  register: hermes_learning__settings_after
+  changed_when: false
+
+- name: HARD GATE — every plugin setting reads back as declared
+  ansible.builtin.assert:
+    that:
+      - >-
+        (item.stdout | trim | lower | regex_replace('^(on|yes|true)$', 'true') | regex_replace('^(off|no|false)$', 'false'))
+        == (item.item.value | string | lower | regex_replace('^(on|yes|true)$', 'true') | regex_replace('^(off|no|false)$', 'false'))
+    fail_msg: "plugins.{{ hermes_learning_memory_plugin_section }}.{{ item.item.key }} reads back '{{ item.stdout | trim }}', not '{{ item.item.value }}'."
+    quiet: true
+  loop: "{{ hermes_learning__settings_after.results }}"
+  loop_control: { label: "{{ item.item.key }}" }
+
+# A plugin is loaded at gateway start, so a new install needs one restart, through compose (never
+# docker_container restart, which recreates it outside compose and detaches it from the project).
+- name: Restart the stack so the gateway loads the provider
+  community.docker.docker_compose_v2:
+    project_src: "{{ hermes_learning_stack_dir }}"
+    state: restarted
+  when: hermes_learning__install is changed or hermes_learning__settings_set is changed
+
+- name: Wait for the agent to answer again
+  ansible.builtin.uri:
+    url: "{{ hermes_learning_health_url }}"
+    status_code: 200
+  register: hermes_learning__health
+  until: hermes_learning__health.status == 200
+  retries: 30
+  delay: 4
+  when: hermes_learning__install is changed or hermes_learning__settings_set is changed
+
+- name: Read the active memory provider
+  community.docker.docker_container_exec:
+    container: "{{ hermes_learning_container }}"
+    user: "{{ hermes_learning_exec_user }}"
+    argv: ["{{ hermes_learning_hermes_cli }}", memory, status]
+  register: hermes_learning__mstatus
+  changed_when: false
+
+- name: HARD GATE — the provider is the one the agent will use
+  ansible.builtin.assert:
+    that:
+      - hermes_learning_memory_plugin in (hermes_learning__mstatus.stdout | lower)
+    fail_msg: >-
+      `hermes memory status` does not name {{ hermes_learning_memory_plugin }}. memory.provider is
+      the gateway's own config (service_hermes, hermes_config_owned): converge that first, then
+      this.
+      Output: {{ hermes_learning__mstatus.stdout | truncate(400) }}
+    quiet: true
+
+# The live store's database is created on the provider's first writable open. Open it now, so the
+# file exists before config_agent_state is told to back it up (its backup refuses a declared
+# database that is missing AND an undeclared one that is present).
+- name: Open the live store once
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "{{ hermes_learning_install_dir }}/hermes_learning.py"
+      - --config
+      - "{{ hermes_learning_config_dir }}/config.json"
+      - init-store
+  register: hermes_learning__init
+  changed_when: false
+
+- name: HARD GATE — the provider's database exists in the live home
+  ansible.builtin.assert:
+    that:
+      - (hermes_learning__init.stdout | from_json).ok | default(false)
+      - (hermes_learning__init.stdout | from_json).db_exists | default(false)
+    fail_msg: "init-store: {{ hermes_learning__init.stdout | truncate(400) }}"
+    quiet: true

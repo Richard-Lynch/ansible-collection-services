@@ -1,0 +1,11 @@
+# Rendered by roles/config_hermes_learning.
+[Unit]
+Description=Hermes learning loop timer: {{ _job.description }}
+
+[Timer]
+OnCalendar={{ _job.oncalendar }}
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

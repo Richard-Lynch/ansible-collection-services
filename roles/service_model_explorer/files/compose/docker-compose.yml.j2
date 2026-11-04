@@ -1,0 +1,42 @@
+---
+# Rendered by roles/service_model_explorer. Do not edit on the host -- the next converge
+# overwrites it.
+#
+# ONE container: nginx serving a pre-built static bundle. There is deliberately no build step
+# here and no node in the image -- the Vite bundle is built on the controller and copied, so the
+# deployed artefact is exactly what was reviewed, and the guest needs no toolchain.
+{# NO CREDENTIAL REACHES THIS CONTAINER. The app is read-only: it fetches one JSON snapshot of
+   model ids and holds no key. Adding a model to Open WebUI's picker is STAGED in the UI and applied by an Ansible play, so this container needs no
+   write path at all.
+
+   No reverse-proxy labels: a reverse proxy in front of this container is configured by the
+   caller, which also keeps Jinja out of YAML mapping keys — a templated label key would ship the
+   literal braces. #}
+services:
+  {{ model_explorer_container_name }}:
+    image: {{ model_explorer_image }}
+    container_name: {{ model_explorer_container_name }}
+    restart: unless-stopped
+    environment:
+      TZ: "{{ model_explorer_timezone }}"
+    volumes:
+      # The built bundle and its catalogue snapshot, READ-ONLY: nothing in this app writes, so
+      # a writable mount would only widen what a compromised nginx could alter.
+      - {{ model_explorer_config_dir }}/site:/usr/share/nginx/html:ro
+      - {{ model_explorer_config_dir }}/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "{{ model_explorer_host_port }}:80"
+    # Serves a static file, so liveness is simply "does it answer". Points at the app's own
+    # index rather than `/`, so a misconfigured root that 403s cannot report healthy.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost/index.html || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - {{ model_explorer_network }}
+
+networks:
+  {{ model_explorer_network }}:
+    external: true

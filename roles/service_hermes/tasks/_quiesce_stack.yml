@@ -1,0 +1,16 @@
+---
+# The default quiesce: stop the compose project when (and only when) the container is running now.
+# A first deploy has no container and no file, so there is nothing to stop.
+- name: Note whether the container is running right now
+  no_log: true  # INSPECTENV-01: the result carries every Env VALUE
+  community.docker.docker_container_info:
+    name: "{{ hermes_container_name }}"
+  register: hermes__container_before
+
+- name: Stop the stack so nothing else writes the config while it is merged
+  community.docker.docker_compose_v2:
+    project_src: "{{ hermes_config_dir }}"
+    state: stopped
+  when:
+    - hermes__container_before.exists | default(false)
+    - (hermes__container_before.container.State.Running | default(false)) | bool

@@ -1,0 +1,29 @@
+# Copyright: (c) 2026, Richard Lynch
+# GNU General Public License v3.0+ (see https://www.gnu.org/licenses/gpl-3.0.txt)
+---
+DOCUMENTATION:
+  name: hermes_toolset_floor
+  short_description: Subtract named toolsets from a declared core set, refusing a subtraction that removes
+    nothing
+  author: Richard Lynch (@Richard-Lynch)
+  description:
+    - Returns the core toolsets minus the subtracted ones. A subtracted name not in the core set is refused
+      (subtracting it would remove nothing while reading correctly), as are a duplicated core name and
+      an empty result.
+  options:
+    _input:
+      description: The full core toolset names the platform enables by default.
+      type: list
+      required: true
+    subtract:
+      description: Toolset names to remove; every one must be in the core set.
+      type: list
+      required: true
+EXAMPLES: |
+  - name: API server floor
+    ansible.builtin.set_fact:
+      floor: "{{ ['web', 'terminal', 'file', 'memory'] | richard_lynch.services.hermes_toolset_floor(['terminal', 'file']) }}"
+RETURN:
+  _value:
+    description: The remaining toolset names, in core order.
+    type: list

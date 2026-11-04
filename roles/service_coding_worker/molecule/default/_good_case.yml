@@ -1,0 +1,16 @@
+---
+- name: Load the good input
+  ansible.builtin.include_vars:
+    file: "{{ render_root }}/good.json"
+
+- name: Run the role's own gates
+  ansible.builtin.include_role:
+    name: service_coding_worker
+    tasks_from: _gates
+    public: true
+
+- name: Record that the good input passed
+  ansible.builtin.copy:
+    dest: "{{ render_root }}/good-outcome.json"
+    content: '{"passed": true}'
+    mode: "0644"

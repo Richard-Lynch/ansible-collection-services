@@ -1,0 +1,11 @@
+# Rendered by config_agent_state - do not edit.
+[Unit]
+Description=agent-state {{ item.what }} timer ({{ agent_state_product }})
+
+[Timer]
+OnCalendar={{ item.cal }}
+Persistent=true
+RandomizedDelaySec=0
+
+[Install]
+WantedBy=timers.target

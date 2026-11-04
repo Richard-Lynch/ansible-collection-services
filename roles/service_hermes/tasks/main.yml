@@ -1,0 +1,658 @@
+---
+# service_hermes — Nous Research's Hermes Agent (gateway + web dashboard) as one container.
+#
+# The usual docker-compose role shape (as in service_litellm): resolve defaults, gate
+# on what fails silently, render config, converge, restart only on a real config change, then
+# PROVE the result with read-backs rather than trusting the deploy's own exit code.
+
+- name: Resolve declared options over their generated defaults
+  ansible.builtin.include_tasks: _resolve_defaults.yml
+
+- name: Apply the generated argspec guards
+  ansible.builtin.include_tasks: _argspec_guards.yml
+
+- name: Store vars
+  ansible.builtin.set_fact:
+    hermes_files: "{{ role_path }}/files"
+    # The gh CLI's staged paths (_gh_cli.yml). The compose template builds the same path from the
+    # same two options; the version is IN it, so an upgrade changes the compose file and recreates.
+    hermes__gh_stem: "gh_{{ hermes_gh_cli_version }}_linux_{{ hermes_gh_cli_arch }}"
+    hermes__gh_bin: "{{ hermes_config_dir }}/tools/gh_{{ hermes_gh_cli_version }}_linux_{{ hermes_gh_cli_arch }}/bin/gh"
+
+# ---------------------------------------------------------------------------------------
+# Preflight. Each gate here catches a failure that is SILENT at run time: a floating tag that
+# changes the deployed version under you, a dashboard that refuses to start, or an API server
+# published with a guessable key.
+# ---------------------------------------------------------------------------------------
+- name: HARD GATE — the uid the files are chowned to is the uid the container runs as
+  ansible.builtin.assert:
+    that:
+      - (hermes_state_uid | int) == (hermes_uid | int)
+    fail_msg: >-
+      hermes_state_uid ({{ hermes_state_uid }}) differs from hermes_uid ({{ hermes_uid }}). The role
+      chowns the agent's files to hermes_state_uid:hermes_state_gid and the image runs its hermes
+      user as HERMES_UID=hermes_uid, HERMES_GID=hermes_state_gid, so the two uids must be the same.
+    quiet: true
+
+- name: HARD GATE — the image pin must be a valid tag + digest pair
+  ansible.builtin.include_tasks: _pin_gate.yml
+
+- name: HARD GATE — the dashboard, when enabled, must have a password
+  # Hermes FAILS CLOSED here itself, but it does so at container startup with the dashboard
+  # simply never binding — which presents as "the route 502s" rather than "I forgot a
+  # credential". Catching it on the controller names the actual cause.
+  ansible.builtin.assert:
+    that:
+      - hermes_dashboard_password | default('') | length > 0
+    fail_msg: >-
+      hermes_dashboard_enabled is true but hermes_dashboard_password is empty. The dashboard
+      binds non-loopback (required for its published port to work), and Hermes refuses to serve
+      a non-loopback dashboard with no auth provider registered — the deprecated
+      HERMES_DASHBOARD_INSECURE escape hatch is a no-op in current releases. Create the
+      password in your secret store, pass it as hermes_dashboard_password, then re-run.
+    quiet: true
+  no_log: true
+  when: hermes_dashboard_enabled | bool
+
+- name: HARD GATE — the Webapp, when enabled, needs the dashboard's sign-in provider
+  # Upstream keeps a non-loopback Webapp OFF (it serves native clients only) when no dashboard
+  # auth provider is registered, which presents as "the route 502s". The provider is the basic
+  # auth app.env renders only while the dashboard is enabled, so both must hold.
+  ansible.builtin.assert:
+    that:
+      - hermes_dashboard_enabled | bool
+      - hermes_dashboard_password | default('') | length > 0
+    fail_msg: >-
+      hermes_webapp_enabled is true, but the Webapp's sign-in is the dashboard's basic auth and
+      that needs hermes_dashboard_enabled: true and a non-empty hermes_dashboard_password.
+    quiet: true
+  no_log: true
+  when: hermes_webapp_enabled | bool
+
+- name: HARD GATE — the API server, when enabled, needs a long key
+  # Upstream's own minimum is 8 characters. 8 characters in front of an endpoint that DRIVES AN
+  # AGENT WITH TOOL EXECUTION is not a security boundary, so this gate is deliberately stricter
+  # than upstream's.
+  ansible.builtin.assert:
+    that:
+      - hermes_api_server_key | default('') | length >= 32
+    fail_msg: >-
+      hermes_api_server_enabled is true but hermes_api_server_key is shorter than 32 characters.
+      This key authorises driving the agent, which executes tools — upstream's 8-character
+      minimum is far too short for that blast radius.
+    quiet: true
+  no_log: true
+  when: hermes_api_server_enabled | bool
+
+- name: HARD GATE — the model gateway must be configured
+  # Hermes starts happily with no usable provider and fails only when a message arrives, which
+  # presents as a broken integration rather than a missing configuration.
+  ansible.builtin.assert:
+    that:
+      - hermes_gateway_url | default('') | length > 0
+    fail_msg: >-
+      hermes_gateway_url is empty, so no model provider would be configured and Hermes would
+      fail every request at message time. Point it at your OpenAI-compatible gateway
+      (including the /v1 suffix) in inventory — the address of a gateway is the caller's to set.
+    quiet: true
+
+- name: HARD GATE — the gateway URL must carry an explicit /v1 suffix
+  # The provider entry is an OpenAI-compatible ROOT, and Hermes appends /chat/completions to it.
+  # A URL missing /v1 parses fine and 404s only at request time, which reads as "the gateway is
+  # broken" rather than "my URL is short". Measured shape from upstream's own example:
+  # `api: http://127.0.0.1:4000/v1`.
+  ansible.builtin.assert:
+    that:
+      - hermes_gateway_url is search('/v1/?$')
+    fail_msg: >-
+      hermes_gateway_url is '{{ hermes_gateway_url }}', which does not end in /v1. Hermes
+      appends /chat/completions to this value, so a missing /v1 404s at request time rather
+      than failing here.
+    quiet: true
+
+- name: HARD GATE — the gateway needs a key, and it must not be a master key
+  # Length-gated rather than merely non-empty: an empty key reads to Hermes as a configured
+  # provider that cannot authenticate, which 401s at request time and looks exactly like a
+  # permissions problem — the failure mode a wrong secret-store FIELD also produces, so
+  # the message names that cause explicitly.
+  ansible.builtin.assert:
+    that:
+      - hermes_gateway_api_key | default('') | length > 0
+      - hermes_gateway_api_key.startswith('sk-')
+    fail_msg: >-
+      hermes_gateway_api_key is empty or not sk- prefixed. The likeliest cause is reading the
+      WRONG FIELD of the secret-store item (one item type holds the value in `credential`,
+      another in `password`), which returns an EMPTY STRING that then 401s. On a LiteLLM gateway this must be a scoped VIRTUAL key minted for
+      the agent, never the master key.
+    quiet: true
+  no_log: true
+
+- name: HARD GATE — a default model must be declared
+  # With `discover_models` on, an empty default would leave Hermes with no main model and the
+  # first message would fail on model resolution rather than on anything diagnosable.
+  ansible.builtin.assert:
+    that:
+      - hermes_default_model | default('') | length > 0
+    fail_msg: >-
+      hermes_default_model is empty. Which model the agent defaults to is the caller's
+      configuration; declare it in inventory. Note the gateway's /v1/models is NOT the full picture — an
+      `openrouter/*` id can route perfectly while being absent from that listing.
+    quiet: true
+
+- name: HARD GATE — Slack, when enabled, needs both tokens and a non-empty allowlist of member ids
+  # Upstream DENIES EVERY MESSAGE when SLACK_ALLOWED_USERS is empty, and the adapter still
+  # connects, so an empty list presents as "the bot is online and ignores me". A swapped pair
+  # (bot token in the app slot) fails at connect time with an error that names neither. Both
+  # are caught here, by shape, before anything is rendered.
+  ansible.builtin.assert:
+    that:
+      - hermes_slack_bot_token | default('') is match('xoxb-')
+      - hermes_slack_app_token | default('') is match('xapp-')
+      - hermes_slack_allow_from | default([]) | length > 0
+      - hermes_slack_allow_from | reject('match', '^[UW][A-Z0-9]{6,}$') | list | length == 0
+    fail_msg: >-
+      hermes_slack_enabled is true but the bot token is not xoxb-, the app token is not xapp-,
+      or hermes_slack_allow_from is empty or holds something that is not a Slack member id
+      (U... / W...). The tokens come from your secret store; the allowlist is inventory.
+    quiet: true
+  when: hermes_slack_enabled | bool
+
+# ---------------------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------------------
+# The data directory must exist BEFORE compose starts, and must be a DIRECTORY: docker
+# silently creates an empty directory at a missing bind-mount source rather than failing, so a
+# typo here would mount a fresh empty state and Hermes would re-run its first-boot seeding —
+# losing every session and skill without reporting an error.
+#
+# NO `owner:`/`group:`/`mode:` HERE, and that is the fix for a real idempotence bug rather than
+# an omission. The container's s6 `stage2-hook` CHOWNS this directory to the image's internal
+# `hermes` user (uid/gid 10000) on every boot, before any service drops privileges. Declaring
+# `owner: root` made Ansible chown it back on every run, the container chowned it to 10000
+# again, and the play reported `changed` forever — a dishonest change that also fired the
+# restart handler below, on every second and later deploy.
+#
+# Setting HERMES_UID=0 does NOT avoid this: the variable reaches the container (verified in
+# `docker inspect`) but the hook declines to remap its user to root, which would defeat its own
+# privilege dropping. So the container owns its state directory, by design — this task only
+# guarantees the path EXISTS so docker cannot invent it as an empty mount.
+- name: Ensure the agent's state directory exists
+  ansible.builtin.file:
+    path: "{{ hermes_config_dir }}/data"
+    state: directory
+  # NO `changed_when: false` here: creating this directory on a first run IS a real change, and
+  # suppressing it would be a dishonest changed_when of exactly the kind THE OTHER RULE forbids.
+  # With the ownership declarations removed above, `file:` is naturally idempotent — it reports
+  # changed only when it actually creates the path.
+
+- name: Deliver the dashboard theme
+  ansible.builtin.include_tasks: _dashboard_theme.yml
+  when:
+    - hermes_dashboard_enabled | bool
+    - hermes_dashboard_theme_enabled | bool
+
+# Skills go in BEFORE the compose project so the read-only mount's source exists when
+# compose starts (docker would otherwise invent an empty directory there).
+- name: Deliver the caller's skills read-only
+  ansible.builtin.include_tasks: _estate_skills.yml
+  when: hermes_skills_source | length > 0
+
+# app.env is rendered SEPARATELY below, at 0600. deployment_config applies ONE mode to every
+# file it writes, and the compose file wants 0640 while a file holding a live provider key must
+# not be group-readable.
+#
+# WHY app.env.j2 LIVES IN `templates/` AND NOT `files/`: deployment_config renders EVERY `.j2`
+# it finds under its source directory and has no exclude mechanism. With app.env.j2 in `files/`
+# it was therefore rendered TWICE per run — once by deployment_config at 0640, then again by the
+# task below at 0600 — so the two fought over the mode and BOTH reported `changed` on every
+# converge, which also fired the restart below. It was additionally a brief exposure: the
+# credential file existed group-readable between the two tasks.
+#
+# Keeping it in `templates/` means deployment_config never sees it, so the 0600 render below is
+# the only thing that writes it. (`ansible.builtin.template` resolves a bare filename from the
+# role's own templates/ directory, which is why `src:` needs no path.)
+# gh goes in BEFORE the compose project, for the same reason: compose would otherwise invent a
+# DIRECTORY at the file mount's missing source.
+- name: Provide the GitHub CLI read-only (the PR completion contract's evidence reads)
+  ansible.builtin.include_tasks: _gh_cli.yml
+  when: hermes_gh_cli_version | length > 0
+
+- name: Deploy the compose project
+  ansible.builtin.include_role:
+    name: richard_lynch.common.deployment_config
+  vars:
+    deployment_config_source: "{{ hermes_files }}"
+    deployment_config_destination: "{{ hermes_config_dir }}"
+    deployment_config_file_mode: "0640"
+
+- name: Render app.env with the live credentials (0600, never group-readable)
+  ansible.builtin.template:
+    src: app.env.j2
+    dest: "{{ hermes_config_dir }}/app.env"
+    owner: root
+    group: root
+    mode: "0600"
+  register: hermes__env_file
+  no_log: true
+
+# THE KEY IN app.env IS NOT THE KEY THE SERVER ENFORCES WHILE data/.env CARRIES ONE.
+# Upstream v0.21.6, read from source: docker/stage2-hook.sh GENERATES an API_SERVER_KEY into
+# $HERMES_HOME/.env (= data/.env here) whenever the container env carries none — which is every
+# boot before the API server was enabled — and hermes_cli/env_loader.py loads that file with
+# override=True, so it BEATS the container environment. stage2 only warns when both are set
+# ("the .env value wins at runtime"); it removes neither, so the generated key keeps winning
+# over the one in app.env.
+#
+# So data/.env carries THE SAME KEY as app.env: one value in two files, rewritten together on every
+# converge, so a rotation takes in both and the generated line can never survive. It is not simply
+# removed because of an upstream behaviour: once a named profile exists, the API server reads its key
+# from the DEFAULT profile's .env and ignores the compose env_file -- so a data/.env without the
+# line stops the API at the next start, and config_hermes_profile refuses to create the first
+# profile until the line is there. stage2 logs "set in both" on each boot; with equal values that
+# warning is noise. The restart below fires on
+# a change here, and the cold /v1/models read-back after it is the proof the enforced key is ours.
+#
+# NOT `lineinfile`: data/.env is in the agent's tree, and lineinfile reads and writes the
+# realpath() of its dest (it takes no `follow:` at all), so a planted `data/.env -> /etc/shadow`
+# has root read that file and write it back with the key appended (the target is appended to and
+# the link left in place). agent_dir.py reaches the
+# file by an fd walk from the root-owned config dir, refuses a link at the name, and renames a new
+# file over it. The key travels in the environment, never argv. A fresh guest has no data/.env
+# before the first boot; it is created as the container would (the agent's, 0600).
+- name: Put the app.env API_SERVER_KEY in data/.env too (one value; a named profile needs it there)
+  ansible.builtin.script:
+    cmd: >-
+      {{ role_path }}/scripts/agent_dir.py
+      --anchor {{ hermes_config_dir | quote }}
+      --anchor-uid {{ hermes__estate_uid | default(0) | int }}
+      --uid {{ hermes_state_uid | int }} --gid {{ hermes_state_gid | int }}
+      --set-line data/.env --key API_SERVER_KEY --file-mode 0600
+    executable: python3
+  environment:
+    AGENT_DIR_VALUE: "{{ hermes_api_server_key }}"
+  register: hermes__dotenv_key
+  changed_when: (hermes__dotenv_key.stdout | default('{}', true) | from_json).changed | default(false)
+  no_log: true
+  when: hermes_api_server_enabled | bool
+
+# data/.env is loaded with override=True and so BEATS the container environment. If it
+# ever carries the key_env variable, the key Hermes uses is not the one in app.env and a rotation
+# would silently not take. Counted, never printed; grep exits 1 on zero matches, which is the pass.
+- name: Count key_env lines in data/.env (a count only; the value is never read out)
+  ansible.builtin.command:
+    cmd: "grep -c '^{{ hermes_gateway_key_env }}=' {{ hermes_config_dir }}/data/.env"
+  register: hermes__dotenv_keyenv
+  changed_when: false
+  failed_when: hermes__dotenv_keyenv.rc > 1
+  check_mode: false
+  no_log: true
+  when: hermes_gateway_url | default('') | length > 0
+
+- name: HARD GATE - data/.env must not carry the gateway key_env variable
+  ansible.builtin.assert:
+    that:
+      - (hermes__dotenv_keyenv.stdout | default('0') | trim | int(0)) == 0
+    fail_msg: >-
+      data/.env carries {{ hermes_gateway_key_env }}. It is loaded after the container
+      environment and wins, so app.env would no longer be the one source of the gateway key.
+      Remove that line (the file is the container's) and converge again.
+    quiet: true
+  when: hermes_gateway_url | default('') | length > 0
+
+# config.yaml carries the gateway's VIRTUAL KEY, so it is 0600 rather than the 0640 the
+# container seeds it at. It is written INSIDE the state directory (/opt/data) because that is
+# where Hermes reads its config from; the cont-init hook only seeds a MISSING config.yaml, so a
+# managed file survives every restart and upgrade.
+#
+# OWNED BY THE CONTAINER'S USER, NOT ROOT. The agent's services drop to the image's internal
+# `hermes` user (uid/gid 10000: the container seeds both config.yaml and .env as 10000:10000), so a root-owned 0600 file here would be UNREADABLE to the process that needs
+# it. Hermes would then fall back to its seeded defaults and silently ignore every setting in
+# this file: no gateway provider, no default model, and a first message that fails on model
+# resolution. `owner`/`group` are numeric because the `hermes` user exists only inside the
+# container, not on the guest.
+# THE CONTAINER OWNS THIS FILE TOO, and the order here is the fix for a real idempotence loop:
+# compare FIRST, write only on genuine drift.
+#
+# Hermes rewrites config.yaml on every boot — it appends its own migration marker
+# (`_config_version: 50`) and resets the mode to 0640. So a plain `template` task reports
+# `changed` on EVERY converge (the appended marker guarantees a byte difference), which both
+# makes the change count dishonest and, when the restart keys on it, bounces a healthy agent
+# once per run.
+#
+# `_config_version` is deliberately NOT pinned in the template: it is undocumented internal
+# migration state, and declaring a value for another program's bookkeeping is a guess that goes
+# stale on the next upgrade.
+# The owned-leaf merge of config.yaml lives in _config_merge.yml: it renders the policy
+# file, projects the owned leaves onto the live config and, only on real drift, quiesces the stack
+# and writes. See that file for the semantics and for why this no longer re-renders the whole file.
+#
+# BLOCK/RESCUE: the merge stops the stack when an owned leaf drifts, and the converge further down
+# is what starts it again. Every gate that can refuse is evaluated BEFORE the quiesce
+# (_managed_gate.yml), so a refusal leaves the stack up; the rescue covers what no gate can
+# predict (a write that fails on disk) so the dashboard and API are never left down by a failed
+# play. It starts the stack only if the quiesce stopped it, then re-raises the failure.
+- name: Merge the owned leaves and stage the managed scope, restarting the stack on failure
+  block:
+    - name: Merge the owned config leaves into the live agent config
+      ansible.builtin.include_tasks: _config_merge.yml
+
+    # Stage the managed scope (tier-C leaves, their sha256 and the preflight). Enforced when
+    # hermes_managed_enforce is on: see _managed_scope.yml.
+    - name: Stage the managed scope and its preflight
+      ansible.builtin.include_tasks: _managed_scope.yml
+  rescue:
+    - name: Start the stack again if the merge had stopped it
+      community.docker.docker_compose_v2:
+        project_src: "{{ hermes_config_dir }}"
+        state: present
+      when:
+        - hermes__merge_quiesce | default(true) | bool
+        - (hermes__container_before.container.State.Running | default(false)) | bool
+
+    - name: Re-raise the failure that interrupted the merge
+      ansible.builtin.fail:
+        msg: >-
+          The owned-leaf merge failed after the stack had been quiesced
+          ({{ ansible_failed_task.name | default('?') }}: {{ ansible_failed_result.msg | default('no message') }}).
+          The stack was started again if it had been running; the config may be partially merged,
+          so re-run the play once the cause is fixed.
+
+- name: Stage the policy hook, the MCP catalogue and the settings service
+  ansible.builtin.include_tasks: _hub_policy.yml
+
+# The send gate into the policy directory and the caller's cron scripts into estate-scripts/
+# (mounted read-only at the agent's scripts/estate/).
+- name: Deliver the send gate and the cron scripts
+  ansible.builtin.include_tasks: _automations_deliver.yml
+
+- name: Ensure the shared docker network exists
+  community.docker.docker_network:
+    name: "{{ hermes_network }}"
+    attachable: true
+    state: present
+
+# ---------------------------------------------------------------------------------------
+# Converge
+# ---------------------------------------------------------------------------------------
+- name: Deploy the Hermes stack
+  community.docker.docker_compose_v2:
+    project_src: "{{ hermes_config_dir }}"
+    state: present
+    recreate: auto
+    # Deliberately NO `wait:`. It imposes a SECOND, stricter deadline in front of the read-backs
+    # below, which already retry and are the thing that actually proves the service works. A cold
+    # first boot runs the cont-init profile reconciler before the dashboard binds, so a fixed
+    # wait here fails the play while the service is still legitimately coming up.
+
+# `deployment_config_changed` is set INLINE by deployment_config (its handler fires too late to
+# be read mid-run). app.env is rendered by this role, so its own changed status is ORed in — a
+# rotated provider key changes only that file, and without this the container would keep serving
+# the old credential until something else happened to change.
+- name: Restart the stack when its config changed
+  community.docker.docker_compose_v2:
+    project_src: "{{ hermes_config_dir }}"
+    state: restarted
+  when: >-
+    (deployment_config_changed | default(false))
+    or (hermes__env_file.changed | default(false))
+    or (hermes__dotenv_key.changed | default(false))
+    or (hermes__policy_changed | default(false) | bool)
+
+# ---------------------------------------------------------------------------------------
+# Read-backs. A deploy that "succeeded" is not evidence the service works.
+# ---------------------------------------------------------------------------------------
+# The settings service reads its code and token at start; a change restarts THAT container only,
+# never the agent (its config is re-read per turn and nothing it holds changed).
+- name: Restart the settings service when its code or secrets changed
+  community.docker.docker_compose_v2:
+    project_src: "{{ hermes_config_dir }}"
+    services: ["{{ hermes_settings_service_container_name }}"]
+    state: restarted
+  when:
+    - hermes_settings_service_enabled | bool
+    - hermes__settings_changed | default(false) | bool
+
+- name: Read back the settings service's health (policy self-test included)
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ hermes_settings_service_port }}/healthz"
+    status_code: [200]
+  register: hermes__settings_health
+  retries: 12
+  delay: 5
+  until: hermes__settings_health.status | default(0) == 200
+  changed_when: false
+  failed_when: false
+  when: hermes_settings_service_enabled | bool
+
+- name: HARD GATE — the settings service is up AND its policy refuses a tier-C write
+  ansible.builtin.assert:
+    that:
+      - hermes__settings_health.status | default(0) == 200
+      - (hermes__settings_health.json | default({})).policy_selftest | default('') == 'ok'
+    fail_msg: >-
+      The settings service did not report healthy on 127.0.0.1:{{ hermes_settings_service_port }}
+      (status {{ hermes__settings_health.status | default('none') }},
+      self-test {{ (hermes__settings_health.json | default({})).policy_selftest | default('unread') }}).
+      It refuses to start when owned-keys.json is unreadable or its self-test would accept a tier-C
+      write; see `docker logs {{ hermes_settings_service_container_name }}` (its FAIL lines).
+    quiet: true
+  when: hermes_settings_service_enabled | bool
+
+- name: Read back the container's state
+  no_log: true  # INSPECTENV-01: the result carries every Env VALUE
+  community.docker.docker_container_info:
+    name: "{{ hermes_container_name }}"
+  register: hermes__container
+
+# `docker_container_info` returns {"exists": false} with NO `container` key, so reading
+# `container.State.Status` off a missing container raises UndefinedError during task argument
+# finalisation — i.e. BEFORE either assert condition is evaluated, so the gate dies with
+# "object of type 'dict' has no attribute 'container'" instead of naming the container. ABSENT
+# stands in for that case so the message can report it.
+- name: Summarise the container's state (ABSENT if it does not exist)
+  ansible.builtin.set_fact:
+    hermes__state: >-
+      {{ hermes__container.container.State.Status | default('ABSENT') }}
+
+- name: HARD GATE — the container must be running
+  ansible.builtin.assert:
+    that:
+      - hermes__state == 'running'
+    fail_msg: >-
+      The Hermes container is '{{ hermes__state }}' after deploy (ABSENT means it does not exist
+      at all). Check `docker compose ps` and the project's logs in {{ hermes_config_dir }}.
+      Note the gateway is s6-supervised inside the container, so a crashed gateway can leave the
+      CONTAINER running — the dashboard read-back below is what catches that.
+    quiet: true
+
+# Proves the dashboard's HTTP listener is actually up, which the container's own `running` state
+# does NOT prove: the gateway and dashboard are s6 services INSIDE the container, so either can
+# be down while the container stays up (its main process is a `sleep infinity` heartbeat).
+#
+# 401 and 302 are EXPECTED and count as success — the auth gate answering IS the service
+# working. Asserting on 200 would fail a correctly-secured dashboard on every run. A 200 here
+# would actually be the alarming result, since it would mean the gate is not engaged.
+- name: Verify the dashboard's HTTP listener answers
+  ansible.builtin.uri:
+    url: "http://localhost:{{ hermes_dashboard_host_port }}/"
+    method: GET
+    # 200 is included because a future upstream change could serve a login PAGE at 200 rather
+    # than redirecting; the auth assertion below is what actually checks the gate is engaged.
+    status_code: [200, 302, 401]
+    follow_redirects: none
+  register: hermes__dashboard
+  retries: 18
+  delay: 5
+  until: hermes__dashboard.status | default(0) in [200, 302, 401]
+  changed_when: false
+  when: hermes_dashboard_enabled | bool
+
+- name: HARD GATE — the dashboard must answer
+  ansible.builtin.assert:
+    that:
+      - hermes__dashboard.status | default(0) in [200, 302, 401]
+    fail_msg: >-
+      The Hermes dashboard did not answer on port {{ hermes_dashboard_host_port }} after deploy —
+      got {{ hermes__dashboard.status | default('no response') }}. The likeliest cause is the
+      auth gate failing closed at startup: Hermes refuses a non-loopback dashboard bind with no
+      auth provider registered. Check `docker logs {{ hermes_container_name }}` for the variable
+      it names.
+    quiet: true
+  when: hermes_dashboard_enabled | bool
+
+# The dashboard stores API keys, so an UNAUTHENTICATED 200 at the root is a security
+# regression, not a convenience. This asserts the gate is ENGAGED rather than merely that
+# something answered — unauthenticated dashboards are exactly what attackers look for, and why
+# upstream removed `--insecure`.
+- name: HARD GATE — the dashboard must not serve its UI unauthenticated
+  ansible.builtin.assert:
+    that:
+      - hermes__dashboard.status | default(0) in [302, 401]
+    fail_msg: >-
+      The Hermes dashboard answered {{ hermes__dashboard.status | default('?') }} to an
+      UNAUTHENTICATED request, so its auth gate is not engaged. This surface holds the agent's
+      API keys and can drive tool execution. Expected a 401 or a redirect to a login page.
+    quiet: true
+  when: hermes_dashboard_enabled | bool
+
+# The Webapp's listener, the same two questions as the dashboard: is it up, and is its sign-in
+# engaged. A 200 at / without a session would mean the gate is OFF on a 0.0.0.0 bind. The Host
+# header is the public_url's, because upstream accepts requests for that one outside hostname.
+- name: Verify the Webapp's listener answers (unauthenticated)
+  ansible.builtin.uri:
+    url: "http://localhost:{{ hermes_webapp_host_port }}/"
+    method: GET
+    headers: "{{ {'Host': (hermes_webapp_public_url | urlsplit('netloc'))} if hermes_webapp_public_url | length > 0 else {} }}"
+    status_code: [200, 302, 303, 307, 401]
+    follow_redirects: none
+  register: hermes__webapp
+  retries: 18
+  delay: 5
+  until: hermes__webapp.status | default(0) in [200, 302, 303, 307, 401]
+  changed_when: false
+  when: hermes_webapp_enabled | bool
+
+- name: HARD GATE — the Webapp must answer, and not serve itself unauthenticated
+  ansible.builtin.assert:
+    that:
+      - hermes__webapp.status | default(0) in [302, 303, 307, 401]
+    fail_msg: >-
+      The Webapp on port {{ hermes_webapp_host_port }} answered
+      {{ hermes__webapp.status | default('nothing') }} to an unauthenticated request. Nothing is
+      an image without gateway/webapp_listener.py or a webapp block the gateway refused
+      (`hermes webapp --status` in the container says why); 200 is a sign-in gate that is not
+      engaged on a 0.0.0.0 bind.
+    quiet: true
+  when: hermes_webapp_enabled | bool
+
+# The API server is the only surface that can be PROVEN to route a model request, so when it is
+# enabled this asserts a real completion rather than a reachable port. /v1/models first: it
+# needs auth, so a 200 also proves the key in app.env is the key the server is enforcing. A 401
+# here with a correct app.env means something else carries a key that wins — data/.env can, see
+# the data/.env task above.
+- name: Read back the model list the API server advertises
+  ansible.builtin.uri:
+    url: "http://localhost:{{ hermes_api_host_port }}/v1/models"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ hermes_api_server_key }}"
+    # failed_when false so a refusal or an outage is CLASSIFIED below (status + error class)
+    # instead of dying as an anonymous uri failure. No `status_code:` list: under
+    # failed_when false it would be dead. The assert after the classifier is what fails the run.
+    return_content: true
+  register: hermes__models
+  retries: 12
+  delay: 5
+  # Retry ONLY while there is no answer yet (-1: connection refused, the container still
+  # starting) or the server is erroring (5xx). A 401/404 IS the daemon's answer: it is
+  # classified at once rather than re-asked for 60 s.
+  # guard-check: ignore UNTIL-01 — the HARD GATE three tasks below asserts hermes__rb_verdict,
+  # which _models_readback.yml derives from THIS result; a loop that exhausts its retries
+  # lands in cannot-tell and fails there.
+  until: >-
+    (hermes__models.status | default(-1) | int) != -1
+    and (hermes__models.status | default(-1) | int) < 500
+  changed_when: false
+  failed_when: false
+  no_log: true
+  when: hermes_api_server_enabled | bool
+
+- name: Classify the read-back (matches / drift / cannot-tell)
+  ansible.builtin.include_tasks: _models_readback.yml
+  when: hermes_api_server_enabled | bool
+
+- name: Report the /v1/models read-back (status, error class, verdict - no secrets)
+  ansible.builtin.debug:
+    msg: >-
+      /v1/models read-back: status={{ hermes__rb_status }} class={{ hermes__rb_class }}
+      models={{ hermes__rb_models }} verdict={{ hermes__rb_verdict }}
+  when: hermes_api_server_enabled | bool
+
+- name: HARD GATE — the daemon's own API must match the converge
+  # drift and cannot-tell both FAIL, with different advice: drift is a daemon that answered
+  # wrongly, cannot-tell is a read that proves nothing (never to be reported as healthy).
+  ansible.builtin.assert:
+    that:
+      - hermes__rb_verdict == 'matches'
+    fail_msg: >-
+      /v1/models read-back is {{ hermes__rb_verdict }} (status {{ hermes__rb_status }}, class
+      {{ hermes__rb_class }}, {{ hermes__rb_models }} models).
+      {{ 'DRIFT: the API answered but disagrees with what was rendered. 401/403 means the key it
+         enforces is not the one in app.env (see data/.env);
+         an empty list means no provider or default model resolved - check app.env and config.yaml.'
+         if hermes__rb_verdict == 'drift' else
+         'CANNOT TELL: no usable answer (no response, 5xx, or a body that is not a JSON object).
+         This is not a pass - check docker logs and the container health.' }}
+    quiet: true
+  when: hermes_api_server_enabled | bool
+
+# ---------------------------------------------------------------------------------------
+# The managed scope is ENFORCED only if the preflight actually ran and passed at THIS container's
+# start: read its own exported result, and require it to be newer than the container's StartedAt
+# (a stale 1 from a previous container would otherwise pass a stack that never ran the check).
+# ---------------------------------------------------------------------------------------
+- name: Read the preflight result the container exported
+  ansible.builtin.slurp:
+    src: "{{ hermes_preflight_textfile_dir }}/hermes_preflight.prom"
+  register: hermes__preflight_prom
+  when:
+    - hermes_managed_enforce | bool
+    - hermes_preflight_textfile_dir | length > 0
+
+- name: HARD GATE — the preflight passed at this container's start
+  ansible.builtin.assert:
+    that:
+      - _pf is search('(?m)^hermes_preflight_ok 1$')
+      - (_pf | regex_findall('(?m)^hermes_preflight_last_run_timestamp_seconds ([0-9]+)$') | first | default(0) | int)
+        >= _started_epoch | int - 5
+    fail_msg: >-
+      The managed scope is enforced but the preflight result is not a fresh pass
+      ({{ _pf | trim }}). If hermes_preflight_ok is 0 the gateway is down by design: read the
+      [preflight] FAIL lines in `docker logs {{ hermes_container_name }}`.
+    quiet: true
+  vars:
+    _pf: "{{ hermes__preflight_prom.content | default('') | b64decode }}"
+    # StartedAt is UTC with nanoseconds; both sides of the subtraction are naive UTC, so this is
+    # the epoch second without any controller-timezone conversion.
+    _started_epoch: >-
+      {{ ((hermes__container.container.State.StartedAt[:19] | to_datetime('%Y-%m-%dT%H:%M:%S'))
+          - ('1970-01-01T00:00:00' | to_datetime('%Y-%m-%dT%H:%M:%S'))).total_seconds() | int }}
+  when:
+    - hermes_managed_enforce | bool
+    - hermes_preflight_textfile_dir | length > 0
+
+- name: Export the gateway health for the textfile collector
+  ansible.builtin.include_tasks: _health_exporter.yml
+  when: hermes_preflight_textfile_dir | length > 0
+
+# Kanban -> Slack card threads. After the health read-back: its own read-back posts
+# through the running container.
+- name: Install the Kanban -> Slack card notifier
+  ansible.builtin.include_tasks: _kanban_notify.yml
+  when: hermes_kanban_notify | length > 0
+
+# Repair a planted toolsets on a dynamic subscription, and converge the seeded cron jobs
+# (created paused, read back from the daemon's own store). After every read-back above, because
+# it talks to the running daemon.
+- name: Reconcile the dynamic subscriptions and the seeded cron jobs
+  ansible.builtin.include_tasks: _automations_reconcile.yml

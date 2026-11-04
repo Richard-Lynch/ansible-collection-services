@@ -1,0 +1,56 @@
+---
+# AUTO-GENERATED defaults file — DO NOT EDIT.
+#
+# Source of truth: roles/config_hermes_profile/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate config_hermes_profile
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+# Entrypoint:      main
+
+# Owner uid of the data directory's parent, the anchor of the confined walk.
+# Root on a normal host; a different owner is refused rather than trusted.
+hermes_profile_anchor_uid__default: 0
+
+# NAME to value pairs written to the profile's .env (mode 0600, one line each,
+# other lines kept). A value containing a quote or a newline is refused.
+# In the run that CREATES the profile the cloned .env is replaced by these
+# lines alone: a clone copies the source's whole .env (the gateway's API key,
+# chat tokens, provider keys), and a profile must hold only its own.
+hermes_profile_env__default: {}
+
+# When non-empty, EVERY platform_toolsets.<platform> key already present in the
+# profile's config.yaml is set to this list, before the explicit leaves apply.
+# A clone carries the source profile's list for every chat platform, so a
+# leaf for one platform leaves every other route into the profile with the
+# source's wider toolset. Empty leaves the cloned keys as they are.
+hermes_profile_platform_toolsets__default: []
+
+# The gateway's compose project directory. When set, the run that CREATES the
+# profile restarts the gateway through compose before the AFTER probe, so the
+# probe is COLD: the missing-key break shows only at the next start, and
+# a process that still holds its key passes a warm probe. Empty keeps the
+# AFTER probe warm, and the role says so in its output.
+hermes_profile_compose_dir__default: ''
+
+# SOUL.md text, seeded ONCE: an existing SOUL.md is never overwritten (the
+# agent and its operator curate it afterwards), EXCEPT in the run that created the
+# profile, where a cloned SOUL is the source's and not curated for this profile.
+# Empty means do not seed.
+hermes_profile_soul__default: ''
+
+# Extra arguments for hermes profile create, one list item per argv element
+# (so a description with spaces needs no quoting). Flags of hermes v0.21.x:
+# --clone-from SOURCE, --no-alias, --no-skills, --description TEXT. Without a
+# clone flag the new profile starts with NO provider settings and cannot call a
+# model; with one it receives the source's config.yaml, .env, SOUL and skills.
+hermes_profile_create_args__default: []
+
+# Checks run through the hermes CLI after the write, against Hermes' own view.
+# Each: name, argv (a list), must_match (regex that stdout must contain) and
+# optionally must_not_match. A read-back that cannot run FAILS the play.
+hermes_profile_readbacks__default: []
+
+# Write. False reports what would change and writes nothing (the default).
+hermes_profile_apply__default: false

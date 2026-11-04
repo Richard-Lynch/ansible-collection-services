@@ -1,0 +1,281 @@
+---
+# The owned-leaf merge of config.yaml, as its own entrypoint-less task file so a molecule
+# scenario can run it against real files with no docker daemon: set `hermes__merge_quiesce: false`
+# to skip the two tasks that talk to docker. A real converge never sets it.
+#
+# Expects the role's options already resolved (main.yml does that before including this).
+
+# ---- the owned-leaf merge ----------------------------------------------------------------
+# WHY A MERGE. Rendering the ENTIRE file from the template on any difference would wipe every key
+# the dashboard or the agent had written (display prefs, a toolset toggle, a model chosen in the
+# UI), and could not tell "the declared config changed" from "somebody hand-set a value we never
+# owned". So the role owns a declared set of LEAVES and merges them onto the live file; everything
+# else passes through.
+#
+# The leaves are: the provider/model/guardrail wiring this role has always rendered (taken from
+# config.yaml.j2 so there is still ONE source for it, flattened into leaves), plus the
+# inventory's `hermes_config_owned`. Declaring a wiring leaf in inventory too is refused by the
+# filter (a leaf owned twice), so the two cannot disagree.
+- name: Flatten the role's own wiring into owned leaves
+  ansible.builtin.set_fact:
+    hermes__wiring_leaves: >-
+      {{ lookup('template', 'config.yaml.j2') | from_yaml | default({}, true)
+         | richard_lynch.services.hermes_config_leaves(['api_key']) }}
+  no_log: true
+
+# THE TOOLSET FLOOR. The API-server platform enables most of the core set by default (read from
+# /v1/toolsets: terminal, file, code_execution and browser among them; a few, such as
+# computer_use, clarify and tts, are disabled there), so the floor SUBTRACTS from a
+# declared copy of that set. richard_lynch.services.hermes_toolset_leaves refuses a subtracted name that is not
+# in the core set (it would subtract nothing and leave the toolset on) and re-checks its own
+# result. Each platform becomes one tier-C leaf, platform_toolsets.<platform>.
+# The api_server entry is resolved HERE so that "forgot to declare a floor" can never read as "no
+# floor wanted": full control is the explicit flag hermes_api_server_full_control (for a
+# deployment whose access control sits at the edge, in front of the API key), which removes
+# nothing; without it, an absent api_server entry gets hermes_api_server_default_floor, and an
+# explicit entry is used as written and still checked by the gate below.
+- name: Resolve the effective subtraction map
+  ansible.builtin.set_fact:
+    hermes__subtract_effective: >-
+      {{ hermes_toolsets_subtract
+         | combine({'api_server': ([] if hermes_api_server_full_control | bool
+                                    else hermes_toolsets_subtract.api_server | default(hermes_api_server_default_floor))}
+                   if hermes_api_server_enabled | bool else {}) }}
+
+- name: Derive the toolset floor as owned tier-C leaves
+  ansible.builtin.set_fact:
+    hermes__floor_leaves: "{{ hermes_toolsets_core | richard_lynch.services.hermes_toolset_leaves(hermes__subtract_effective) }}"
+
+# Without full control, the api_server floor must be gone of the three shell-equivalent toolsets
+# `api_server: []` pins the full set and calls it a floor, which is exactly what the flag
+# above exists to say out loud instead.
+- name: HARD GATE - without full control, the API-server floor must not keep a shell-equivalent toolset
+  vars:
+    _api_floor: >-
+      {{ (hermes__floor_leaves | selectattr('key', 'equalto', ['platform_toolsets', 'api_server'])
+          | map(attribute='value') | first | default([])) }}
+    _must_be_gone: [terminal, file, code_execution]
+  ansible.builtin.assert:
+    that:
+      - _api_floor | length > 0
+      - _api_floor | intersect(_must_be_gone) | length == 0
+    fail_msg: >-
+      hermes_api_server_enabled is true, hermes_api_server_full_control is not true, and the
+      api_server floor {{ 'is missing' if _api_floor | length == 0 else 'still carries ' ~ (_api_floor | intersect(_must_be_gone)) ~ ', which is shell-equivalent for anyone holding the API key' }}.
+      Subtract those toolsets, or set hermes_api_server_full_control: true to choose full control on purpose.
+    quiet: true
+  when: hermes_api_server_enabled | bool and not (hermes_api_server_full_control | bool)
+
+# The delivered skills directory is a SOURCE the agent must not write (skill_manage has no
+# external-dir check, so the read-only mount is the protection). The one entry the role owns in
+# skills.external_dirs is the mount path, tier C so neither the settings service nor the policy
+# hook lets the agent repoint it. Absent when no skills are delivered, so a role used without them
+# owns nothing here.
+# `layer: user`, NOT the managed overlay: upstream reads skills.* RAW from config.yaml
+# (agent/skill_utils, which never applies the overlay), and `save_config` strips every managed leaf
+# from that file on each save -- so a managed pin here would make the skills vanish whenever
+# something saves the config (`hermes plugins install --enable`, say), with the pin still reading
+# as in place. In the user layer the merge keeps it, a save preserves it, and a probe reads it as
+# the skills code does.
+- name: Derive the skills.external_dirs leaf
+  ansible.builtin.set_fact:
+    hermes__skills_leaves: >-
+      {{ [{'key': 'skills.external_dirs', 'value': [hermes_skills_mount_path], 'tier': 'C', 'layer': 'user'}]
+         if (hermes_skills_source | length > 0) else [] }}
+
+# An inline key in the provider entry is retired by the merge, because a merge keeps
+# every key the desired map omits and would otherwise leave it in place for ever. Derived from
+# the provider name so it cannot drift from what the template renders.
+# A hook that is switched OFF must leave the user layer too: the merge never removes a leaf it no
+# longer owns, so without this the old hooks.pre_tool_call would stay in config.yaml and keep the
+# hook configured (pointing at a script that is gone, which fail_closed turns into "block every
+# matched call"). Retired only where the caller manages hooks (hermes_hooks_expected non-empty),
+# so a host that never had the hook keeps whatever its user configured.
+- name: Derive the retired-key list (declared, the inline gateway key, a disabled policy hook)
+  ansible.builtin.set_fact:
+    hermes__retired_all: >-
+      {{ hermes_config_retired_keys
+         + (['providers.' ~ hermes_gateway_provider_name ~ '.api_key']
+            if (hermes_gateway_url | default('') | length > 0) else [])
+         + (['hooks.pre_tool_call']
+            if (not (hermes_policy_hook_enabled | bool) and not (hermes_hub_gate_enabled | bool)
+                and hermes_hooks_expected | length > 0) else [])
+         + (['hooks.post_tool_call']
+            if (not (hermes_audit_hook_enabled | bool) and hermes_hooks_expected | length > 0) else []) }}
+
+# The policy hook is a tier-C LEAF, so it lands in the managed scope and every profile's
+# effective config carries it (the overlay is global); no profile can drop or edit it. One entry,
+# fail_closed: a hook that crashes, times out or prints garbage BLOCKS the call. The command names
+# the image's interpreter by absolute path in ISOLATED mode (-I: no PYTHON* variable, no user site,
+# no script or cwd directory on sys.path; -B: no bytecode written), then the script in the read-only
+# policy mount. Hermes spawns it with shell=False and hands it ITS environment, which includes the
+# agent-writable data/.env (loaded with override=True): an `env python3` shebang would resolve the
+# interpreter through a plantable PATH and honour a planted PYTHONPATH, loading a fake module ahead
+# of the guard. The LD_* loader variables no interpreter flag can stop are refused by the preflight.
+- name: Derive the policy-hook leaf
+  ansible.builtin.set_fact:
+    hermes__hook_leaves: >-
+      {{ [{'key': 'hooks.pre_tool_call', 'tier': 'C', 'value': [{
+            'matcher': '^(write_file|patch|terminal|execute_code|mcp__hub_settings__.+)$',
+            'command': '/opt/hermes/.venv/bin/python -I -B /opt/hermes-policy/hermes_policy_hook.py',
+            'timeout': hermes_policy_hook_timeout,
+            'fail_closed': true}]}]
+         if hermes_policy_hook_enabled | bool else [] }}
+
+# The post_tool_call audit hook's leaf; see the file.
+- name: Derive the audit-hook leaf
+  ansible.builtin.include_tasks: _audit_hook_leaf.yml
+
+# The webhook listener, its routes, the send gate's hook and the cron env passthrough, all
+# tier C (see the file for why). Empty when none of them is enabled.
+- name: Derive the automation leaves (webhook, send gate, cron env)
+  ansible.builtin.include_tasks: _automations_leaves.yml
+
+- name: Retire the routes the caller dropped
+  ansible.builtin.set_fact:
+    hermes__retired_all: "{{ hermes__retired_all + hermes__automation_retired }}"
+
+# The policy hook and the send gate share ONE leaf (hooks.pre_tool_call); see the file.
+- name: Combine the pre_tool_call hook entries into one leaf
+  ansible.builtin.include_tasks: _pre_tool_call_combine.yml
+
+- name: Assemble the full owned-leaf list
+  ansible.builtin.set_fact:
+    hermes__owned_all: >-
+      {{ hermes__wiring_leaves + hermes_config_owned + hermes__floor_leaves + hermes__skills_leaves
+         + hermes__automation_leaves_nohook + hermes__pre_tool_call_leaves + hermes__audit_hook_leaves }}
+  no_log: true
+
+# The managed-scope document and its gates are evaluated HERE, before anything is written and
+# before the quiesce below stops the stack: they need nothing but hermes__owned_all, and when they
+# are evaluated after the merge a refusal leaves Hermes STOPPED with nothing to restart it.
+# _managed_scope.yml re-includes the same file so it stays
+# self-gating when run as its own entrypoint; the second evaluation is a pure recomputation.
+- name: Build the managed-scope document and refuse an empty or secret-bearing pin
+  ansible.builtin.include_tasks: _managed_gate.yml
+
+# owned-keys.json is the ONE file the merge, a probe and the settings service read, so a
+# key cannot be "managed" in one table and agent-writable in another. It carries names, tiers and
+# bounds -- and VALUES only for non-secret leaves. Sorted, so a re-render is byte-stable.
+# No owner/group declared: the play connects as root on the guest, so these are root-owned there,
+# and a scenario running as an ordinary user can still run the same tasks.
+# It lives on the host, outside every mount the agent can write.
+- name: Ensure the policy directory exists
+  ansible.builtin.file:
+    path: "{{ hermes_config_dir }}/policy"
+    state: directory
+    mode: "0755"
+
+- name: Render owned-keys.json (secret values never included)
+  ansible.builtin.copy:
+    dest: "{{ hermes_config_dir }}/policy/owned-keys.json"
+    mode: "0644"
+    content: "{{ {'owned': hermes__owned_all | richard_lynch.services.hermes_owned_keys_document} | to_nice_json }}"
+  no_log: true
+
+- name: Is there a live agent config yet
+  ansible.builtin.stat:
+    path: "{{ hermes_config_dir }}/data/config.yaml"
+    follow: false
+  register: hermes__config_stat
+
+# data/ is the agent's, so config.yaml may be a link the agent planted: root would read whatever it
+# points at below, and project and write it back into the agent's tree. One level below the
+# root-owned config dir, the name is the only component the agent controls, so a link here is the
+# whole attack (AGENTTREE-01); the write below also renames over the name (follow: false).
+- name: HARD GATE - the live agent config is a regular file, not a link
+  ansible.builtin.assert:
+    that:
+      - not (hermes__config_stat.stat.islnk | default(false))
+      - not hermes__config_stat.stat.exists or (hermes__config_stat.stat.isreg | default(false))
+    fail_msg: >-
+      {{ hermes_config_dir }}/data/config.yaml is a symlink or not a regular file. Root refuses to
+      read or rewrite it; inspect it on the guest.
+    quiet: true
+
+# Absent on a first deploy, before the container has ever started -- and ONLY then. A file that
+# exists and cannot be read fails this task, so it can never be mistaken for "nothing there".
+- name: Read the agent config as the container currently holds it
+  ansible.builtin.slurp:
+    src: "{{ hermes_config_dir }}/data/config.yaml"
+  register: hermes__config_live
+  when: hermes__config_stat.stat.exists
+  no_log: true
+
+# The USER layer only. With the managed scope enforced, a managed-layer tier-C leaf is the
+# overlay's: upstream's save_config strips it from config.yaml on every save and every overlay-aware
+# loader puts it back, so projecting it into the file manufactured drift after each such save --
+# and drift quiesces and restarts the stack. Its pin is checked by the preflight at start. A leftover copy in the file passes through untouched.
+- name: Select the owned leaves that belong in the user config.yaml
+  ansible.builtin.set_fact:
+    hermes__owned_user: "{{ hermes__owned_all | richard_lynch.services.hermes_user_layer_leaves(hermes_managed_enforce | bool) }}"
+  no_log: true
+
+# SEEDS are not owned: written only when the key is MISSING and never compared again, so a value
+# the dashboard UI later writes wins for good. dashboard.theme is the one -- the role's theme
+# as a first-boot default that the user's picker replaces (tier A). Because a seed is not in
+# hermes__owned_all it is absent from owned-keys.json, so neither the policy hook nor the settings
+# service refuses a write to it. Every other dashboard.* key is unowned and passes through.
+- name: Derive the seeds (written only when absent)
+  ansible.builtin.set_fact:
+    hermes__seeds: >-
+      {{ [{'key': 'dashboard.theme', 'value': hermes_dashboard_theme_seed}]
+         if (hermes_dashboard_enabled | bool and hermes_dashboard_theme_seed | length > 0) else [] }}
+
+- name: Project the owned leaves onto the live config
+  ansible.builtin.set_fact:
+    hermes__merge: >-
+      {{ (hermes__config_live.content | default('e30=') | b64decode | from_yaml | default({}, true))
+         | richard_lynch.services.hermes_owned_projection(hermes__owned_user, hermes__retired_all, hermes__seeds) }}
+  no_log: true
+
+- name: Report which owned leaves drift (values masked for secrets)
+  ansible.builtin.debug:
+    msg: "owned-leaf drift: {{ hermes__merge.diff | map(attribute='key') | list }}"
+  when: hermes__merge.diff | length > 0
+
+# QUIESCE the other writer. The dashboard and the agent write this file too (atomically, by
+# rename), so merging against a copy read while they run leaves a window in which their
+# write is overwritten. When a merge is needed and the stack is up: stop it, RE-READ (anything
+# written before the stop is now on disk), merge again, write, and let the converge below start it.
+# Starting it again is also what makes a changed kanban.* leaf take effect: the dispatcher reads
+# those once at boot. With no drift nothing stops.
+#
+# The quiesce is its own task file so the concurrent-write fixture (molecule) can substitute
+# a quiesce that stops a real concurrent writer: set `hermes__merge_quiesce_file` to an absolute
+# path. A real converge never sets it, and the default stops the compose project.
+- name: Quiesce the stack before merging into a live file
+  ansible.builtin.include_tasks: "{{ hermes__merge_quiesce_file | default('_quiesce_stack.yml') }}"
+  when:
+    - hermes__merge.diff | length > 0
+    - hermes__merge_quiesce | default(true) | bool
+
+- name: Re-read the config now that nothing else is writing
+  ansible.builtin.slurp:
+    src: "{{ hermes_config_dir }}/data/config.yaml"
+  register: hermes__config_quiet
+  when: hermes__merge.diff | length > 0 and hermes__config_stat.stat.exists
+  no_log: true
+
+- name: Re-project against the quiesced file
+  ansible.builtin.set_fact:
+    hermes__merge: >-
+      {{ (hermes__config_quiet.content | b64decode | from_yaml | default({}, true))
+         | richard_lynch.services.hermes_owned_projection(hermes__owned_user, hermes__retired_all, hermes__seeds) }}
+  when: hermes__config_quiet is not skipped
+  no_log: true
+
+# `copy` with `content:` writes a temp file beside the target and RENAMES it over, so a reader
+# never sees a half-written config. Mode 0640 is the mode the CONTAINER maintains, so declaring
+# it avoids a second fight over the same file. Comments in a file Hermes itself rewrites on every
+# boot are not preserved by design.
+- name: Write the merged agent config
+  ansible.builtin.copy:
+    content: "{{ hermes__merge.projection | to_nice_yaml(indent=2, sort_keys=false) }}"
+    dest: "{{ hermes_config_dir }}/data/config.yaml"
+    owner: "{{ hermes_state_uid }}"
+    group: "{{ hermes_state_gid }}"
+    mode: "0640"
+    follow: false
+  no_log: true
+  when: hermes__merge.diff | length > 0

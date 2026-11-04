@@ -1,0 +1,144 @@
+---
+# Asserts on the ARTIFACTS the role's own templates produced (rendered by converge.yml via
+# ansible.builtin.template), not on a hand-typed copy of the role's logic. A scenario that
+# re-derives the role's expressions over a stub list asserts the copy against itself and stays
+# green through a real regression.
+- name: Verify — the rendered model explorer artifacts
+  hosts: localhost
+  gather_facts: false
+  vars:
+    render_root: /tmp/molecule-mx
+  tasks:
+    - name: Read the rendered compose files
+      ansible.builtin.slurp:
+        src: "{{ render_root }}/{{ item }}/docker-compose.yml"
+      register: _compose
+      loop: [first, second]
+
+    - name: Parse them as YAML, so a template that renders INVALID yaml fails here
+      ansible.builtin.set_fact:
+        _first: "{{ _compose.results[0].content | b64decode | from_yaml }}"
+        _second: "{{ _compose.results[1].content | b64decode | from_yaml }}"
+
+    - name: Read the rendered nginx configs
+      ansible.builtin.slurp:
+        src: "{{ render_root }}/{{ item }}/nginx.conf"
+      register: _nginx
+      loop: [first, second]
+
+    - name: Decode the nginx configs
+      ansible.builtin.set_fact:
+        _nginx_first: "{{ _nginx.results[0].content | b64decode }}"
+        _nginx_second: "{{ _nginx.results[1].content | b64decode }}"
+
+    - name: The compose project must declare exactly the one service, named by its variable
+      ansible.builtin.assert:
+        that:
+          - _first.services | length == 1
+          - "'model-explorer' in _first.services"
+          - _second.services | length == 1
+          - "'other-explorer' in _second.services"
+        fail_msg: >-
+          The rendered compose project does not carry exactly one service named by
+          model_explorer_container_name.
+        quiet: true
+
+    - name: The image must be PINNED — no floating tag may reach the rendered compose
+      # `:latest`, a bare name and a minor-only tag all float, and a floating tag means the
+      # deployed artefact can change with no commit. Asserted on the RENDER rather than on the
+      # default, so a caller passing a floating tag is caught too.
+      ansible.builtin.assert:
+        that:
+          - _first.services['model-explorer'].image is match('^nginx:\d+\.\d+\.\d+-alpine$')
+          - _second.services['other-explorer'].image is match('^nginx:\d+\.\d+\.\d+-alpine$')
+        fail_msg: >-
+          The rendered image is not pinned to an explicit patch version:
+          {{ _first.services['model-explorer'].image }} /
+          {{ _second.services['other-explorer'].image }}
+        quiet: true
+
+    - name: Both mounts must be READ-ONLY
+      # Nothing in this app writes, so a writable mount would only widen what a compromised
+      # nginx could alter. Asserted rather than trusted because `:ro` is one character.
+      ansible.builtin.assert:
+        that:
+          - _first.services['model-explorer'].volumes | reject('search', ':ro$') | list | length == 0
+          - _second.services['other-explorer'].volumes | reject('search', ':ro$') | list | length == 0
+        fail_msg: >-
+          A volume is mounted writable: {{ _first.services['model-explorer'].volumes }}
+        quiet: true
+
+    - name: The port mapping must come from the variable, on both renders
+      ansible.builtin.assert:
+        that:
+          - "'8092:80' in _first.services['model-explorer'].ports"
+          - "'9191:80' in _second.services['other-explorer'].ports"
+        fail_msg: "The host port is not taken from model_explorer_host_port."
+        quiet: true
+
+    - name: NO CREDENTIAL may reach the rendered compose project
+      # The app is read-only and holds nothing. This asserts that stays true: if someone later
+      # adds an api_key or a master key to this stack "just to fetch /v1/models from the
+      # browser", this fails and makes them argue for it rather than slipping it in.
+      ansible.builtin.assert:
+        that:
+          - not (_compose.results[0].content | b64decode | lower is search('api_key|api-key|master_key|master-key|password|secret|token|bearer'))
+          - not (_compose.results[1].content | b64decode | lower is search('api_key|api-key|master_key|master-key|password|secret|token|bearer'))
+        fail_msg: >-
+          A credential-shaped key reached the rendered compose project. This app must hold NO
+          credential — it serves a static snapshot of model ids, and the write path is an
+          Ansible play, not a browser request.
+        quiet: true
+
+    # ---- nothing is hardcoded ---------------------------------------------------------
+    - name: The second caller's render must carry NONE of the first variant's values
+      # The point of the two-variant render. A template that hardcoded a container name, port,
+      # network or image would produce an identical second render and pass every assert above;
+      # only this one catches it.
+      ansible.builtin.assert:
+        that:
+          - not (_compose.results[1].content | b64decode is search('model-explorer'))
+          - not (_compose.results[1].content | b64decode is search('8092'))
+          - not (_compose.results[1].content | b64decode is search('explorer-net'))
+          - not (_compose.results[1].content | b64decode is search('1\.29\.3'))
+          - not (_compose.results[1].content | b64decode is search('Etc/UTC'))
+        fail_msg: >-
+          The second caller's render still contains one of the first variant's values, so the
+          template hardcodes something that belongs in inventory.
+        quiet: true
+
+    # ---- the nginx policy that makes the app's honesty survive deployment -------------
+    - name: The catalogue must be served uncacheable
+      # The app's whole claim is to show CURRENT state. A browser serving a fortnight-old
+      # snapshot from cache would present retired models as available with nothing indicating
+      # anything was wrong — the same "confidently stale" failure the app exists to prevent.
+      ansible.builtin.assert:
+        that:
+          - _nginx_first is search('location = /catalogue\.json')
+          - _nginx_first is search('no-store')
+          - _nginx_second is search('no-store')
+        fail_msg: "catalogue.json is not served with a no-store cache policy."
+        quiet: true
+
+    - name: The security headers must be present on every render
+      ansible.builtin.assert:
+        that:
+          - _nginx_first is search('Content-Security-Policy')
+          - _nginx_first is search("frame-ancestors 'none'")
+          - _nginx_first is search('X-Content-Type-Options')
+          - _nginx_second is search('Content-Security-Policy')
+        fail_msg: "A security header is missing from the rendered nginx config."
+        quiet: true
+
+    - name: The CSP must not permit inline SCRIPT
+      # style-src carries 'unsafe-inline' deliberately (React injects inline style attributes);
+      # script-src must not, and the two are one word apart. Asserted so a later loosening of
+      # style-src cannot quietly take script-src with it.
+      ansible.builtin.assert:
+        that:
+          - not (_nginx_first is search("script-src 'self' 'unsafe-inline'"))
+          - _nginx_first is search("script-src 'self'")
+        fail_msg: >-
+          The CSP permits inline script. style-src may carry 'unsafe-inline'; script-src must
+          not.
+        quiet: true

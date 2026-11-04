@@ -1,0 +1,14 @@
+# {{ ansible_managed }}
+# Base config every per-card Codex config.toml starts from; worker-sessiond appends the card's
+# [mcp_servers.*] tables. The route is LiteLLM's /v1/responses with the worker's own key
+# (OPENAI_API_KEY is read from the environment, never written here).
+model = "{{ worker_codex_model }}"
+model_provider = "litellm"
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+
+[model_providers.litellm]
+name = "LiteLLM"
+base_url = "{{ worker_litellm_url }}/v1"
+env_key = "OPENAI_API_KEY"
+wire_api = "responses"

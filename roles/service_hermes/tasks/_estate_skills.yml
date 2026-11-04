@@ -1,0 +1,91 @@
+---
+# Deliver the caller's skills READ-ONLY.
+#
+# At the pinned release, skill_manage's edit/patch/write/delete carry NO external-dir or read-only
+# check, so a skill under skills.external_dirs is as writable as any other if the filesystem lets
+# it be. The protection is therefore structural and has two halves, both here and in the compose
+# file: files are root-owned 0444 in a directory the container mounts `:ro`. (The "external skills
+# are read-only" wording in upstream is the curator's, not skill_manage's.)
+#
+# Discovery is keyed on directory mtimes with a 30 s TTL, so a swapped SKILL.md lands without a
+# restart and nothing here restarts the stack.
+#
+# No owner: declared. The play connects as root on the guest, so these are root-owned there, and a
+# scenario running as an ordinary user can still run the same tasks (as owned-keys.json does).
+- name: HARD GATE - the skills source must be a directory holding at least one SKILL.md
+  ansible.builtin.find:
+    paths: "{{ hermes_skills_source }}"
+    patterns: SKILL.md
+    recurse: true
+  register: hermes__skills_manifest
+  delegate_to: localhost
+  become: false
+
+- name: HARD GATE - an empty or missing source would delete every delivered skill
+  ansible.builtin.assert:
+    that:
+      - hermes__skills_manifest.matched | int > 0
+    fail_msg: >-
+      hermes_skills_source '{{ hermes_skills_source }}' contains no SKILL.md. The prune below would
+      remove every skill already delivered; deliver nothing by leaving the option empty instead.
+    quiet: true
+
+# hidden: false on the SOURCE: the source is a controller worktree, so a .DS_Store, an editor swap
+# file or a stray dotfile would otherwise be copied to the guest as a skill file.
+# The destination listing below keeps hidden: true so any such file already delivered is pruned.
+# Python bytecode is excluded for the same reason: running a skill's tests on the controller
+# writes scripts/__pycache__/*.pyc into the source -- a file nobody wrote, differing per controller
+# Python, that a converge would otherwise deliver.
+- name: List every source file and directory
+  ansible.builtin.find:
+    paths: "{{ hermes_skills_source }}"
+    recurse: true
+    file_type: any
+    hidden: false
+    excludes: [__pycache__, "*.pyc", "*.pyo"]
+  register: hermes__skills_src
+  delegate_to: localhost
+  become: false
+
+- name: Ensure the destination root exists
+  ansible.builtin.file:
+    path: "{{ hermes_config_dir }}/estate-skills"
+    state: directory
+    mode: "0755"
+
+- name: Ensure each skill directory exists
+  ansible.builtin.file:
+    path: "{{ hermes_config_dir }}/estate-skills/{{ item.path | relpath(hermes_skills_source) }}"
+    state: directory
+    mode: "0755"
+  loop: "{{ hermes__skills_src.files | selectattr('isdir') | list }}"
+  loop_control: { label: "{{ item.path | relpath(hermes_skills_source) }}" }
+
+- name: Copy each skill file, read-only
+  ansible.builtin.copy:
+    src: "{{ item.path }}"
+    dest: "{{ hermes_config_dir }}/estate-skills/{{ item.path | relpath(hermes_skills_source) }}"
+    mode: "0444"
+  loop: "{{ hermes__skills_src.files | rejectattr('isdir') | list }}"
+  loop_control: { label: "{{ item.path | relpath(hermes_skills_source) }}" }
+
+- name: List what is delivered now
+  ansible.builtin.find:
+    paths: "{{ hermes_config_dir }}/estate-skills"
+    recurse: true
+    file_type: any
+    hidden: true
+  register: hermes__skills_dest
+
+# A skill REMOVED from the source must leave the guest, or "delivered from the source" stops being true.
+# The set difference is on relative paths; the gate above guarantees the source is not empty, so
+# this can never read an empty source as "delete everything".
+- name: Remove delivered files and directories the source no longer has
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: >-
+    {{ hermes__skills_dest.files | map(attribute='path') | map('relpath', hermes_config_dir ~ '/estate-skills') | list
+       | difference(hermes__skills_src.files | map(attribute='path') | map('relpath', hermes_skills_source) | list)
+       | map('regex_replace', '^', hermes_config_dir ~ '/estate-skills/') | list }}
+  loop_control: { label: "{{ item }}" }

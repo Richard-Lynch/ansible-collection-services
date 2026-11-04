@@ -1,0 +1,72 @@
+---
+# AUTO-GENERATED defaults file — DO NOT EDIT.
+#
+# Source of truth: roles/config_agent_state/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate config_agent_state
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+# Entrypoint:      restore
+
+# Which agent product this state belongs to (the role is built for Hermes and keeps
+# every product-specific value an option). It names the archives and the metrics
+# label so a second product can share a backup share without colliding. Lowercase
+# letters, digits and hyphens.
+agent_state_product__default: hermes
+
+# Interpreter that runs agent_state.py. It must be 3.12 or newer (tarfile extraction
+# filters); the script refuses an older one rather than extracting unfiltered.
+agent_state_python__default: python3
+
+# Where the role installs agent_state.py on the host.
+agent_state_install_dir__default: /usr/local/lib/agent-state
+
+# mind: only the mirror paths, from git. runtime: the archive. both: the archive,
+# then the mirror paths over it (layer 2 is newer than last night's tar).
+agent_state_restore_scope__default: runtime
+
+# Git ref the mind scope restores from.
+agent_state_restore_ref__default: HEAD
+
+# Start with the quiet-start overlay (platforms, cron dispatch and webhooks off) until
+# the read-back passes, so nothing can act on half-restored state.
+agent_state_restore_quiet_start__default: true
+
+# Environment the quiet-start overlay sets. Which variables disable a product's
+# platforms, cron dispatch and webhook listener is product knowledge declared in
+# inventory; an empty dict with quiet start on is REFUSED, not treated as 'nothing to
+# disable'.
+agent_state_quiet_start_env__default: {}
+
+# Paths that must exist in the restored tree or the restore is refused.
+agent_state_required_paths__default: []
+
+# Stop and start the compose stack around the restore. False only where there is no
+# docker daemon (the molecule scenario).
+agent_state_stack_managed__default: true
+
+# Compose project directory of the agent stack (required when managed).
+agent_state_stack_project_dir__default: ''
+
+# Compose service name of the agent (required for quiet start).
+agent_state_stack_service__default: ''
+
+# Compose file name inside the project directory.
+agent_state_stack_compose_file__default: docker-compose.yml
+
+# URL that answers 200 once the agent is healthy (required when managed).
+agent_state_health_url__default: ''
+
+# Health polls, 5 s apart.
+agent_state_health_retries__default: 30
+
+# Read-backs run after the restore: dicts of name, url, status (default 200) and
+# contains (optional substring of the body). Declared per product in inventory.
+agent_state_readback_checks__default: []
+
+# Bearer key the read-backs present, when the API needs one.
+agent_state_readback_api_key__default: ''
+
+# Directory (0700) holding the deploy key on the host.
+agent_state_key_dir__default: /etc/agent-state

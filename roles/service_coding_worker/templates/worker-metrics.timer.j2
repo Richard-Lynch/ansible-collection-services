@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+[Unit]
+Description=worker-metrics: every 30 seconds
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

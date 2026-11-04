@@ -1,0 +1,44 @@
+{#- Protocol mode. The adapters and acpx are the PINNED binaries in the tools directory every
+    card container mounts read-only at the same path; acpx is never left to `npx -y` a package. -#}
+{%- set _acp = {
+  'acp_agents': {
+    'claude': [worker_node_bin ~ '/claude-agent-acp'],
+    'codex': [worker_node_bin ~ '/codex-acp'],
+  },
+  'acpx_bin': worker_node_bin ~ '/acpx',
+  'acp_permissions': worker_acp_permissions,
+  'acp_cancel_budget_seconds': worker_acp_cancel_budget_seconds | float,
+  'acp_keep_comms': worker_acp_keep_comms | list,
+  'acp_pins': {
+    'acpx_version': worker_tools.acpx_version | default(''),
+    'claude_agent_acp_version': worker_tools.claude_agent_acp_version | default(''),
+    'codex_acp_version': worker_tools.codex_acp_version | default(''),
+  },
+  'acp_acceptance_file': worker_conf_dir ~ '/acp-accepted.json',
+} if worker_acp_enabled | bool else {} -%}
+{{ ({
+  'state_dir': worker_state_dir,
+  'work_root': worker_work_root,
+  'tmux_prefix': worker_tmux_session_prefix,
+  'repos': worker_repos | list,
+  'mcp_catalogue': worker_mcp_catalogue | list,
+  'mcp_default_enabled': worker_mcp_default_enabled | list,
+  'card_tail_enabled': worker_card_tail_enabled | bool,
+  'stuck_after_seconds': worker_stuck_after_seconds | int,
+  'claude_permission_mode': worker_claude_permission_mode,
+  'claude_settings': worker_claude_settings,
+  'codex_base_config_file': worker_conf_dir ~ '/codex_base.toml',
+  'agent_env_file': worker_conf_dir ~ '/agent.env',
+  'container_runtime': worker_container_runtime,
+  'container_image': worker_card_image,
+  'container_tools_dir': worker_node_dir,
+  'card_cpus': worker_card_cpus | float,
+  'card_memory': worker_card_memory,
+  'vm_reserve_mb': worker_vm_reserve_mb | int,
+  'git_user_name': worker_git_user_name,
+  'git_user_email': worker_git_user_email,
+  'pr_allow_no_checks': worker_pr_allow_no_checks | bool,
+  'pr_reviewer_logins': worker_pr_reviewer_logins | list,
+  'pr_ignore_bots': worker_pr_ignore_bots | bool,
+  'pr_poll_seconds': worker_pr_poll_seconds | int,
+} | combine(_acp)) | to_nice_json }}

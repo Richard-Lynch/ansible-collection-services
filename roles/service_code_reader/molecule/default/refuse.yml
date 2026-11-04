@@ -1,0 +1,21 @@
+---
+# Run the role's real gates over `good` combined with one fixture's override and require that they
+# FAIL with the message that names the gate -- failing for some OTHER reason is not a pass.
+- name: "Gates over fixture {{ fixture.name }}"
+  block:
+    - name: Run the real gates
+      ansible.builtin.include_tasks: gates.yml
+      vars:
+        cfg_in: "{{ good | combine(fixture.override) }}"
+    - name: The fixture was NOT refused -- that is the failure
+      ansible.builtin.fail:
+        msg: "fixture {{ fixture.name }} passed every gate; the gate it targets cannot fire"
+  rescue:
+    - name: The refusal must name the gate the fixture targets
+      ansible.builtin.assert:
+        that:
+          - fixture.expect in (ansible_failed_result.msg | default(''))
+        fail_msg: >-
+          fixture {{ fixture.name }} failed, but not on the expected gate ('{{ fixture.expect }}'):
+          {{ ansible_failed_result.msg | default('(no message)') }}
+        quiet: true

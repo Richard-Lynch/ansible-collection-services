@@ -1,0 +1,38 @@
+# Copyright: (c) 2026, Richard Lynch
+# GNU General Public License v3.0+ (see https://www.gnu.org/licenses/gpl-3.0.txt)
+---
+DOCUMENTATION:
+  name: hermes_cron_seed_plan
+  short_description: Compare a declared Hermes cron seed with the live cron store
+  author: Richard Lynch (@Richard-Lynch)
+  description:
+    - Compares each declared (seeded) cron job with the job of the same name in the Hermes cron store,
+      on the fields the seed owns (schedule, prompt, script, no_agent, deliver, model, skills).
+    - Returns what to create (always paused), which fields to edit on which job id, which declared-enabled
+      jobs are paused and should be resumed, the names declared more than once in the store, and one probe
+      row per seeded job (C(matches), C(drift) or C(cannot-tell)).
+    - Jobs whose names are not in the seed are never touched. An unknown key, a bad name, a job that runs
+      the agent without a pinned model, or a no-agent job without a script is refused.
+  options:
+    _input:
+      description: The cron store document (C(cron/jobs.json), parsed). None or an empty mapping means
+        there is no store yet.
+      type: raw
+      required: true
+    seed:
+      description: The declared jobs, each with C(name), C(schedule), C(prompt) and/or C(script), and
+        optionally C(enabled), C(model), C(provider), C(deliver), C(skills), C(no_agent), C(purpose).
+      type: list
+      required: true
+EXAMPLES: |
+  - name: Plan the cron seed against the live store
+    ansible.builtin.set_fact:
+      cron_plan: "{{ jobs_doc | richard_lynch.services.hermes_cron_seed_plan(cron_seed) }}"
+    vars:
+      jobs_doc: {jobs: []}
+      cron_seed:
+        - {name: nightly-report, schedule: "0 6 * * *", prompt: Summarise yesterday, model: small-model}
+RETURN:
+  _value:
+    description: A mapping with C(create), C(edit), C(resume), C(rows) and C(duplicates).
+    type: dict

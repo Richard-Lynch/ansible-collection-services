@@ -1,0 +1,15 @@
+---
+# The run-now entrypoints assume `main` has installed the script. Say so by name, instead of
+# letting the first command die on "can't open file".
+- name: Is the script installed
+  ansible.builtin.stat:
+    path: "{{ agent_state_install_dir }}/agent_state.py"
+  register: _as_installed
+
+- name: HARD GATE — config_agent_state main has been converged on this host
+  ansible.builtin.assert:
+    that: _as_installed.stat.exists
+    fail_msg: >-
+      {{ agent_state_install_dir }}/agent_state.py is not installed. Converge the role's main
+      entrypoint first (tasks_from: main); the run-now entrypoints only drive what it installs.
+    quiet: true

@@ -1,0 +1,583 @@
+---
+# service_coding_worker — a coding worker VM: one sysbox container per card, the agent inside it.
+#
+# Shape: resolve defaults, gate on what fails silently, install, render, converge the two
+# services, then PROVE the result with read-backs instead of trusting the tasks' own exit codes.
+# Everything that decides (card ids, MCP names, scrubbing, stop confirmation) lives in
+# files/worker_sessiond.py where it is unit-tested; this file only puts it on a host.
+
+- name: Resolve declared options over their generated defaults
+  ansible.builtin.include_tasks: _resolve_defaults.yml
+
+- name: Apply the generated argspec guards
+  ansible.builtin.include_tasks: _argspec_guards.yml
+
+# ------------------------------------------------------------------------------------------
+# Gates. Each one catches a failure that is silent at run time.
+# ------------------------------------------------------------------------------------------
+- name: Preflight gates
+  ansible.builtin.include_tasks: _gates.yml
+
+- name: Derive paths and probe addresses
+  ansible.builtin.include_tasks: _derive.yml
+
+- name: Name the default card image after its Dockerfile
+  ansible.builtin.include_tasks: _card_image.yml
+
+# ------------------------------------------------------------------------------------------
+# Packages and account
+# ------------------------------------------------------------------------------------------
+- name: Install the worker's system packages
+  ansible.builtin.apt:
+    name: [git, tmux, ttyd, python3, curl, xz-utils, jq, ca-certificates, build-essential]
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+    install_recommends: false
+
+# gh from the cli/cli release, checksummed. The distro's (2.45) is REMOVED, not shadowed: two gh
+# binaries on one PATH make "which version answered" depend on the caller's PATH.
+- name: Remove the distro gh (2.45 has no `api --slurp`; sessiond's PR loop needs a modern gh)
+  ansible.builtin.apt:
+    name: gh
+    state: absent
+
+- name: Fetch the gh release tarball, verified against the pinned sha256
+  ansible.builtin.get_url:
+    url: "https://github.com/cli/cli/releases/download/v{{ worker_tools.gh_version }}/gh_{{ worker_tools.gh_version }}_linux_amd64.tar.gz"
+    dest: "/var/cache/gh_{{ worker_tools.gh_version }}_linux_amd64.tar.gz"
+    checksum: "sha256:{{ worker_tools.gh_sha256_linux_amd64 }}"
+    mode: "0644"
+
+- name: Unpack gh beside any other version
+  ansible.builtin.unarchive:
+    src: "/var/cache/gh_{{ worker_tools.gh_version }}_linux_amd64.tar.gz"
+    dest: /opt
+    remote_src: true
+    creates: "/opt/gh_{{ worker_tools.gh_version }}_linux_amd64/bin/gh"
+
+- name: Put the pinned gh on the default PATH
+  ansible.builtin.file:
+    src: "/opt/gh_{{ worker_tools.gh_version }}_linux_amd64/bin/gh"
+    dest: /usr/local/bin/gh
+    state: link
+    force: true
+
+- name: Create the worker account
+  ansible.builtin.user:
+    name: "{{ worker_user }}"
+    shell: /bin/bash
+    create_home: true
+
+- name: Resolve the account's home from the passwd database
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ worker_user }}"
+
+- name: Record the home directory
+  ansible.builtin.set_fact:
+    worker_home: "{{ getent_passwd[worker_user][4] }}"
+
+- name: Authorise the jump-in key for the worker account
+  ansible.posix.authorized_key:
+    user: "{{ worker_user }}"
+    key: "{{ worker_ssh_authorized_key }}"
+
+- name: Authorise the extra keys (the coder profile's own key lives here, not with the owner's)
+  ansible.posix.authorized_key:
+    user: "{{ worker_user }}"
+    key: "{{ item }}"
+  loop: "{{ worker_extra_authorized_keys }}"
+  loop_control:
+    label: "{{ item[:24] }}"
+
+- name: Accept the forwarded WORKER_* variable names over ssh
+  ansible.builtin.template:
+    src: sshd-worker-env.conf.j2
+    dest: /etc/ssh/sshd_config.d/50-worker-env.conf
+    owner: root
+    group: root
+    mode: "0644"
+  when: worker_ssh_accept_env | length > 0
+  notify: Reload sshd
+
+- name: Stop accepting them when none are declared
+  ansible.builtin.file:
+    path: /etc/ssh/sshd_config.d/50-worker-env.conf
+    state: absent
+  when: worker_ssh_accept_env | length == 0
+  notify: Reload sshd
+
+- name: Create the work, config, library and state directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.owner }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - {path: "{{ worker_work_root }}", owner: "{{ worker_user }}", mode: "0755"}
+    - {path: "{{ worker_work_root }}/worktrees", owner: "{{ worker_user }}", mode: "0755"}
+    - {path: "{{ worker_conf_dir }}", owner: root, mode: "0755"}
+    - {path: "{{ worker_lib_dir }}", owner: root, mode: "0755"}
+    - {path: "{{ worker_state_dir }}", owner: "{{ worker_user }}", mode: "0700"}
+  loop_control:
+    label: "{{ item.path }}"
+
+# ------------------------------------------------------------------------------------------
+# Docker + sysbox, the default card image and the proof that a sysbox container works. After the
+# account (the docker group) and the state directories (the Dockerfile lives under lib_dir).
+# ------------------------------------------------------------------------------------------
+- name: Container runtime
+  ansible.builtin.include_tasks: _container_runtime.yml
+
+# ------------------------------------------------------------------------------------------
+# Node (official tarball, checksum-verified) and the agent CLIs, pinned
+# ------------------------------------------------------------------------------------------
+- name: Fetch the Node tarball, verified against the pinned sha256
+  ansible.builtin.get_url:
+    url: "https://nodejs.org/dist/v{{ worker_tools.node_version }}/node-v{{ worker_tools.node_version }}-linux-x64.tar.xz"
+    dest: "/var/cache/node-v{{ worker_tools.node_version }}.tar.xz"
+    checksum: "sha256:{{ worker_tools.node_sha256_linux_x64 }}"
+    mode: "0644"
+
+- name: Unpack Node beside any other version (the old one stays until nothing links to it)
+  ansible.builtin.unarchive:
+    src: "/var/cache/node-v{{ worker_tools.node_version }}.tar.xz"
+    dest: /opt
+    remote_src: true
+    creates: "/opt/node-v{{ worker_tools.node_version }}-linux-x64/bin/node"
+
+- name: Install Claude Code at the pinned version
+  community.general.npm:
+    name: "@anthropic-ai/claude-code"
+    version: "{{ worker_tools.claude_code_version }}"
+    global: true
+    executable: "{{ worker_node_bin }}/npm"
+    state: present
+  environment:
+    PATH: "{{ worker_node_bin }}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+- name: Install Codex at the pinned version
+  community.general.npm:
+    name: "@openai/codex"
+    version: "{{ worker_tools.codex_version }}"
+    global: true
+    executable: "{{ worker_node_bin }}/npm"
+    state: present
+  environment:
+    PATH: "{{ worker_node_bin }}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+- name: Put the tools on the default PATH (systemd units and tmux panes have no custom PATH)
+  ansible.builtin.file:
+    src: "{{ worker_node_bin }}/{{ item }}"
+    dest: "/usr/local/bin/{{ item }}"
+    state: link
+    force: true
+  loop: [node, npm, npx, claude, codex]
+
+- name: Git identity for the agents
+  community.general.git_config:
+    name: "{{ item.name }}"
+    value: "{{ item.value }}"
+    scope: global
+  become: true
+  become_user: "{{ worker_user }}"
+  loop:
+    - {name: user.name, value: "{{ worker_git_user_name }}"}
+    - {name: user.email, value: "{{ worker_git_user_email }}"}
+    - {name: credential.helper, value: "!gh auth git-credential"}
+
+# ------------------------------------------------------------------------------------------
+# Configuration. Credentials live in 0600 files owned by the account that uses them.
+# ------------------------------------------------------------------------------------------
+- name: Render the agent environment
+  ansible.builtin.template:
+    src: agent.env.j2
+    dest: "{{ worker_conf_dir }}/agent.env"
+    owner: "{{ worker_user }}"
+    group: "{{ worker_user }}"
+    mode: "0600"
+  no_log: true
+  notify: Restart worker-sessiond
+
+- name: Render the Codex base config
+  ansible.builtin.template:
+    src: codex_base.toml.j2
+    dest: "{{ worker_conf_dir }}/codex_base.toml"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Render sessiond's configuration (no credential in it)
+  ansible.builtin.template:
+    src: sessiond.json.j2
+    dest: "{{ worker_conf_dir }}/sessiond.json"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart worker-sessiond
+
+- name: Write sessiond's token file
+  ansible.builtin.copy:
+    content: "WORKER_SESSIOND_TOKEN={{ worker_sessiond_token }}\n"
+    dest: "{{ worker_conf_dir }}/sessiond.env"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  notify: Restart worker-sessiond
+
+- name: Write ttyd's credential file
+  ansible.builtin.copy:
+    content: "TTYD_CREDENTIAL={{ worker_ttyd_credential }}\n"
+    dest: "{{ worker_conf_dir }}/ttyd.env"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  notify: Restart worker-ttyd
+
+- name: Render the tmux defaults
+  ansible.builtin.template:
+    src: tmux.conf.j2
+    dest: /etc/tmux.conf
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Load the agent environment in the worker's login shells (the ssh jump-in path)
+  ansible.builtin.copy:
+    content: |
+      # managed by service_coding_worker: agents started by hand see the same environment as card sessions
+      if [ "$(id -un)" = "{{ worker_user }}" ] && [ -r {{ worker_conf_dir }}/agent.env ]; then
+        set -a; . {{ worker_conf_dir }}/agent.env; set +a
+      fi
+    dest: /etc/profile.d/worker-agent-env.sh
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install the supervisor and the attach wrapper
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - {src: worker_sessiond.py, dest: "{{ worker_lib_dir }}/worker_sessiond.py", mode: "0644"}
+    - {src: worker-attach, dest: /usr/local/bin/worker-attach, mode: "0755"}
+    - {src: worker_metrics_pull.py, dest: "{{ worker_lib_dir }}/worker_metrics_pull.py", mode: "0644"}
+  notify:
+    - Restart worker-sessiond
+    - Restart worker-ttyd
+
+- name: Install the coder skill's tool on the PATH (the ssh terminal carries no files here)
+  ansible.builtin.copy:
+    src: "{{ worker_coder_ctl_src }}"
+    dest: /usr/local/bin/coder_ctl
+    owner: root
+    group: root
+    mode: "0755"
+  when: worker_coder_ctl_src | length > 0
+
+- name: ASSERT — the installed coder_ctl runs under the worker's own python3 (lists its commands)
+  ansible.builtin.command: /usr/local/bin/coder_ctl --help
+  register: _coder_ctl_help
+  changed_when: false
+  failed_when: _coder_ctl_help.rc != 0 or 'list' not in _coder_ctl_help.stdout
+  when: worker_coder_ctl_src | length > 0
+
+- name: Install the two systemd units
+  ansible.builtin.template:
+    src: "{{ item }}.service.j2"
+    dest: "/etc/systemd/system/{{ item }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: [worker-sessiond, worker-ttyd]
+  notify:
+    - Reload systemd
+    - Restart worker-sessiond
+    - Restart worker-ttyd
+
+# Protocol mode: acpx + the ACP adapters, pinned, and acpx-mcp. Before the handler flush so
+# the restarts below run the new configuration.
+- name: Protocol mode
+  ansible.builtin.include_tasks: _protocol.yml
+  when: worker_acp_enabled | bool
+
+# The stuck-card metrics. sessiond serves them (GET /v1/metrics); a ROOT timer files them into the
+# textfile collector, so the collector directory is never writable by the agents' own user.
+- name: Ensure the textfile collector directory exists, root-owned
+  # The puller can write into it before a metrics agent has been installed on a fresh VM, and an
+  # absent directory is an uncaught FileNotFoundError in the puller. Root-owned 0755, the same as
+  # the textfile collector directory a node_exporter or Alloy install creates, so the two agree.
+  ansible.builtin.file:
+    path: "{{ worker_metrics_textfile | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: worker_metrics_textfile | length > 0
+
+- name: Install the metrics puller's two units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: [worker-metrics.service, worker-metrics.timer]
+  when: worker_metrics_textfile | length > 0
+  notify: Reload systemd
+
+# Repo checkouts. The clone authenticates through the gh credential helper configured above, with
+# GH_TOKEN in the task environment, so the token is never written into .git/config. `update: false`
+# because a checkout that sessiond makes worktrees from must not move under live cards; moving the
+# base is a deliberate act, not a side effect of a converge.
+- name: Clone each configured repo
+  ansible.builtin.git:
+    repo: "{{ item.url }}"
+    dest: "{{ worker_work_root }}/{{ item.name }}"
+    version: "{{ item.base_branch }}"
+    update: false
+  become: true
+  become_user: "{{ worker_user }}"
+  environment:
+    GH_TOKEN: "{{ worker_github_token }}"
+    HOME: "{{ worker_home }}"
+  loop: "{{ worker_repos }}"
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+
+- name: Flush handlers so the services run the new configuration before the read-backs
+  ansible.builtin.meta: flush_handlers
+
+- name: Restart sessiond when the account only now joined the docker group  # noqa: no-handler
+  # A running process keeps the groups it started with. On a first run the unit was just
+  # installed and is started below anyway; this is for the converge that ADDS the group later.
+  ansible.builtin.systemd:
+    name: worker-sessiond
+    state: restarted
+  when: _worker_docker_group.changed
+
+- name: Enable and start both services
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop: [worker-sessiond, worker-ttyd]
+
+- name: Enable the metrics timer
+  ansible.builtin.systemd:
+    name: worker-metrics.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: worker_metrics_textfile | length > 0
+
+# ------------------------------------------------------------------------------------------
+# Read-backs: assert the properties the consumers depend on, not that a task ran.
+# ------------------------------------------------------------------------------------------
+- name: Read the installed CLI versions
+  ansible.builtin.command: "{{ item }} --version"
+  loop: [claude, codex, gh]
+  register: _worker_versions
+  changed_when: false
+  become: true
+  become_user: "{{ worker_user }}"
+  environment:
+    HOME: "{{ worker_home }}"
+
+- name: ASSERT — each CLI reports the pinned version
+  ansible.builtin.assert:
+    that:
+      - worker_tools.claude_code_version in _worker_versions.results[0].stdout
+      - worker_tools.codex_version in _worker_versions.results[1].stdout
+      - ('gh version ' ~ worker_tools.gh_version ~ ' ') in _worker_versions.results[2].stdout
+    fail_msg: >-
+      claude reports '{{ _worker_versions.results[0].stdout }}' (pinned {{ worker_tools.claude_code_version }}),
+      codex reports '{{ _worker_versions.results[1].stdout }}' (pinned {{ worker_tools.codex_version }}),
+      gh reports '{{ _worker_versions.results[2].stdout_lines | first | default('') }}' (pinned {{ worker_tools.gh_version }}).
+    quiet: true
+
+- name: ASSERT — sessiond answers /healthz
+  ansible.builtin.uri:
+    url: "http://{{ worker_probe_sessiond_host }}:{{ worker_sessiond_port }}/healthz"
+    status_code: [200]
+  register: _worker_health
+  changed_when: false
+  until: _worker_health.status == 200
+  retries: 10
+  delay: 2
+
+- name: ASSERT — sessiond refuses a list request that carries no token
+  ansible.builtin.uri:
+    url: "http://{{ worker_probe_sessiond_host }}:{{ worker_sessiond_port }}/v1/sessions"
+    status_code: [401]
+  changed_when: false
+
+- name: Read sessiond's session list WITH the token
+  ansible.builtin.uri:
+    url: "http://{{ worker_probe_sessiond_host }}:{{ worker_sessiond_port }}/v1/sessions"
+    headers:
+      Authorization: "Bearer {{ worker_sessiond_token }}"
+    return_content: true
+  register: _worker_sessions
+  changed_when: false
+  no_log: true
+
+- name: ASSERT — the authenticated list parsed to the documented shape
+  # content | from_json, not .json: uri only fills .json when the response declares JSON, and an
+  # unparsed reply must not read as "no sessions".
+  ansible.builtin.assert:
+    that:
+      - (_worker_sessions.content | from_json) is mapping
+      - "'sessions' in (_worker_sessions.content | from_json)"
+    fail_msg: "sessiond answered 200 but its body was not {sessions: [...]}"
+    quiet: true
+
+- name: ASSERT — ttyd refuses a request with no credentials
+  ansible.builtin.uri:
+    url: "http://{{ worker_probe_ttyd_host }}:{{ worker_ttyd_port }}/"
+    status_code: [401]
+  changed_when: false
+  retries: 5
+  delay: 2
+
+- name: ASSERT — ttyd opens for the configured credential
+  ansible.builtin.uri:
+    url: "http://{{ worker_probe_ttyd_host }}:{{ worker_ttyd_port }}/"
+    url_username: "{{ worker_ttyd_credential.split(':', 1)[0] }}"
+    url_password: "{{ worker_ttyd_credential.split(':', 1)[1] }}"
+    force_basic_auth: true
+    status_code: [200]
+  changed_when: false
+  no_log: true
+
+- name: ASSERT — ttyd is listening on its port
+  ansible.builtin.command: ss -ltnH "sport = :{{ worker_ttyd_port }}"
+  register: _worker_ttyd_listen
+  changed_when: false
+  failed_when: _worker_ttyd_listen.stdout | trim | length == 0
+
+- name: ASSERT — the attach wrapper refuses a malformed card id before tmux sees it
+  ansible.builtin.command: /usr/local/bin/worker-attach 'x;touch /tmp/pwned'
+  register: _worker_attach_bad
+  changed_when: false
+  failed_when: _worker_attach_bad.rc != 1 or ('not a valid card id' not in _worker_attach_bad.stderr)
+  environment:
+    WORKER_ATTACH_REFUSE_SLEEP: "0"
+  become: true
+  become_user: "{{ worker_user }}"
+
+- name: ASSERT (near-miss) — a well-formed id with no session is refused for THAT reason
+  # Proves the check above is not simply refusing everything.
+  ansible.builtin.command: /usr/local/bin/worker-attach nosuchcard
+  register: _worker_attach_none
+  changed_when: false
+  failed_when: _worker_attach_none.rc != 1 or ('no live session for nosuchcard' not in _worker_attach_none.stderr)
+  environment:
+    WORKER_ATTACH_REFUSE_SLEEP: "0"
+  become: true
+  become_user: "{{ worker_user }}"
+
+- name: ASSERT — no credential file is readable by anyone but its owner
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ worker_conf_dir }}/agent.env"
+    - "{{ worker_conf_dir }}/sessiond.env"
+    - "{{ worker_conf_dir }}/ttyd.env"
+  register: _worker_modes
+  failed_when: _worker_modes.stat.mode != '0600'
+  changed_when: false
+  loop_control:
+    label: "{{ item }}"
+
+# The metrics path has four links (sessiond endpoint, token, root puller, collector file) and a
+# break in any of them is silent: the file simply ages. So run the puller NOW, and read the file.
+- name: Run the metrics puller once, now
+  when: worker_metrics_textfile | length > 0
+  block:
+    - name: Start the oneshot
+      # A refresh, not a change: a oneshot is inactive between runs, so `started` would report
+      # changed on every converge and a second converge could never read changed=0.
+      ansible.builtin.systemd:
+        name: worker-metrics.service
+        state: started
+      changed_when: false
+  rescue:
+    # systemd's own message only says "see journalctl", and the reason is in the puller's stderr.
+    # The puller never prints the token (it lives in a header), so the journal is safe to show.
+    - name: Read the puller's journal
+      ansible.builtin.command: journalctl -u worker-metrics.service -n 30 --no-pager -o cat
+      register: _worker_metrics_journal
+      changed_when: false
+
+    - name: FAIL — the metrics puller did not run
+      ansible.builtin.fail:
+        msg: "worker-metrics.service failed: {{ _worker_metrics_journal.stdout_lines | default([]) }}"
+
+- name: Read the metrics file the collector will read
+  ansible.builtin.slurp:
+    src: "{{ worker_metrics_textfile }}"
+  register: _worker_metrics_file
+  when: worker_metrics_textfile | length > 0
+
+- name: Stat the metrics file
+  ansible.builtin.stat:
+    path: "{{ worker_metrics_textfile }}"
+  register: _worker_metrics_stat
+  when: worker_metrics_textfile | length > 0
+
+- name: ASSERT — the file carries every series the alerts read, is fresh, and is root-owned 0644
+  # Freshness is judged against the GUEST's clock (ansible_date_time is gathered at play start, so
+  # allow the play's own runtime), not the controller's.
+  vars:
+    _body: "{{ _worker_metrics_file.content | b64decode }}"
+    _ts: "{{ (_body | regex_search('(?m)^hermes_worker_metrics_timestamp_seconds ([0-9]+)$', '\\1') | first) | int }}"
+  ansible.builtin.assert:
+    that:
+      - "'hermes_worker_stuck_cards ' in _body"
+      - "'hermes_worker_sessions_disagree ' in _body"
+      - (ansible_date_time.epoch | int) - (_ts | int) < 600
+      - _worker_metrics_stat.stat.mode == '0644'
+      - _worker_metrics_stat.stat.pw_name == 'root'
+    fail_msg: >-
+      {{ worker_metrics_textfile }} is missing a series, is more than 10 minutes old, or is not
+      root:0644. The puller or sessiond's /v1/metrics is broken: an alert on the metrics'
+      age will fire for this reason alone.
+    quiet: true
+  when: worker_metrics_textfile | length > 0
+
+# sshd reads drop-ins from disk, so the EFFECTIVE configuration (`sshd -T`) is the read-back: it
+# proves the file was included (the Include line exists) and that every name parsed. A drop-in that is
+# present but not included would be a silent no-op, and the coder profile would then connect with
+# no URL or token.
+- name: Read sshd's effective AcceptEnv
+  ansible.builtin.command: sshd -T
+  register: _worker_sshd_t
+  changed_when: false
+  check_mode: false
+  when: worker_ssh_accept_env | length > 0
+
+- name: ASSERT — sshd would accept every declared name
+  vars:
+    _accept: "{{ _worker_sshd_t.stdout_lines | select('match', '(?i)^acceptenv ') | map('regex_replace', '(?i)^acceptenv ', '') | join(' ') | split(' ') }}"
+  ansible.builtin.assert:
+    that:
+      - worker_ssh_accept_env | difference(_accept) | length == 0
+    fail_msg: >-
+      sshd -T does not list {{ worker_ssh_accept_env | difference(_accept) }} under AcceptEnv, so the
+      coder profile's forwarded variables would never arrive. Is `Include /etc/ssh/sshd_config.d/*.conf`
+      present in /etc/ssh/sshd_config?
+    quiet: true
+  when: worker_ssh_accept_env | length > 0
+
+- name: Protocol mode read-backs
+  ansible.builtin.include_tasks: _protocol_verify.yml
+  when: worker_acp_enabled | bool
