@@ -1,0 +1,160 @@
+---
+# AUTO-GENERATED argument spec — DO NOT EDIT.
+#
+# Source of truth: roles/service_code_reader/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate service_code_reader
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+argument_specs:
+  main:
+    short_description: Deploy the one-shot verification-code reader sidecar
+    description:
+      - Deploys a small stdlib-only service that polls a dedicated mailbox over IMAP,
+      - keeps each verification code from an allowlisted sender for a short TTL, and
+      - hands it out exactly once to the browser filler over HTTP with a bearer token.
+      - 'The language model never sees the code: the filler asks for it and types it.'
+    version_added: '1.0'
+    author: Collection maintainers
+    options:
+      code_reader_container_name:
+        description:
+          - Container name.
+        type: str
+        required: false
+        default: code-reader
+      code_reader_config_dir:
+        description:
+          - Host directory holding the rendered compose project and config.
+        type: str
+        required: false
+        default: /opt/code-reader
+      code_reader_network:
+        description:
+          - "External docker network to join (created if absent): the one the agent's"
+          - container is on. Required, because the right network depends on how the agent is
+          - deployed. The browser filler reaches the
+          - sidecar over this network by container name, because a loopback address inside
+          - the agent's own container is that container's loopback, not the host's.
+        type: str
+        required: true
+      code_reader_image:
+        description:
+          - Pinned base image. The sidecar is one stdlib-only Python file mounted into it,
+          - so there is nothing to build. A floating tag is rejected by the role's gate.
+        type: str
+        required: false
+        default: python:3.12.7-slim
+      code_reader_bind:
+        description:
+          - "Host address the sidecar's port is PUBLISHED on. Must be loopback: this service"
+          - hands out login codes, and its only authentication is a bearer token. The role
+          - refuses anything but 127.x or ::1.
+        type: str
+        required: false
+        default: 127.0.0.1
+      code_reader_port:
+        description:
+          - Port the sidecar listens on (container) and publishes (host loopback).
+        type: int
+        required: false
+        default: 8645
+      code_reader_timezone:
+        description:
+          - Container timezone.
+        type: str
+        required: false
+        default: Etc/UTC
+      code_reader_imap_host:
+        description:
+          - IMAP server for the mailbox that receives the codes (TLS, port below).
+        type: str
+        required: true
+      code_reader_imap_port:
+        description:
+          - IMAP over TLS port.
+        type: int
+        required: false
+        default: 993
+      code_reader_imap_user:
+        description:
+          - IMAP login for the code mailbox.
+        type: str
+        required: true
+      code_reader_imap_password:
+        description:
+          - IMAP password. Rendered only into a 0600 env file, never into compose.
+        type: str
+        required: true
+        no_log: true
+      code_reader_imap_folder:
+        description:
+          - Mailbox folder to watch.
+        type: str
+        required: false
+        default: INBOX
+      code_reader_poll_seconds:
+        description:
+          - Seconds between IMAP polls.
+        type: int
+        required: false
+        default: 15
+      code_reader_sender_allowlist:
+        description:
+          - 'Senders whose mail may supply a code: an exact address, or an at-sign followed by'
+          - a domain to admit that domain exactly (not its subdomains). Mail from anyone else
+          - 'is ignored. Deliberately required with no default: an empty list would accept'
+          - codes from anyone, and the right value depends on the services you sign up to.
+        type: list
+        required: true
+        elements: str
+      code_reader_ttl_seconds:
+        description:
+          - How long a received code stays available. Each code is also one-shot.
+        type: int
+        required: false
+        default: 600
+      code_reader_code_patterns:
+        description:
+          - Extra regular expressions, group 1 being the code, tried before the built-ins.
+          - Empty means the built-in patterns only (digits 4-8 near the word code).
+        type: list
+        required: false
+        default: []
+        elements: str
+      code_reader_token:
+        description:
+          - Bearer token the filler presents on every code request. Rendered only into a
+          - 0600 env file.
+        type: str
+        required: true
+        no_log: true
+  probe:
+    short_description: Read-only health check of the code reader
+    description:
+      - Reads the sidecar's own health endpoint on the host loopback and reports. Sets
+      - nothing, requests no code, and never needs the bearer token.
+    version_added: '1.0'
+    author: Collection maintainers
+    options:
+      code_reader_container_name:
+        description:
+          - Container name.
+        type: str
+        required: false
+        default: code-reader
+      code_reader_bind:
+        description:
+          - "Host address the sidecar's port is PUBLISHED on. Must be loopback: this service"
+          - hands out login codes, and its only authentication is a bearer token. The role
+          - refuses anything but 127.x or ::1.
+        type: str
+        required: false
+        default: 127.0.0.1
+      code_reader_port:
+        description:
+          - Port the sidecar listens on (container) and publishes (host loopback).
+        type: int
+        required: false
+        default: 8645

@@ -1,0 +1,31 @@
+# Copyright: (c) 2026, Richard Lynch
+# GNU General Public License v3.0+ (see https://www.gnu.org/licenses/gpl-3.0.txt)
+---
+DOCUMENTATION:
+  name: hermes_managed_document
+  short_description: Build the managed-scope config.yaml from the managed-layer tier-C leaves
+  author: Richard Lynch (@Richard-Lynch)
+  description:
+    - Returns the nested document of every managed-layer tier-C leaf and nothing else, for the world-readable
+      managed overlay.
+    - 'Refuses a secret tier-C leaf, a leaf nested under another, a duplicate, and a managed leaf under
+      a raw-read prefix (upstream reads those keys from config.yaml directly, so the pin would be lost
+      at the next save; declare it C(layer: user)).'
+  options:
+    _input:
+      description: Owned leaves; only tier C with layer C(managed) (the default) are used.
+      type: list
+      required: true
+    raw_read_prefixes:
+      description: Dotted key prefixes that upstream reads raw from config.yaml.
+      type: list
+EXAMPLES: |
+  - name: Managed document
+    ansible.builtin.set_fact:
+      managed: "{{ owned | richard_lynch.services.hermes_managed_document(['skills', 'plugins']) }}"
+    vars:
+      owned: [{key: approvals.mode, value: manual, tier: C}]
+RETURN:
+  _value:
+    description: The nested managed document.
+    type: dict

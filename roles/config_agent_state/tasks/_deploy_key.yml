@@ -1,0 +1,36 @@
+---
+- name: Key directory (0700)
+  ansible.builtin.file:
+    path: "{{ agent_state_key_dir }}"
+    state: directory
+    mode: "0700"
+
+- name: Mirror deploy key (0600)
+  # no_log: this task carries the private key itself; a failure would dump it.
+  ansible.builtin.copy:
+    dest: "{{ agent_state_key_dir }}/mirror_deploy_key"
+    content: "{{ agent_state_deploy_key | trim }}\n"
+    mode: "0600"
+  no_log: true
+
+- name: READ BACK — the installed key parses as an SSH private key
+  # The value arrives from the caller's secret store as a multi-line string and nothing else reads
+  # it before the first push; a mangled paste would otherwise fail only at the first nightly run. `ssh-keygen -y`
+  # prints the PUBLIC key on stdout (safe to register) and fails on anything that is not a key.
+  ansible.builtin.command:
+    argv: [ssh-keygen, -y, -f, "{{ agent_state_key_dir }}/mirror_deploy_key"]
+  register: _as_key_pub
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: HARD GATE — the deploy key is a usable private key
+  ansible.builtin.assert:
+    that:
+      - _as_key_pub.rc == 0
+      - _as_key_pub.stdout | trim is match('(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp[0-9]+) ')
+    fail_msg: >-
+      {{ agent_state_key_dir }}/mirror_deploy_key does not parse as an SSH private key
+      (ssh-keygen rc {{ _as_key_pub.rc }}). The stored value is not the key that was generated;
+      store the private key again. The value is not printed.
+    quiet: true

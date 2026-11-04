@@ -1,0 +1,11 @@
+---
+# Cleanup - the same root prepare.yml starts clean, removed BEFORE prepare and AFTER verify (see the
+# test_sequence in molecule.yml), so a run starts from nothing and leaves nothing whatever the
+# previous run did and whatever molecule's "already prepared" flag says.
+- name: Cleanup - remove the fixture agent home
+  hosts: localhost
+  gather_facts: false
+  vars_files: [vars.yml]
+  tasks:
+    - name: Remove the fixture root
+      ansible.builtin.file: { path: "{{ _hl_root }}", state: absent }

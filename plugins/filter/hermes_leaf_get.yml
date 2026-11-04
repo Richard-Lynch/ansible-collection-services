@@ -1,0 +1,31 @@
+# Copyright: (c) 2026, Richard Lynch
+# GNU General Public License v3.0+ (see https://www.gnu.org/licenses/gpl-3.0.txt)
+---
+DOCUMENTATION:
+  name: hermes_leaf_get
+  short_description: Read one leaf back out of a Hermes config.yaml text
+  author: Richard Lynch (@Richard-Lynch)
+  description:
+    - Reads one leaf from a C(config.yaml) text. A separate code path from hermes_leaf_merge on purpose,
+      so a read-back after a write does not share the code that wrote it.
+  options:
+    _input:
+      description: The file contents.
+      type: str
+      required: true
+    key:
+      description: The leaf, a dotted string or a list of path segments.
+      type: raw
+      required: true
+    default:
+      description: Returned when the leaf is absent.
+      type: raw
+EXAMPLES: |
+  - name: Read a leaf back
+    ansible.builtin.assert:
+      that:
+        - "'approvals: {mode: smart}\n' | richard_lynch.services.hermes_leaf_get('approvals.mode') == 'smart'"
+RETURN:
+  _value:
+    description: The leaf's value, or C(default).
+    type: raw

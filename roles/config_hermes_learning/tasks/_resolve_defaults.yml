@@ -1,0 +1,107 @@
+---
+# AUTO-GENERATED defaults resolver — DO NOT EDIT.
+#
+# Source of truth: roles/config_hermes_learning/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate config_hermes_learning
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+
+# Binds every declared option to its generated default, so a caller-supplied value
+# wins and an unsupplied one falls back rather than evaluating Undefined.
+#
+# Include this FIRST from every entrypoint:
+#   - ansible.builtin.include_tasks: _resolve_defaults.yml
+#
+# Role-specific setup logic belongs in tasks/setup_vars.yml, NOT here — this file is
+# overwritten on every generation.
+#
+# TWO BRANCHES, because `set_fact` persists for the whole play. A role invoked twice in
+# one play would otherwise see its OWN leftover facts on the second call, so a later
+# caller that omitted an option silently inherited the earlier caller's value instead of
+# the declared default. On a repeat call this ignores the role's own facts and rebinds
+# the defaults; an include-level `vars:` shadows the fact, so a value the caller DID
+# supply this time still wins. Roles called once per play only ever run the first branch.
+
+- name: Resolve declared options over their generated defaults
+  ansible.builtin.set_fact:
+    hermes_learning_container: "{{ hermes_learning_container | default(hermes_learning_container__default) if hermes_learning_container__default is defined else hermes_learning_container | default(omit) }}"
+    hermes_learning_container_python: "{{ hermes_learning_container_python | default(hermes_learning_container_python__default) if hermes_learning_container_python__default is defined else hermes_learning_container_python | default(omit) }}"
+    hermes_learning_container_workdir: "{{ hermes_learning_container_workdir | default(hermes_learning_container_workdir__default) if hermes_learning_container_workdir__default is defined else hermes_learning_container_workdir | default(omit) }}"
+    hermes_learning_exec_user: "{{ hermes_learning_exec_user | default(hermes_learning_exec_user__default) if hermes_learning_exec_user__default is defined else hermes_learning_exec_user | default(omit) }}"
+    hermes_learning_home: "{{ hermes_learning_home | default(hermes_learning_home__default) if hermes_learning_home__default is defined else hermes_learning_home | default(omit) }}"
+    hermes_learning_exec_mode: "{{ hermes_learning_exec_mode | default(hermes_learning_exec_mode__default) if hermes_learning_exec_mode__default is defined else hermes_learning_exec_mode | default(omit) }}"
+    hermes_learning_hermes_cli: "{{ hermes_learning_hermes_cli | default(hermes_learning_hermes_cli__default) if hermes_learning_hermes_cli__default is defined else hermes_learning_hermes_cli | default(omit) }}"
+    hermes_learning_install_dir: "{{ hermes_learning_install_dir | default(hermes_learning_install_dir__default) if hermes_learning_install_dir__default is defined else hermes_learning_install_dir | default(omit) }}"
+    hermes_learning_config_dir: "{{ hermes_learning_config_dir | default(hermes_learning_config_dir__default) if hermes_learning_config_dir__default is defined else hermes_learning_config_dir | default(omit) }}"
+    hermes_learning_state_dir: "{{ hermes_learning_state_dir | default(hermes_learning_state_dir__default) if hermes_learning_state_dir__default is defined else hermes_learning_state_dir | default(omit) }}"
+    hermes_learning_dir: "{{ hermes_learning_dir | default(hermes_learning_dir__default) if hermes_learning_dir__default is defined else hermes_learning_dir | default(omit) }}"
+    hermes_learning_recall_scratch: "{{ hermes_learning_recall_scratch | default(hermes_learning_recall_scratch__default) if hermes_learning_recall_scratch__default is defined else hermes_learning_recall_scratch | default(omit) }}"
+    hermes_learning_skip_names_file: "{{ hermes_learning_skip_names_file | default(hermes_learning_skip_names_file__default) if hermes_learning_skip_names_file__default is defined else hermes_learning_skip_names_file | default(omit) }}"
+    hermes_learning_api_url: "{{ hermes_learning_api_url | default(hermes_learning_api_url__default) if hermes_learning_api_url__default is defined else hermes_learning_api_url | default(omit) }}"
+    hermes_learning_api_key_env: "{{ hermes_learning_api_key_env | default(hermes_learning_api_key_env__default) if hermes_learning_api_key_env__default is defined else hermes_learning_api_key_env | default(omit) }}"
+    hermes_learning_probe_timeout_s: "{{ hermes_learning_probe_timeout_s | default(hermes_learning_probe_timeout_s__default) if hermes_learning_probe_timeout_s__default is defined else hermes_learning_probe_timeout_s | default(omit) }}"
+    hermes_learning_consolidate_max_loss: "{{ hermes_learning_consolidate_max_loss | default(hermes_learning_consolidate_max_loss__default) if hermes_learning_consolidate_max_loss__default is defined else hermes_learning_consolidate_max_loss | default(omit) }}"
+    hermes_learning_consolidate_min_entries: "{{ hermes_learning_consolidate_min_entries | default(hermes_learning_consolidate_min_entries__default) if hermes_learning_consolidate_min_entries__default is defined else hermes_learning_consolidate_min_entries | default(omit) }}"
+    hermes_learning_ping_age_s: "{{ hermes_learning_ping_age_s | default(hermes_learning_ping_age_s__default) if hermes_learning_ping_age_s__default is defined else hermes_learning_ping_age_s | default(omit) }}"
+    hermes_learning_ping_repeat_s: "{{ hermes_learning_ping_repeat_s | default(hermes_learning_ping_repeat_s__default) if hermes_learning_ping_repeat_s__default is defined else hermes_learning_ping_repeat_s | default(omit) }}"
+    hermes_learning_slack_token_env: "{{ hermes_learning_slack_token_env | default(hermes_learning_slack_token_env__default) if hermes_learning_slack_token_env__default is defined else hermes_learning_slack_token_env | default(omit) }}"
+    hermes_learning_slack_channel_env: "{{ hermes_learning_slack_channel_env | default(hermes_learning_slack_channel_env__default) if hermes_learning_slack_channel_env__default is defined else hermes_learning_slack_channel_env | default(omit) }}"
+    hermes_learning_claims_window_s: "{{ hermes_learning_claims_window_s | default(hermes_learning_claims_window_s__default) if hermes_learning_claims_window_s__default is defined else hermes_learning_claims_window_s | default(omit) }}"
+    hermes_learning_enable_timers: "{{ hermes_learning_enable_timers | default(hermes_learning_enable_timers__default) if hermes_learning_enable_timers__default is defined else hermes_learning_enable_timers | default(omit) }}"
+    hermes_learning_unit_dir: "{{ hermes_learning_unit_dir | default(hermes_learning_unit_dir__default) if hermes_learning_unit_dir__default is defined else hermes_learning_unit_dir | default(omit) }}"
+    hermes_learning_hourly_oncalendar: "{{ hermes_learning_hourly_oncalendar | default(hermes_learning_hourly_oncalendar__default) if hermes_learning_hourly_oncalendar__default is defined else hermes_learning_hourly_oncalendar | default(omit) }}"
+    hermes_learning_probes_oncalendar: "{{ hermes_learning_probes_oncalendar | default(hermes_learning_probes_oncalendar__default) if hermes_learning_probes_oncalendar__default is defined else hermes_learning_probes_oncalendar | default(omit) }}"
+    hermes_learning_consolidate_oncalendar: "{{ hermes_learning_consolidate_oncalendar | default(hermes_learning_consolidate_oncalendar__default) if hermes_learning_consolidate_oncalendar__default is defined else hermes_learning_consolidate_oncalendar | default(omit) }}"
+    hermes_learning_stack_dir: "{{ hermes_learning_stack_dir | default(hermes_learning_stack_dir__default) if hermes_learning_stack_dir__default is defined else hermes_learning_stack_dir | default(omit) }}"
+    hermes_learning_health_url: "{{ hermes_learning_health_url | default(hermes_learning_health_url__default) if hermes_learning_health_url__default is defined else hermes_learning_health_url | default(omit) }}"
+    hermes_learning_memory_plugin: "{{ hermes_learning_memory_plugin | default(hermes_learning_memory_plugin__default) if hermes_learning_memory_plugin__default is defined else hermes_learning_memory_plugin | default(omit) }}"
+    hermes_learning_memory_plugin_section: "{{ hermes_learning_memory_plugin_section | default(hermes_learning_memory_plugin_section__default) if hermes_learning_memory_plugin_section__default is defined else hermes_learning_memory_plugin_section | default(omit) }}"
+    hermes_learning_memory_plugin_settings: "{{ hermes_learning_memory_plugin_settings | default(hermes_learning_memory_plugin_settings__default) if hermes_learning_memory_plugin_settings__default is defined else hermes_learning_memory_plugin_settings | default(omit) }}"
+    hermes_learning_memory_plugin_ref: "{{ hermes_learning_memory_plugin_ref | default(hermes_learning_memory_plugin_ref__default) if hermes_learning_memory_plugin_ref__default is defined else hermes_learning_memory_plugin_ref | default(omit) }}"
+    hermes_learning_memory_plugin_version: "{{ hermes_learning_memory_plugin_version | default(hermes_learning_memory_plugin_version__default) if hermes_learning_memory_plugin_version__default is defined else hermes_learning_memory_plugin_version | default(omit) }}"
+  when: not (_config_hermes_learning__argspec_resolved | default(false))
+
+- name: Rebind the defaults on a repeat call, ignoring this role's own leftover facts
+  ansible.builtin.set_fact:
+    hermes_learning_container: "{{ hermes_learning_container__default if hermes_learning_container__default is defined else hermes_learning_container | default(omit) }}"
+    hermes_learning_container_python: "{{ hermes_learning_container_python__default if hermes_learning_container_python__default is defined else hermes_learning_container_python | default(omit) }}"
+    hermes_learning_container_workdir: "{{ hermes_learning_container_workdir__default if hermes_learning_container_workdir__default is defined else hermes_learning_container_workdir | default(omit) }}"
+    hermes_learning_exec_user: "{{ hermes_learning_exec_user__default if hermes_learning_exec_user__default is defined else hermes_learning_exec_user | default(omit) }}"
+    hermes_learning_home: "{{ hermes_learning_home__default if hermes_learning_home__default is defined else hermes_learning_home | default(omit) }}"
+    hermes_learning_exec_mode: "{{ hermes_learning_exec_mode__default if hermes_learning_exec_mode__default is defined else hermes_learning_exec_mode | default(omit) }}"
+    hermes_learning_hermes_cli: "{{ hermes_learning_hermes_cli__default if hermes_learning_hermes_cli__default is defined else hermes_learning_hermes_cli | default(omit) }}"
+    hermes_learning_install_dir: "{{ hermes_learning_install_dir__default if hermes_learning_install_dir__default is defined else hermes_learning_install_dir | default(omit) }}"
+    hermes_learning_config_dir: "{{ hermes_learning_config_dir__default if hermes_learning_config_dir__default is defined else hermes_learning_config_dir | default(omit) }}"
+    hermes_learning_state_dir: "{{ hermes_learning_state_dir__default if hermes_learning_state_dir__default is defined else hermes_learning_state_dir | default(omit) }}"
+    hermes_learning_dir: "{{ hermes_learning_dir__default if hermes_learning_dir__default is defined else hermes_learning_dir | default(omit) }}"
+    hermes_learning_recall_scratch: "{{ hermes_learning_recall_scratch__default if hermes_learning_recall_scratch__default is defined else hermes_learning_recall_scratch | default(omit) }}"
+    hermes_learning_skip_names_file: "{{ hermes_learning_skip_names_file__default if hermes_learning_skip_names_file__default is defined else hermes_learning_skip_names_file | default(omit) }}"
+    hermes_learning_api_url: "{{ hermes_learning_api_url__default if hermes_learning_api_url__default is defined else hermes_learning_api_url | default(omit) }}"
+    hermes_learning_api_key_env: "{{ hermes_learning_api_key_env__default if hermes_learning_api_key_env__default is defined else hermes_learning_api_key_env | default(omit) }}"
+    hermes_learning_probe_timeout_s: "{{ hermes_learning_probe_timeout_s__default if hermes_learning_probe_timeout_s__default is defined else hermes_learning_probe_timeout_s | default(omit) }}"
+    hermes_learning_consolidate_max_loss: "{{ hermes_learning_consolidate_max_loss__default if hermes_learning_consolidate_max_loss__default is defined else hermes_learning_consolidate_max_loss | default(omit) }}"
+    hermes_learning_consolidate_min_entries: "{{ hermes_learning_consolidate_min_entries__default if hermes_learning_consolidate_min_entries__default is defined else hermes_learning_consolidate_min_entries | default(omit) }}"
+    hermes_learning_ping_age_s: "{{ hermes_learning_ping_age_s__default if hermes_learning_ping_age_s__default is defined else hermes_learning_ping_age_s | default(omit) }}"
+    hermes_learning_ping_repeat_s: "{{ hermes_learning_ping_repeat_s__default if hermes_learning_ping_repeat_s__default is defined else hermes_learning_ping_repeat_s | default(omit) }}"
+    hermes_learning_slack_token_env: "{{ hermes_learning_slack_token_env__default if hermes_learning_slack_token_env__default is defined else hermes_learning_slack_token_env | default(omit) }}"
+    hermes_learning_slack_channel_env: "{{ hermes_learning_slack_channel_env__default if hermes_learning_slack_channel_env__default is defined else hermes_learning_slack_channel_env | default(omit) }}"
+    hermes_learning_claims_window_s: "{{ hermes_learning_claims_window_s__default if hermes_learning_claims_window_s__default is defined else hermes_learning_claims_window_s | default(omit) }}"
+    hermes_learning_enable_timers: "{{ hermes_learning_enable_timers__default if hermes_learning_enable_timers__default is defined else hermes_learning_enable_timers | default(omit) }}"
+    hermes_learning_unit_dir: "{{ hermes_learning_unit_dir__default if hermes_learning_unit_dir__default is defined else hermes_learning_unit_dir | default(omit) }}"
+    hermes_learning_hourly_oncalendar: "{{ hermes_learning_hourly_oncalendar__default if hermes_learning_hourly_oncalendar__default is defined else hermes_learning_hourly_oncalendar | default(omit) }}"
+    hermes_learning_probes_oncalendar: "{{ hermes_learning_probes_oncalendar__default if hermes_learning_probes_oncalendar__default is defined else hermes_learning_probes_oncalendar | default(omit) }}"
+    hermes_learning_consolidate_oncalendar: "{{ hermes_learning_consolidate_oncalendar__default if hermes_learning_consolidate_oncalendar__default is defined else hermes_learning_consolidate_oncalendar | default(omit) }}"
+    hermes_learning_stack_dir: "{{ hermes_learning_stack_dir__default if hermes_learning_stack_dir__default is defined else hermes_learning_stack_dir | default(omit) }}"
+    hermes_learning_health_url: "{{ hermes_learning_health_url__default if hermes_learning_health_url__default is defined else hermes_learning_health_url | default(omit) }}"
+    hermes_learning_memory_plugin: "{{ hermes_learning_memory_plugin__default if hermes_learning_memory_plugin__default is defined else hermes_learning_memory_plugin | default(omit) }}"
+    hermes_learning_memory_plugin_section: "{{ hermes_learning_memory_plugin_section__default if hermes_learning_memory_plugin_section__default is defined else hermes_learning_memory_plugin_section | default(omit) }}"
+    hermes_learning_memory_plugin_settings: "{{ hermes_learning_memory_plugin_settings__default if hermes_learning_memory_plugin_settings__default is defined else hermes_learning_memory_plugin_settings | default(omit) }}"
+    hermes_learning_memory_plugin_ref: "{{ hermes_learning_memory_plugin_ref__default if hermes_learning_memory_plugin_ref__default is defined else hermes_learning_memory_plugin_ref | default(omit) }}"
+    hermes_learning_memory_plugin_version: "{{ hermes_learning_memory_plugin_version__default if hermes_learning_memory_plugin_version__default is defined else hermes_learning_memory_plugin_version | default(omit) }}"
+  when: _config_hermes_learning__argspec_resolved | default(false)
+
+- name: Record that this role has resolved its options in this play
+  ansible.builtin.set_fact:
+    _config_hermes_learning__argspec_resolved: true

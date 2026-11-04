@@ -1,0 +1,74 @@
+---
+# GENERATED from roles/config_hermes_profile/meta/argument_specs.py — DO NOT EDIT.
+# Regenerate with: venv/bin/python tools/argspec/cli.py x generate config_hermes_profile
+#
+# These are the constraints Ansible's role-argspec validator CANNOT enforce. It handles
+# type/required/choices/no_log, but has no numeric-range, length or pattern checking, so
+# without this file those declarations would be decorative.
+#
+# Include from the role's entrypoints:  - ansible.builtin.include_tasks: _argspec_guards.yml
+
+- name: "GUARD (generated) — hermes_profile_anchor_uid must be >= 0"
+  ansible.builtin.assert:
+    that:
+      - "hermes_profile_anchor_uid | int >= 0"
+    fail_msg: "hermes_profile_anchor_uid violates a constraint declared in meta/argument_specs.py: must be >= 0. Got: {{ hermes_profile_anchor_uid | default('(unset)') }}"
+    quiet: true
+  when: hermes_profile_anchor_uid is defined
+
+- name: "GUARD (generated) — hermes_profile_container must be at least 1 long"
+  ansible.builtin.assert:
+    that:
+      - "hermes_profile_container | default('') | length >= 1"
+    fail_msg: "hermes_profile_container violates a constraint declared in meta/argument_specs.py: must be at least 1 long. Got: {{ hermes_profile_container | default('(unset)') }}"
+    quiet: true
+  when: hermes_profile_container is defined
+
+- name: "GUARD (generated) — hermes_profile_data_dir must be at least 1 long"
+  ansible.builtin.assert:
+    that:
+      - "hermes_profile_data_dir | default('') | length >= 1"
+    fail_msg: "hermes_profile_data_dir violates a constraint declared in meta/argument_specs.py: must be at least 1 long. Got: {{ hermes_profile_data_dir | default('(unset)') }}"
+    quiet: true
+  when: hermes_profile_data_dir is defined
+
+- name: "GUARD (generated) — hermes_profile_gid must be >= 1"
+  ansible.builtin.assert:
+    that:
+      - "hermes_profile_gid | int >= 1"
+    fail_msg: "hermes_profile_gid violates a constraint declared in meta/argument_specs.py: must be >= 1. Got: {{ hermes_profile_gid | default('(unset)') }}"
+    quiet: true
+  when: hermes_profile_gid is defined
+
+- name: "GUARD (generated) — hermes_profile_leaves must be at least 1 long"
+  ansible.builtin.assert:
+    that:
+      - "hermes_profile_leaves | default('') | length >= 1"
+    fail_msg: "hermes_profile_leaves violates a constraint declared in meta/argument_specs.py: must be at least 1 long. Got: {{ hermes_profile_leaves | default('(unset)') }}"
+    quiet: true
+  when: hermes_profile_leaves is defined
+
+- name: "GUARD (generated) — hermes_profile_models_url must be at least 1 long"
+  ansible.builtin.assert:
+    that:
+      - "hermes_profile_models_url | default('') | length >= 1"
+    fail_msg: "hermes_profile_models_url violates a constraint declared in meta/argument_specs.py: must be at least 1 long. Got: {{ hermes_profile_models_url | default('(unset)') }}"
+    quiet: true
+  when: hermes_profile_models_url is defined
+
+- name: "GUARD (generated) — hermes_profile_name must be matching '^[a-z][a-z0-9_-]{0,30}$'; never one of ['default']"
+  ansible.builtin.assert:
+    that:
+      - "hermes_profile_name | default('') is match('^[a-z][a-z0-9_-]{0,30}$')"
+      - "hermes_profile_name not in ['default']"
+    fail_msg: "hermes_profile_name violates a constraint declared in meta/argument_specs.py: must be matching '^[a-z][a-z0-9_-]{0,30}$'; never one of ['default']. Got: {{ hermes_profile_name | default('(unset)') }}"
+    quiet: true
+  when: hermes_profile_name is defined
+
+- name: "GUARD (generated) — hermes_profile_uid must be >= 1"
+  ansible.builtin.assert:
+    that:
+      - "hermes_profile_uid | int >= 1"
+    fail_msg: "hermes_profile_uid violates a constraint declared in meta/argument_specs.py: must be >= 1. Got: {{ hermes_profile_uid | default('(unset)') }}"
+    quiet: true
+  when: hermes_profile_uid is defined

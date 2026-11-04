@@ -1,0 +1,10 @@
+{#- bip and default-address-pools are written only when set, so an empty option leaves docker's
+    own default; to_nice_json sorts the keys, so where each is added does not change the file. -#}
+{{ {
+  'runtimes': {worker_container_runtime: {'path': '/usr/bin/sysbox-runc'}},
+  'default-runtime': 'runc',
+  'log-driver': 'json-file',
+  'log-opts': {'max-size': '10m', 'max-file': '3'},
+} | combine({'bip': worker_docker_bip} if worker_docker_bip | length > 0 else {})
+  | combine({'default-address-pools': worker_docker_address_pools} if worker_docker_address_pools | length > 0 else {})
+  | to_nice_json }}

@@ -1,0 +1,20 @@
+# {{ ansible_managed }}
+[Unit]
+Description=ttyd: browser terminal that attaches to a card's tmux session
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User={{ worker_user }}
+Environment=WORKER_TMUX_PREFIX={{ worker_tmux_session_prefix }}
+EnvironmentFile={{ worker_conf_dir }}/ttyd.env
+# -W writable (typing is the point); -a lets the URL's ?arg= reach worker-attach as $1;
+# -c is ttyd's own basic auth: the ORIGIN gate. The reverse proxy adds it after its own
+# authentication has passed, so a human never types it; it stops a LAN client that connects to
+# this port directly instead of through the proxy.
+ExecStart=/usr/bin/ttyd -i {{ worker_ttyd_bind }} -p {{ worker_ttyd_port }} -W -a -t titleFixed={{ worker_ttyd_title }} -c ${TTYD_CREDENTIAL} /usr/local/bin/worker-attach
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,213 @@
+---
+# Render-only scenario. This role's real converge needs a Docker daemon, a Postgres and a
+# reachable LiteLLM, none of which is reproducible on a GitHub-hosted runner — so coverage
+# here is honestly PARTIAL: it proves the templates render correct, parseable artifacts for
+# several variable combinations, not that the stack runs. (render-only coverage.)
+#
+# Two variants are rendered because the interesting logic is CONDITIONAL:
+#   full/    every provider set        -> all provider blocks present, plus the ElevenLabs
+#                                        model entry, the search_tools block and mcp_servers
+#   minimal/ only anthropic set        -> the other blocks ABSENT, and NO search_tools /
+#                                        mcp_servers keys at all
+# Rendering only one variant would let a broken `if` pass: an always-true guard and a correct
+# guard are indistinguishable from a single render.
+- name: Converge — render the litellm stack templates (no docker)
+  hosts: localhost
+  gather_facts: false
+  vars:
+    render_root: /tmp/molecule-litellm
+    # Shared, non-secret-shaped placeholders. These are TEST values, not real installation facts.
+    # Play-level so both variants inherit them; each variant overrides only what it varies.
+    litellm_container_name: litellm
+    litellm_postgres_container_name: litellm-postgres
+    litellm_redis_enabled: true
+    litellm_redis_container_name: litellm-redis
+    litellm_redis_image: "redis:7.4-alpine"
+    litellm_redis_password: "molecule-redis-password"
+    litellm_open_webui_container_name: open-webui
+    litellm_image: "ghcr.io/berriai/litellm:v1.104.2"
+    litellm_postgres_image: "postgres:16.4-alpine"
+    litellm_open_webui_image: "ghcr.io/open-webui/open-webui:v0.11.4"
+    litellm_host_port: 4000
+    litellm_open_webui_host_port: 8089
+    # The role's default (loopback); the minimal variant sets "" to prove the every-interface form.
+    litellm_open_webui_bind_address: "127.0.0.1"
+    litellm_master_key: "sk-molecule-master-key-placeholder"
+    litellm_salt_key: "sk-molecule-salt-key-placeholder"
+    litellm_postgres_password: "molecule-pg-password"
+    litellm_open_webui_secret_key: "molecule-webui-secret"
+    litellm_postgres_user: litellm
+    litellm_postgres_db: litellm
+    litellm_network: gateway-net
+    litellm_timezone: "Etc/UTC"
+    litellm_num_retries: 2
+    litellm_request_timeout: 600
+    litellm_drop_params: true
+    litellm_telemetry: false
+    litellm_store_model_in_db: true
+    litellm_disable_env_credential_login: true
+    litellm_open_webui_enable_signup: false
+    litellm_open_webui_name: "Example LLM"
+  tasks:
+    - name: Ensure a clean render root
+      ansible.builtin.file:
+        path: "{{ render_root }}"
+        state: absent
+
+    - name: Create the render directories
+      ansible.builtin.file:
+        path: "{{ render_root }}/{{ item }}"
+        state: directory
+        mode: "0755"
+      loop: [full, minimal]
+
+    # ---- variant: every provider configured, Ollama enabled ----------------------------
+    - name: Render the FULL variant (all providers + ollama)
+      ansible.builtin.template:
+        # `item.dir` not a fixed `files/`: app.env.j2 lives in templates/ because
+        # deployment_config renders EVERY .j2 under its source dir and has no exclude, so a
+        # credential file left in files/ gets written twice per converge — once at the role's
+        # shared mode and again at 0600. Keeping the scenario's path per-item means this test
+        # renders the same file from the same place the role does, rather than quietly drifting
+        # from it (a scenario that re-derives the role's layout is a second source of truth).
+        src: "{{ playbook_dir }}/../../{{ item.dir }}/{{ item.src }}"
+        dest: "{{ render_root }}/full/{{ item.dest }}"
+        mode: "0644"
+      loop:
+        - { dir: "files", src: "docker-compose.yml.j2", dest: "docker-compose.yml" }
+        - { dir: "files", src: "config/config.yaml.j2", dest: "config.yaml" }
+        - { dir: "templates", src: "app.env.j2", dest: "app.env" }
+        - { dir: "templates", src: "postgres.env.j2", dest: "postgres.env" }
+        - { dir: "templates", src: "open-webui.env.j2", dest: "open-webui.env" }
+        - { dir: "templates", src: "redis.env.j2", dest: "redis.env" }
+        - { dir: "templates", src: "redis.conf.j2", dest: "redis.conf" }
+      vars:
+        litellm_config_dir: "{{ render_root }}/full"
+        litellm_anthropic_api_key: "sk-ant-molecule-placeholder"
+        litellm_openai_api_key: "sk-proj-molecule-placeholder"
+        litellm_gemini_api_key: "gemini-molecule-placeholder"
+        litellm_openrouter_api_key: "openrouter-molecule-placeholder"
+        litellm_typesafe_api_key: "apikey_molecule-typesafe-placeholder"
+        litellm_elevenlabs_api_key: "sk_molecule-elevenlabs-placeholder"
+        litellm_brave_search_api_key: "BSA-molecule-brave-placeholder"
+        litellm_brave_search_tool_name: "brave-search"
+        litellm_mcp_context7_enabled: true
+        litellm_mcp_context7_url: "https://mcp.context7.com/mcp"
+        litellm_ollama_enabled: true
+        litellm_ollama_api_base: "http://ollama.example.com:11434"
+        litellm_ollama_models: ["llama3.1:8b", "qwen2.5:14b"]
+        litellm_model_aliases:
+          - { name: gw-default, model: anthropic/example-model-large, fallback: gw-fallback }
+          - { name: gw-fallback, model: openai/example-model-fallback }
+          - { name: gw-cheap, model: anthropic/example-model-small }
+        # Branding ON: the FULL variant is "every optional thing configured".
+        litellm_ui_logo_path: "https://example.com/example-logo.png"
+        litellm_ui_logo_path_dark: "/app/branding/logo-dark.png"
+        litellm_ui_favicon_path: "https://example.com/example-favicon.ico"
+        litellm_open_webui_logo_path: "{{ render_root }}/full/open-webui-logo.png"
+        litellm_open_webui_favicon_path: "{{ render_root }}/full/open-webui-favicon.png"
+
+    # ---- variant: only anthropic, Ollama off (the default) -----------------------------
+    - name: Render the MINIMAL variant (anthropic only, no ollama)
+      ansible.builtin.template:
+        # `item.dir` not a fixed `files/`: app.env.j2 lives in templates/ because
+        # deployment_config renders EVERY .j2 under its source dir and has no exclude, so a
+        # credential file left in files/ gets written twice per converge — once at the role's
+        # shared mode and again at 0600. Keeping the scenario's path per-item means this test
+        # renders the same file from the same place the role does, rather than quietly drifting
+        # from it (a scenario that re-derives the role's layout is a second source of truth).
+        src: "{{ playbook_dir }}/../../{{ item.dir }}/{{ item.src }}"
+        dest: "{{ render_root }}/minimal/{{ item.dest }}"
+        mode: "0644"
+      loop:
+        - { dir: "files", src: "docker-compose.yml.j2", dest: "docker-compose.yml" }
+        - { dir: "files", src: "config/config.yaml.j2", dest: "config.yaml" }
+        - { dir: "templates", src: "app.env.j2", dest: "app.env" }
+        - { dir: "templates", src: "postgres.env.j2", dest: "postgres.env" }
+        - { dir: "templates", src: "open-webui.env.j2", dest: "open-webui.env" }
+        - { dir: "templates", src: "redis.env.j2", dest: "redis.env" }
+        - { dir: "templates", src: "redis.conf.j2", dest: "redis.conf" }
+      vars:
+        litellm_config_dir: "{{ render_root }}/minimal"
+        litellm_open_webui_bind_address: ""
+        litellm_anthropic_api_key: "sk-ant-molecule-placeholder"
+        litellm_openai_api_key: ""
+        litellm_gemini_api_key: ""
+        litellm_openrouter_api_key: ""
+        litellm_typesafe_api_key: ""
+        # The three new capabilities OFF, so the scenario proves each conditional OMITS its
+        # block rather than only that it renders one. An always-true guard and a correct guard
+        # are indistinguishable from a single render.
+        litellm_elevenlabs_api_key: ""
+        litellm_brave_search_api_key: ""
+        litellm_brave_search_tool_name: "brave-search"
+        litellm_mcp_context7_enabled: false
+        litellm_mcp_context7_url: "https://mcp.context7.com/mcp"
+        litellm_ollama_enabled: false
+        litellm_ollama_models: []
+        # Branding OFF: the MINIMAL variant proves the conditional omits every branding block
+        # and mount when nothing is configured, not just when something is.
+        litellm_ui_logo_path: ""
+        litellm_ui_logo_path_dark: ""
+        litellm_ui_favicon_path: ""
+        litellm_open_webui_logo_path: ""
+        litellm_open_webui_favicon_path: ""
+
+    # ---- open_webui_connections: the merge, run as the ROLE'S OWN task file -----------------
+    # Not a re-derivation: include_tasks runs tasks/_owui_connections_merge.yml
+    # itself over stub "current" lists, and each case's outputs are written out for verify.yml.
+    # Three cases, because the claim is three-sided: a new url is APPENDED without moving the
+    # existing connection, an already-converged list is NOT a change, and a present url has its
+    # key replaced IN PLACE while its other config keys and every other connection survive.
+    - name: Merge cases for open_webui_connections
+      vars:
+        _agent:
+          name: agent
+          url: "https://agent.example.com/v1"
+          key: "molecule-agent-key-new"
+          model_ids: [agent-model]
+          prefix_id: null
+        litellm_open_webui_connections: ["{{ _agent }}"]
+      block:
+        - name: Case append — the agent url is absent
+          ansible.builtin.include_tasks: "{{ playbook_dir }}/../../tasks/_owui_connections_merge.yml"
+          vars:
+            litellm__owui_current:
+              ENABLE_OPENAI_API: true
+              OPENAI_API_BASE_URLS: ["http://litellm:4000/v1"]
+              OPENAI_API_KEYS: ["sk-molecule-gateway"]
+              OPENAI_API_CONFIGS: {}
+
+        - name: Record case append
+          ansible.builtin.copy:
+            dest: "{{ render_root }}/owui_append.json"
+            content: "{{ {'merged': litellm__owui_merged, 'changed': litellm__owui_changed, 'summary': litellm__owui_summary} | to_json }}"
+            mode: "0644"
+
+        - name: Case converged — the list already holds exactly what is declared
+          ansible.builtin.include_tasks: "{{ playbook_dir }}/../../tasks/_owui_connections_merge.yml"
+          vars:
+            litellm__owui_current: "{{ (lookup('ansible.builtin.file', render_root ~ '/owui_append.json') | from_json).merged }}"
+
+        - name: Record case converged
+          ansible.builtin.copy:
+            dest: "{{ render_root }}/owui_converged.json"
+            content: "{{ {'merged': litellm__owui_merged, 'changed': litellm__owui_changed} | to_json }}"
+            mode: "0644"
+
+        - name: Case replace — the agent url is present at index 0 with an old key and extra config
+          ansible.builtin.include_tasks: "{{ playbook_dir }}/../../tasks/_owui_connections_merge.yml"
+          vars:
+            litellm__owui_current:
+              ENABLE_OPENAI_API: true
+              OPENAI_API_BASE_URLS: ["https://agent.example.com/v1", "http://litellm:4000/v1"]
+              OPENAI_API_KEYS: ["molecule-agent-key-old"]
+              OPENAI_API_CONFIGS:
+                "0": {enable: false, tags: [{name: agent}]}
+                "1": {enable: true, prefix_id: gw}
+
+        - name: Record case replace
+          ansible.builtin.copy:
+            dest: "{{ render_root }}/owui_replace.json"
+            content: "{{ {'merged': litellm__owui_merged, 'changed': litellm__owui_changed} | to_json }}"
+            mode: "0644"

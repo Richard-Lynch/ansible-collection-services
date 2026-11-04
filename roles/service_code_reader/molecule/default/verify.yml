@@ -1,0 +1,108 @@
+---
+- name: Verify -- what the design depends on is in the rendered artifacts
+  hosts: localhost
+  gather_facts: false
+  vars:
+    render_root: /tmp/molecule-code-reader
+    secrets: ["molecule-imap-password-XYZZY", "molecule-token-0123456789abcdef0123456789abcdef"]
+  tasks:
+    - name: Read the rendered files
+      ansible.builtin.slurp: { src: "{{ render_root }}/{{ item }}" }
+      loop: [docker-compose.yml, code-reader.env, config.json]
+      register: _files
+
+    - name: Parse them
+      ansible.builtin.set_fact:
+        compose_text: "{{ (_files.results | selectattr('item', 'equalto', 'docker-compose.yml') | first).content | b64decode }}"
+        env_text: "{{ (_files.results | selectattr('item', 'equalto', 'code-reader.env') | first).content | b64decode }}"
+        cfg: "{{ (_files.results | selectattr('item', 'equalto', 'config.json') | first).content | b64decode | from_json }}"
+        compose: "{{ (_files.results | selectattr('item', 'equalto', 'docker-compose.yml') | first).content | b64decode | from_yaml }}"
+
+    - name: The compose publishes on loopback only, and nothing is published without an address
+      ansible.builtin.assert:
+        that:
+          - compose.services['code-reader'].ports == ['127.0.0.1:8645:8645']
+          - compose.services['code-reader'].ports | reject('match', '^127\.0\.0\.1:') | list | length == 0
+        quiet: true
+
+    - name: No credential appears in the compose file or the config
+      ansible.builtin.assert:
+        that:
+          - compose_text is not search(item)
+          - (cfg | to_json) is not search(item)
+        fail_msg: "a credential value was rendered into the compose file or config.json"
+        quiet: true
+      loop: "{{ secrets }}"
+      loop_control: { label: "(credential {{ ansible_loop.index }})", extended: true }
+
+    - name: The credentials ARE in the env file, which compose reads by reference
+      ansible.builtin.assert:
+        that:
+          # Single-quoted, so compose takes the values literally (no `$` interpolation, no ` #`
+          # comment). The role's preflight refuses a value that carries a quote.
+          - "\"IMAP_PASSWORD='molecule-imap-password-XYZZY'\" in env_text"
+          - "\"CODE_READER_TOKEN='molecule-token-\" in env_text"
+          - compose.services['code-reader'].env_file | length == 1
+        quiet: true
+
+    - name: The env file was written 0600
+      ansible.builtin.stat: { path: "{{ render_root }}/code-reader.env" }
+      register: _envstat
+
+    - name: Mode is 0600
+      ansible.builtin.assert:
+        that: _envstat.stat.mode == '0600'
+        quiet: true
+
+    - name: Allowlist, TTL and port are rendered into the config
+      ansible.builtin.assert:
+        that:
+          - cfg.sender_allowlist == ['noreply@example.com', '@trusted.test']
+          - cfg.ttl_seconds == 600
+          - cfg.port == 8645
+          - cfg.poll_seconds == 15
+          - cfg.imap_user == 'codes@agent.test.invalid'
+        quiet: true
+
+    - name: The mount is a directory and the container is locked down
+      ansible.builtin.assert:
+        that:
+          - compose.services['code-reader'].volumes == ['/opt/code-reader/app:/app:ro']
+          - compose.services['code-reader'].read_only
+          - compose.services['code-reader'].cap_drop == ['ALL']
+          - compose.services['code-reader'].user == '65534:65534'
+        quiet: true
+
+    # Explicit file paths: a directory walk skips .py/.j2 and would report "0 scanned" and exit 0,
+    # i.e. a scan that looked at nothing. Naming the files, and asserting the count, rules that out.
+    # The scanner is a repository-level credential-shape check (scripts/hooks/). A checkout
+    # without it (this role on its own) says so and skips the scan, rather than failing the run.
+    - name: Is the vendored-secrets scanner in this checkout
+      ansible.builtin.stat:
+        path: "{{ playbook_dir }}/../../../../scripts/hooks/check_vendored_secrets.py"
+      register: _scanner
+
+    - name: Say when the scan is skipped
+      ansible.builtin.debug:
+        msg: "check_vendored_secrets.py is not in this checkout; the credential-shape scan is skipped."
+      when: not _scanner.stat.exists
+
+    - name: The vendored-secrets scanner passes over the rendered config and the template
+      when: _scanner.stat.exists
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../../../../scripts/hooks/check_vendored_secrets.py"
+          - "{{ render_root }}/config.json"
+          - "{{ playbook_dir }}/../../files/config.json.j2"
+      register: _scan
+      changed_when: false
+
+    - name: The scanner really scanned both files
+      when: _scanner.stat.exists
+      ansible.builtin.assert:
+        that: "'2 vendored file(s) scanned' in _scan.stdout"
+        quiet: true
+
+    - name: Clean up
+      ansible.builtin.file: { path: "{{ render_root }}", state: absent }

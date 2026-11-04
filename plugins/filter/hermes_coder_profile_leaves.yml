@@ -1,0 +1,35 @@
+# Copyright: (c) 2026, Richard Lynch
+# GNU General Public License v3.0+ (see https://www.gnu.org/licenses/gpl-3.0.txt)
+---
+DOCUMENTATION:
+  name: hermes_coder_profile_leaves
+  short_description: Build the owned config leaves of a Hermes coding profile, refusing unsafe ones
+  author: Richard Lynch (@Richard-Lynch)
+  description:
+    - Returns the C(platform_toolsets), C(approvals), C(terminal) and optional C(skills.external_dirs)
+      leaves for a coding profile.
+    - Refuses a toolset not in C(known_toolsets); C(code_execution), C(browser), C(delegation), C(cronjob),
+      C(connections) or C(computer_use); a profile without C(terminal) and C(kanban); an approvals mode
+      other than C(smart) or C(manual); a deny list without a recursive delete and a force push; a terminal
+      backend other than C(ssh); an empty or duplicated platforms list.
+  options:
+    _input:
+      description: Mapping with C(toolsets), C(known_toolsets), C(approvals_mode), C(approvals_deny),
+        C(terminal), and optionally C(platforms) (default C([cli])) and C(external_dirs).
+      type: dict
+      required: true
+EXAMPLES: |
+  - name: Coding profile leaves
+    ansible.builtin.set_fact:
+      leaves: "{{ spec | richard_lynch.services.hermes_coder_profile_leaves }}"
+    vars:
+      spec:
+        toolsets: [terminal, kanban, todo]
+        known_toolsets: [terminal, kanban, todo, file, web]
+        approvals_mode: smart
+        approvals_deny: ["rm -rf /*", "git push --force*"]
+        terminal: {backend: ssh, ssh_host: worker.example.com}
+RETURN:
+  _value:
+    description: A list of mappings with C(key) (a list of segments) and C(value).
+    type: list

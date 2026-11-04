@@ -1,0 +1,53 @@
+---
+# One place builds the script's argument lists, so the nightly wrappers (main) and the
+# run-now entrypoints (backup, mirror) cannot drift apart. Lists, never a shell string: nothing
+# here is ever re-parsed by a shell.
+- name: Locate the script
+  ansible.builtin.set_fact:
+    _as_script: "{{ agent_state_install_dir }}/agent_state.py"
+    _as_key_file: "{{ agent_state_key_dir }}/mirror_deploy_key"
+
+- name: Build the backup argument list
+  ansible.builtin.set_fact:
+    _as_backup_argv: >-
+      {{ [agent_state_python, _as_script, 'backup',
+          '--root', agent_state_root,
+          '--target', agent_state_backup_target,
+          '--recipient', agent_state_backup_recipient,
+          '--product', agent_state_product,
+          '--label', agent_state_backup_label,
+          '--keep', agent_state_backup_keep | string,
+          '--keep-monthly', agent_state_backup_keep_monthly | string,
+          '--metrics-file', agent_state_textfile_dir ~ '/agent_state_' ~ agent_state_product ~ '_backup.prom']
+         + (['--sqlite'] | product(agent_state_sqlite_files) | list | flatten)
+         + (['--exclude'] | product(agent_state_backup_exclude) | list | flatten) }}
+  # The backup's own options (label, keep, keep_monthly) are declared only on the `backup`/`main`
+  # entrypoints. The `mirror` entrypoint reaches this file with the inventory's target and
+  # recipient defined and those three NOT, so without the third condition a first-ever mirror run
+  # dies on `agent_state_backup_label is undefined`. A scenario that runs the mirror AFTER main
+  # never sees it, because main's set_fact leaves the label behind.
+  when:
+    - agent_state_backup_target is defined
+    - agent_state_backup_recipient is defined
+    - agent_state_backup_label is defined
+
+- name: Build the mirror argument list
+  ansible.builtin.set_fact:
+    _as_mirror_argv: >-
+      {{ [agent_state_python, _as_script, 'mirror',
+          '--root', agent_state_root,
+          '--repo-dir', agent_state_mirror_dir,
+          '--remote-url', agent_state_repo_url,
+          '--branch', agent_state_repo_branch,
+          '--product', agent_state_product,
+          '--author-name', agent_state_git_author_name,
+          '--author-email', agent_state_git_author_email,
+          '--ssh-key', _as_key_file,
+          '--metrics-file', agent_state_textfile_dir ~ '/agent_state_' ~ agent_state_product ~ '_mirror.prom']
+         + (['--config-file', agent_state_config_file] if agent_state_config_file | length > 0 else [])
+         + (['--exclude'] | product(agent_state_mirror_exclude) | list | flatten)
+         + (['--skip-names-file', agent_state_mirror_skip_names_file] if agent_state_mirror_skip_names_file | default('') | length > 0 else [])
+         + (['--mask-pattern'] | product(agent_state_mask_patterns) | list | flatten)
+         + (['--scan-pattern'] | product(agent_state_scan_patterns) | list | flatten)
+         + ['--paths'] + agent_state_mirror_paths }}
+  when: agent_state_repo_url is defined and agent_state_mirror_paths is defined

@@ -1,0 +1,34 @@
+# Copyright: (c) 2026, Richard Lynch
+# GNU General Public License v3.0+ (see https://www.gnu.org/licenses/gpl-3.0.txt)
+---
+DOCUMENTATION:
+  name: mcp_catalogue_document
+  short_description: Validate a reviewed MCP catalogue and build its document
+  author: Richard Lynch (@Richard-Lynch)
+  description:
+    - 'Validates the catalogue (every MCP server an agent client may load) and returns the document its
+      consumers read: each server''s transport, client config block, clients, env names, destinations,
+      reviewer and tool include, plus the declared per-client enablement.'
+    - Refuses an entry nobody reviewed (C(reviewed_by) empty or C(pending)), a literal credential in a
+      header, env value or URL query (only C(${NAME}) references, each listed in C(env_names)), no C(tools_include),
+      an unknown transport, an http server without a URL, a stdio server without a command, a duplicate
+      name, and an enablement naming an unknown server or a client the entry does not allow.
+  options:
+    _input:
+      description: The catalogue, a non-empty list of server entries.
+      type: list
+      required: true
+    clients:
+      description: 'Declared enablement: client name to the list of catalogue names it starts with.'
+      type: dict
+EXAMPLES: |
+  - name: Catalogue document
+    ansible.builtin.set_fact:
+      doc: "{{ servers | richard_lynch.services.mcp_catalogue_document({'default': ['docs']}) }}"
+    vars:
+      servers:
+        - {name: docs, transport: http, url: "https://mcp.example.com/mcp", tools_include: [search], clients: [default], reviewed_by: alice}
+RETURN:
+  _value:
+    description: A mapping with C(servers) and C(enabled).
+    type: dict

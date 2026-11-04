@@ -1,0 +1,106 @@
+---
+# The toolsets repair write, with the store swapped AFTER the reconcile's stat gate passed (the
+# agent's race). Whatever the store has become, the repaired JSON must land AT the store path and
+# nothing outside the tree may change. A regular store is the near-miss: it must simply be repaired.
+- name: "Repair write: {{ repair_case }}"
+  vars:
+    _store: "{{ render_root }}/data/webhook_subscriptions.json"
+    _outside_dir: "{{ render_root }}/outside-tree"
+    _outside_file: "{{ render_root }}/outside-file"
+  block:
+    - name: An outside directory the write must never touch
+      ansible.builtin.file:
+        path: "{{ _outside_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: An outside file the write must never touch, and a marker in the directory
+      ansible.builtin.copy:
+        dest: "{{ item.dest }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - {dest: "{{ _outside_dir }}/.keep", content: ""}
+        - {dest: "{{ _outside_file }}", content: "untouched\n"}
+
+    - name: Plant a store carrying toolsets
+      ansible.builtin.copy:
+        dest: "{{ _store }}"
+        content: '{"planted": {"prompt": "x", "toolsets": ["terminal"]}}'
+        mode: "0600"
+
+    - name: The reconcile's stat, taken while the store is still a regular file
+      ansible.builtin.stat:
+        path: "{{ _store }}"
+      register: hermes__subs_stat
+
+    - name: The reconcile's facts
+      ansible.builtin.set_fact:
+        hermes__subs_path: "{{ _store }}"
+        hermes__subs_audit: {repaired: {planted: {prompt: x}}}
+
+    - name: The agent swaps the store for a link after the gate
+      ansible.builtin.file:
+        path: "{{ _store }}"
+        src: "{{ _outside_dir if repair_case == 'link to a directory' else _outside_file }}"
+        state: link
+        force: true
+      when: repair_case != 'regular file'
+
+    - name: Run the repair write
+      ansible.builtin.include_role:
+        name: service_hermes
+        tasks_from: _subs_repair_write
+
+    - name: Read back the store without following it
+      ansible.builtin.stat:
+        path: "{{ _store }}"
+        follow: false
+      register: _repair_store
+
+    - name: List the outside directory
+      ansible.builtin.find:
+        paths: "{{ _outside_dir }}"
+        hidden: true
+      register: _repair_outside_dir
+
+    - name: Read the outside file
+      ansible.builtin.slurp:
+        src: "{{ _outside_file }}"
+      register: _repair_outside_body
+
+    # Checked BEFORE the store is read: a write that went through a link leaves the store a link,
+    # and this is the assertion whose message says so.
+    - name: Nothing outside the tree changed, and the store is a regular file again
+      ansible.builtin.assert:
+        that:
+          - _repair_outside_dir.files | map(attribute='path') | map('basename') | list == ['.keep']
+          - (_repair_outside_body.content | b64decode | trim) == 'untouched'
+          - _repair_store.stat.isreg and not _repair_store.stat.islnk
+          - _repair_store.stat.mode == '0600'
+        fail_msg: >-
+          {{ repair_case }}: outside dir {{ _repair_outside_dir.files | map(attribute='path') | map('basename') | list }};
+          outside file {{ _repair_outside_body.content | b64decode | trim }};
+          store {{ _repair_store.stat | default({}) | to_json }}
+        quiet: true
+
+    - name: Read the store
+      ansible.builtin.slurp:
+        src: "{{ _store }}"
+      register: _repair_store_body
+
+    - name: The store holds the repaired JSON
+      ansible.builtin.assert:
+        that:
+          - "(_repair_store_body.content | b64decode | from_json) == {'planted': {'prompt': 'x'}}"
+        quiet: true
+  always:
+    - name: Remove the plants
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ render_root }}/data/webhook_subscriptions.json"
+        - "{{ render_root }}/outside-tree"
+        - "{{ render_root }}/outside-file"
+        - "{{ render_root }}/.webhook_subscriptions.repair.json"

@@ -1,0 +1,27 @@
+---
+# The role's three jobs. Not configuration: the shape of the loop itself. The calendars
+# are options; what each job is, is not.
+_hl_jobs:
+  - name: hourly
+    cmd: hourly
+    description: ledger, pending-approval ages and the 24 h Slack ping
+    oncalendar: "{{ hermes_learning_hourly_oncalendar }}"
+    timeout: 300
+  - name: probes
+    cmd: probes
+    description: the nightly fixed probe set through /v1/runs
+    oncalendar: "{{ hermes_learning_probes_oncalendar }}"
+    timeout: "{{ (hermes_learning_probe_timeout_s | int) * (hermes_learning_probes | length) + 120 }}"
+  - name: consolidate
+    cmd: consolidate
+    description: the weekly MEMORY.md consolidation proposal (staged, never written)
+    oncalendar: "{{ hermes_learning_consolidate_oncalendar }}"
+    timeout: 600
+
+# The agent-owned directories the host script writes its mirror copies into (agent_write in
+# hermes_learning.py). Created as the agent's by the role, never followed through a link.
+_hl_learning_dirs:
+  - "{{ hermes_learning_host_home }}/{{ hermes_learning_dir }}"
+  - "{{ hermes_learning_host_home }}/{{ hermes_learning_dir }}/ledger"
+  - "{{ hermes_learning_host_home }}/{{ hermes_learning_dir }}/probes"
+  - "{{ hermes_learning_host_home }}/{{ hermes_learning_dir }}/consolidation"

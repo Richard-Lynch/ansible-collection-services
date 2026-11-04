@@ -1,0 +1,39 @@
+---
+# AUTO-GENERATED defaults file — DO NOT EDIT.
+#
+# Source of truth: roles/config_agent_state/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate config_agent_state
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+# Entrypoint:      verify
+
+# Which agent product this state belongs to (the role is built for Hermes and keeps
+# every product-specific value an option). It names the archives and the metrics
+# label so a second product can share a backup share without colliding. Lowercase
+# letters, digits and hyphens.
+agent_state_product__default: hermes
+
+# Interpreter that runs agent_state.py. It must be 3.12 or newer (tarfile extraction
+# filters); the script refuses an older one rather than extracting unfiltered.
+agent_state_python__default: python3
+
+# Where the role installs agent_state.py on the host.
+agent_state_install_dir__default: /usr/local/lib/agent-state
+
+# fnmatch patterns (matched per path and per component) left out of the mirror.
+agent_state_mirror_exclude__default: []
+
+# File (relative to the root) listing names, one per line (``name`` or ``name:hash``),
+# that the mirror leaves out wherever they appear as a path component. For Hermes this is
+# ``skills/.bundled_manifest``: the image's own skills return with the image, and their
+# sample addresses and ``api_key=`` lines would block the secret scan on every run.
+# Empty excludes nothing.
+agent_state_mirror_skip_names_file__default: ''
+
+# Working clone the mirror commits in. Rebuildable; holds no state of its own.
+agent_state_mirror_dir__default: /var/lib/agent-state/mirror
+
+# verify fails when the newest backup is older than this (36 h).
+agent_state_verify_max_age_seconds__default: 129600

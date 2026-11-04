@@ -1,0 +1,48 @@
+---
+# Rendered by roles/service_code_reader. Do not edit on the host -- the next converge overwrites it.
+#
+# NO CREDENTIAL IN THIS FILE. The IMAP password and the bearer token arrive through env_file
+# (0600); compose files are 0640 and a login-code reader's credentials must not be group-readable.
+services:
+  {{ code_reader_container_name }}:
+    image: {{ code_reader_image }}
+    container_name: {{ code_reader_container_name }}
+    restart: unless-stopped
+    command: ["python", "/app/code_reader.py"]
+    env_file:
+      - {{ code_reader_config_dir }}/code-reader.env
+    environment:
+      TZ: "{{ code_reader_timezone }}"
+      CODE_READER_CONFIG: /app/config.json
+      PYTHONUNBUFFERED: "1"
+    # A DIRECTORY mount, not the two files: a file-level bind pins the inode, and the renderer
+    # replaces files atomically, so a changed config.json would never reach a running container.
+    volumes:
+      - {{ code_reader_config_dir }}/app:/app:ro
+    # Published on the host LOOPBACK only (the role refuses anything else). Sibling containers
+    # reach the service by name over the docker network below, so the filler needs no host port.
+    ports:
+      - "{{ code_reader_bind }}:{{ code_reader_port }}:{{ code_reader_port }}"
+    networks:
+      - {{ code_reader_network }}
+    # Not root: the process only reads /app (world-readable, rendered 0644 by the role) and
+    # writes to stdout, so `nobody` costs nothing and removes root from a container that holds
+    # a mailbox credential.
+    user: "65534:65534"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 128m
+    healthcheck:
+      # ONE command. /healthz answers 503 while the mailbox cannot be polled, which urlopen raises
+      # on, so a broken IMAP login is an UNHEALTHY container rather than a quiet one.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:{{ code_reader_port }}/healthz', timeout=5)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+networks:
+  {{ code_reader_network }}:
+    external: true

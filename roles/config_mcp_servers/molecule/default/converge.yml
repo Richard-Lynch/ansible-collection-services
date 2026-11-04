@@ -1,0 +1,30 @@
+---
+# Renders a two-server catalogue (one plain, one needing a credential by reference) with a
+# declared enablement, through the role itself.
+- name: Converge - render the catalogue
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Render
+      ansible.builtin.include_role:
+        name: config_mcp_servers
+      vars:
+        mcp_clients_file: /tmp/molecule-mcp/policy/mcp-catalogue.json
+        mcp_servers:
+          - name: context7
+            transport: http
+            url: https://mcp.context7.com/mcp
+            tools_include: [resolve-library-id, query-docs]
+            clients: [coder, default]
+            destinations: [mcp.context7.com]
+            reviewed_by: molecule
+          - name: github-ro
+            transport: http
+            url: https://api.githubcopilot.com/mcp/
+            headers: {Authorization: "Bearer ${MCP_GITHUB_RO_API_KEY}"}
+            env_names: [MCP_GITHUB_RO_API_KEY]
+            tools_include: [get_file_contents]
+            clients: [coder]
+            reviewed_by: molecule
+        mcp_clients:
+          coder: [context7]

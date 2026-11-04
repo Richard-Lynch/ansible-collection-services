@@ -1,0 +1,27 @@
+# Copyright: (c) 2026, Richard Lynch
+# GNU General Public License v3.0+ (see https://www.gnu.org/licenses/gpl-3.0.txt)
+---
+DOCUMENTATION:
+  name: hermes_dynamic_routes_audit
+  short_description: Flag dynamic Hermes webhook subscriptions that carry a toolsets key
+  author: Richard Lynch (@Richard-Lynch)
+  description:
+    - A dynamic webhook subscription cannot set C(toolsets) through C(hermes webhook subscribe), but the
+      adapter honours a hand-written one, so an entry carrying it is a hand edit or a self-grant.
+    - Returns the flagged routes and a repaired copy of the document with the C(toolsets) key dropped
+      from each (which returns the route to the default toolset rather than deleting it). The input is
+      not mutated.
+  options:
+    _input:
+      description: The webhook subscriptions document (route name to route), parsed. None or empty means
+        no subscriptions.
+      type: raw
+      required: true
+EXAMPLES: |
+  - name: Audit the dynamic webhook routes
+    ansible.builtin.set_fact:
+      routes_audit: "{{ {'inbox': {'prompt': 'x', 'toolsets': ['terminal']}} | richard_lynch.services.hermes_dynamic_routes_audit }}"
+RETURN:
+  _value:
+    description: A mapping with C(flagged) (name and toolsets of each), C(repaired), C(count) and C(readable).
+    type: dict

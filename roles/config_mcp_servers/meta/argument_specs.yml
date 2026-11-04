@@ -1,0 +1,46 @@
+---
+# AUTO-GENERATED argument spec — DO NOT EDIT.
+#
+# Source of truth: roles/config_mcp_servers/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate config_mcp_servers
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+argument_specs:
+  main:
+    short_description: The reviewed MCP catalogue and its per-client enablement
+    description:
+      - Validates the reviewed MCP catalogue (every server an agent client may ever load)
+      - and renders it, with the declared per-client enablement, as one JSON document the
+      - settings service and the probe read. Adding a server is a PR to the catalogue;
+      - enabling a catalogued server for a client is live, through the settings service.
+      - Which servers exist, who reviewed them and which client may load them are the
+      - caller's configuration; the role knows how to check and render them.
+    version_added: '1.0'
+    author: Collection maintainers
+    options:
+      mcp_servers:
+        description:
+          - 'Catalogue entries: name, transport (http or stdio), url and headers, or'
+          - command, args and env; tools_include (required, non-empty); clients (the
+          - profiles that may enable it); env_names (credentials the client's .env must
+          - carry, referenced only as dollar-brace NAME); destinations; reviewed_by
+          - (a human; pending is refused).
+        type: list
+        required: true
+        elements: dict
+      mcp_clients:
+        description:
+          - 'Declared enablement: client profile name to the list of catalogue names it'
+          - starts with. The live enablement moves within the catalogue afterwards
+          - (tier A-range) and is reported, never reverted, by the probe.
+        type: dict
+        required: false
+        default: {}
+      mcp_clients_file:
+        description:
+          - Absolute path on the target of the rendered catalogue document
+          - (mcp-catalogue.json). Root-owned, 0644, read-only to the agent.
+        type: str
+        required: true

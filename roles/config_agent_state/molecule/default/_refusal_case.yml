@@ -1,0 +1,97 @@
+---
+# One corrupt-backup case. Inputs: case.name, case.tamper ('' for none), case.identity (path),
+# case.expect (substring of the refusal). Proves three things per case: the restore REFUSED, it
+# refused for THIS reason, and the live tree beside it was left exactly as it was.
+- name: "{{ case.name }} - a private copy of the backup and a live tree with a marker"
+  ansible.builtin.file:
+    path: "{{ w }}/t_{{ case.name }}/{{ item }}"
+    state: directory
+    mode: "0755"
+  loop: [share, root]
+
+- name: "{{ case.name }} - copy archive and manifest"
+  ansible.builtin.copy:
+    src: "{{ w }}/share/{{ item }}"
+    dest: "{{ w }}/t_{{ case.name }}/share/{{ item }}"
+    remote_src: true
+    mode: "0644"
+  loop:
+    - "{{ _arch_name }}"
+    - "{{ _arch_name }}.manifest.json"
+
+- name: "{{ case.name }} - the marker that must survive"
+  ansible.builtin.copy:
+    dest: "{{ w }}/t_{{ case.name }}/root/keep.txt"
+    content: "live state\n"
+    mode: "0644"
+
+- name: "{{ case.name }} - damage the copy"
+  ansible.builtin.command:
+    argv: ["{{ ansible_playbook_python }}", "{{ playbook_dir }}/tamper.py", "{{ case.tamper }}", "{{ w }}/t_{{ case.name }}/share/{{ _arch_name }}"]
+  changed_when: true
+  when: case.tamper | length > 0
+
+- name: "{{ case.name }} - ask the role to restore it over the marker tree"
+  block:
+    - name: Restore
+      ansible.builtin.include_role:
+        name: config_agent_state
+        tasks_from: restore
+      vars:
+        agent_state_product: "{{ as_common.agent_state_product }}"
+        agent_state_python: "{{ as_common.agent_state_python }}"
+        agent_state_install_dir: "{{ as_common.agent_state_install_dir }}"
+        agent_state_key_dir: "{{ as_common.agent_state_key_dir }}"
+        agent_state_unit_dir: "{{ as_common.agent_state_unit_dir }}"
+        agent_state_textfile_dir: "{{ as_common.agent_state_textfile_dir }}"
+        agent_state_packages: "{{ as_common.agent_state_packages }}"
+        agent_state_enable_timers: "{{ as_common.agent_state_enable_timers }}"
+        agent_state_stack_managed: "{{ as_common.agent_state_stack_managed }}"
+        agent_state_restore_quiet_start: "{{ as_common.agent_state_restore_quiet_start }}"
+        agent_state_mirror_dir: "{{ as_common.agent_state_mirror_dir }}"
+        agent_state_repo_url: "{{ as_common.agent_state_repo_url }}"
+        agent_state_mirror_paths: "{{ as_common.agent_state_mirror_paths }}"
+        agent_state_config_file: "{{ as_common.agent_state_config_file }}"
+        agent_state_sqlite_files: "{{ as_common.agent_state_sqlite_files }}"
+        agent_state_backup_exclude: "{{ as_common.agent_state_backup_exclude }}"
+        agent_state_required_paths: "{{ as_common.agent_state_required_paths }}"
+        agent_state_root: "{{ w }}/t_{{ case.name }}/root"
+        agent_state_backup_target: "{{ w }}/t_{{ case.name }}/share"
+        agent_state_restore_confirm: true
+        agent_state_restore_scope: runtime
+        agent_state_restore_from: "{{ _arch_name }}"
+        agent_state_restore_identity: "{{ lookup('ansible.builtin.file', case.identity) }}"
+    - name: It was accepted
+      ansible.builtin.set_fact:
+        _accepted: true
+        _cause: ""
+  rescue:
+    - name: It was refused
+      ansible.builtin.set_fact:
+        _accepted: false
+        _cause: "{{ ansible_failed_result.msg | default('') }}"
+
+- name: "{{ case.name }} - what was left behind"
+  ansible.builtin.find:
+    paths: "{{ w }}/t_{{ case.name }}"
+    patterns: ["root.pre-restore-*", "root.restore-stage-*"]
+    file_type: any
+  register: _leftovers
+
+- name: "{{ case.name }} - the marker"
+  ansible.builtin.slurp:
+    src: "{{ w }}/t_{{ case.name }}/root/keep.txt"
+  register: _marker
+
+- name: "HARD GATE {{ case.name }} - refused, for this reason, and nothing touched"
+  ansible.builtin.assert:
+    that:
+      - not (_accepted | bool)
+      - case.expect in _cause
+      - (_marker.content | b64decode) == "live state\n"
+      - _leftovers.matched == 0
+    fail_msg: >-
+      case {{ case.name }}: accepted={{ _accepted }}; expected the refusal to mention
+      '{{ case.expect }}' but the cause was: {{ _cause | default('(none)') }};
+      leftovers={{ _leftovers.matched }}.
+    quiet: true

@@ -1,0 +1,59 @@
+---
+# AUTO-GENERATED defaults file — DO NOT EDIT.
+#
+# Source of truth: roles/config_agent_state/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate config_agent_state
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+# Entrypoint:      mirror
+
+# Which agent product this state belongs to (the role is built for Hermes and keeps
+# every product-specific value an option). It names the archives and the metrics
+# label so a second product can share a backup share without colliding. Lowercase
+# letters, digits and hyphens.
+agent_state_product__default: hermes
+
+# Interpreter that runs agent_state.py. It must be 3.12 or newer (tarfile extraction
+# filters); the script refuses an older one rather than extracting unfiltered.
+agent_state_python__default: python3
+
+# Where the role installs agent_state.py on the host.
+agent_state_install_dir__default: /usr/local/lib/agent-state
+
+# fnmatch patterns (matched per path and per component) left out of the mirror.
+agent_state_mirror_exclude__default: []
+
+# File (relative to the root) listing names, one per line (``name`` or ``name:hash``),
+# that the mirror leaves out wherever they appear as a path component. For Hermes this is
+# ``skills/.bundled_manifest``: the image's own skills return with the image, and their
+# sample addresses and ``api_key=`` lines would block the secret scan on every run.
+# Empty excludes nothing.
+agent_state_mirror_skip_names_file__default: ''
+
+# Optional config file (relative to the root) mirrored as a MASKED snapshot: any line
+# whose key looks like a credential has its value replaced. Empty means none.
+agent_state_config_file__default: ''
+
+# Extra regexes of config KEY names to mask, added to the built-in set.
+agent_state_mask_patterns__default: []
+
+# Extra regexes the pre-commit scan blocks on, added to the built-in secret and PII
+# shapes. The scan blocks from the very first run.
+agent_state_scan_patterns__default: []
+
+# Branch the mirror pushes to.
+agent_state_repo_branch__default: main
+
+# Directory (0700) holding the deploy key on the host.
+agent_state_key_dir__default: /etc/agent-state
+
+# Working clone the mirror commits in. Rebuildable; holds no state of its own.
+agent_state_mirror_dir__default: /var/lib/agent-state/mirror
+
+# Commit author name.
+agent_state_git_author_name__default: agent-state-mirror
+
+# Commit author email.
+agent_state_git_author_email__default: agent-state-mirror@localhost

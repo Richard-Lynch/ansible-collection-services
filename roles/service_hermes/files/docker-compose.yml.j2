@@ -1,0 +1,228 @@
+---
+# Rendered by roles/service_hermes. Do not edit on the host -- the next converge overwrites it.
+#
+# ONE container, unlike service_litellm's three: Hermes ships the gateway and the web dashboard
+# as two s6-supervised services INSIDE a single image, so there is nothing to split out. The
+# dashboard is brought up by HERMES_DASHBOARD=1 rather than by a second compose service.
+#
+{# No traefik labels here: a reverse proxy in front of this stack is configured by its own
+   router files, which also keeps Jinja out of YAML mapping keys (a templated label key ships the
+   literal braces). #}
+services:
+  {{ hermes_container_name }}:
+    # tag AND digest: the digest decides what runs, the tag is the label a human reads.
+    image: {{ hermes_image_repo }}:{{ hermes_image_tag }}@{{ hermes_image_digest }}
+    container_name: {{ hermes_container_name }}
+    restart: unless-stopped
+
+    # NO `entrypoint:` OVERRIDE, deliberately. The image's entrypoint is
+    # ["/init", "/opt/hermes/docker/main-wrapper.sh"] and `/init` is s6-overlay's PID 1: it runs
+    # the cont-init.d scripts (volume chown, profile reconcile, dashboard toggle) and builds the
+    # supervision tree before any service starts. Upstream's own compose comments warn that
+    # bypassing it leaves the gateway not working correctly, and it is also what reaps orphaned
+    # grandchildren (headless browsers, MCP servers, git/npm helpers the agent's tools spawn).
+    command: ["gateway", "run"]
+{% if hermes_managed_enforce | bool %}
+
+{# THE POLICY PREFLIGHT IS THE MAIN PROGRAM. /init stays PID 1 -- the warning above still holds --
+   and s6 runs preflight-entry.sh in main-wrapper.sh's place: it checks the managed scope (as the
+   hermes user) and only then execs main-wrapper.sh with the CMD. A refusal exits non-zero, /init
+   stops the container, and hermes_preflight_ok says 0. #}
+    entrypoint: ["/init", "/opt/hermes-policy/preflight-entry.sh"]
+{% endif %}
+
+    # The agent's ENTIRE mutable state -- config, .env, profiles, sessions, skills, memories,
+    # logs -- lives under /opt/data. That single mount is what makes the image stateless and an
+    # upgrade a tag change rather than a migration.
+    volumes:
+      - {{ hermes_config_dir }}/data:/opt/data:rw
+{% if hermes_skills_source | length > 0 %}
+{# The caller's skills, READ-ONLY. skill_manage has no external-dir check at the pinned release,
+   so this `:ro` is the protection: a patch attempt from inside fails with EROFS. A separate
+   directory, not a path under data/, so it is not part of the agent's writable state. #}
+      - {{ hermes_config_dir }}/estate-skills:{{ hermes_skills_mount_path }}:ro
+{% endif %}
+{% if hermes_cron_scripts_source | length > 0 %}
+{# The caller's cron scripts, READ-ONLY, nested over the agent's scripts/estate. Staged root-owned
+   OUTSIDE data/ (root must never write into an agent-writable tree by name -- a planted symlink
+   redirects the write), and mounted at this exact path because Hermes cron refuses a script that
+   resolves outside HERMES_HOME/scripts/. Mounted after data/ so it lands on top. #}
+      - {{ hermes_config_dir }}/estate-scripts:/opt/data/scripts/estate:ro
+{% endif %}
+{% if hermes_gh_cli_version | length > 0 %}
+      # The GitHub CLI, READ-ONLY, for the Kanban PR completion contract: upstream runs `gh api` in
+      # THIS container as the assignee profile, and the image ships no gh. A FILE mount whose source
+      # path carries the version, so an upgrade recreates rather than keeping a stale inode.
+      - {{ hermes_config_dir }}/tools/gh_{{ hermes_gh_cli_version }}_linux_{{ hermes_gh_cli_arch }}/bin/gh:/usr/local/bin/gh:ro
+{% endif %}
+{% if hermes_webhook_enabled | bool and hermes_webhook_subscriptions_readonly | bool %}
+{# The dynamic-subscription store, READ-ONLY. Upstream honours a hand-written `toolsets` on a
+   dynamic route, so a writable file is a self-grant of terminal that no hook can reliably see. A
+   FILE mount over the agent's copy: a write fails with EROFS and a rename over it with EBUSY,
+   whoever tries. Its content is a constant empty mapping, so the file-bind inode trap (a rewritten
+   source the container never sees) cannot arise. #}
+      - {{ hermes_config_dir }}/subscriptions/webhook_subscriptions.json:/opt/data/webhook_subscriptions.json:ro
+{% endif %}
+
+    # Credentials come from the env_file (0600), NOT from this file: compose files are rendered
+    # 0640 by deployment_config and a provider key must not be group-readable.
+{% if hermes_managed_enforce | bool %}
+      # The managed scope (tier C) and the policy that checks it, both READ-ONLY and both outside
+      # every writable mount the agent has. DIRECTORY mounts, not single files: `copy` replaces a
+      # file by rename, and a file-level bind would keep the container on the old inode.
+      - {{ hermes_config_dir }}/managed:{{ hermes_managed_mount_dir }}:ro
+      - {{ hermes_config_dir }}/policy:/opt/hermes-policy:ro
+{% endif %}
+{% if hermes_managed_enforce | bool and hermes_preflight_textfile_dir | length > 0 %}
+      # Where the preflight writes hermes_preflight_ok (it writes as root, before the drop).
+      - {{ hermes_preflight_textfile_dir }}:/run/hermes-textfile:rw
+{% endif %}
+
+    env_file:
+      - {{ hermes_config_dir }}/app.env
+
+    environment:
+{# The uid the image's root bootstrap drops to (stage2 remaps its `hermes` user with
+   usermod/groupmod, then every service runs under s6-setuidgid hermes). "0" would be DECLINED by
+   the hook (it will not remap hermes to root), so the processes would run as 10000 while the file
+   claimed otherwise; this declares what actually runs. #}
+      HERMES_UID: "{{ hermes_uid }}"
+      HERMES_GID: "{{ hermes_state_gid }}"
+{% if hermes_managed_enforce | bool %}
+      # Pinned here so a subprocess cannot point the overlay elsewhere; the preflight also refuses
+      # an agent-writable .env that sets it (Hermes loads those with override=True).
+      HERMES_MANAGED_DIR: "{{ hermes_managed_mount_dir }}"
+      HERMES_PREFLIGHT_PINNED_DIR: "{{ hermes_managed_mount_dir }}"
+{% endif %}
+      TZ: "{{ hermes_timezone }}"
+
+    ports:
+{% if hermes_api_server_enabled | bool %}
+      # Published ONLY when the API server is enabled. Publishing a port whose listener is off
+      # would look like a working endpoint and refuse every connection.
+      - "{{ (hermes_api_bind_address ~ ':') if hermes_api_bind_address | length > 0 else '' }}{{ hermes_api_host_port }}:{{ hermes_api_host_port }}"
+{% endif %}
+{% if hermes_dashboard_enabled | bool %}
+      - "{{ (hermes_dashboard_bind_address ~ ':') if hermes_dashboard_bind_address | length > 0 else '' }}{{ hermes_dashboard_host_port }}:{{ hermes_dashboard_host_port }}"
+{% endif %}
+{% if hermes_webapp_enabled | bool %}
+      # The Webapp's listener (config.yaml webapp.port, the same number). Published only when the
+      # Webapp is on, for the same reason as the API port above. Its sign-in gate is the dashboard's.
+      - "{{ (hermes_webapp_bind_address ~ ':') if hermes_webapp_bind_address | length > 0 else '' }}{{ hermes_webapp_host_port }}:{{ hermes_webapp_host_port }}"
+{% endif %}
+{% if hermes_webhook_enabled | bool %}
+{# The webhook listener. Published on every guest interface unless hermes_webhook_bind_address
+   is set: right for a guest on an internal network behind its own firewall; on a guest with a
+   public interface, set the address (a published port bypasses the host firewall). #}
+      - "{{ (hermes_webhook_bind_address ~ ':') if hermes_webhook_bind_address | length > 0 else '' }}{{ hermes_webhook_port }}:{{ hermes_webhook_port }}"
+{% endif %}
+
+    # The dashboard's own HTTP port is the only unauthenticated-reachable surface worth probing,
+    # and it answers only once s6 has brought the service up. `start_period` is generous because
+    # a cold first boot runs the cont-init reconciler before the dashboard binds at all.
+    #
+    # python3 rather than curl/wget: the image is a Python application, so the interpreter is
+    # guaranteed present where a shell HTTP client is not. A 401 is a PASS here -- the auth gate
+    # answering is proof the service is up, and urllib raises on 4xx, hence the explicit catch.
+{% if hermes_dashboard_enabled | bool %}
+    healthcheck:
+      # ONE command, no `||` chain: a compound command's exit status is the LAST one's, so a
+      # fallback chain here would report healthy for the wrong reason.
+      #
+      # `urlopen` RAISES HTTPError on a 4xx, and the auth gate answers 401/302 to an
+      # unauthenticated GET -- which is the service working, not failing. So an HTTPError is
+      # caught and treated as UP; only a connection-level error (nothing listening) is a
+      # failure. Asserting on a 200 here would fail a correctly-authenticated dashboard forever.
+      # Written as a single `python3 -c` with a semicolon-free body via exec() of a \n-joined
+      # string would be unreadable; a list-form CMD with a module-level try/except is clearer,
+      # and docker passes it to sh -c verbatim.
+      test:
+        - CMD-SHELL
+        - |
+          python3 - <<'PROBE'
+          import sys, urllib.error, urllib.request
+          try:
+              urllib.request.urlopen(
+                  "http://127.0.0.1:{{ hermes_dashboard_host_port }}/", timeout=5
+              )
+          except urllib.error.HTTPError:
+              pass          # 401/302 from the auth gate IS the service answering
+          except Exception:
+              sys.exit(1)   # nothing listening / connection refused
+          sys.exit(0)
+          PROBE
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+{% endif %}
+
+    networks:
+      - {{ hermes_network }}
+{% if hermes_settings_service_enabled | bool %}
+
+{# THE SETTINGS SERVICE: typed settings operations over MCP, with its OWN policy check. Same image
+   as the agent, so a tier-A write goes through upstream's own `hermes config set` (the config lock,
+   the rename write, the managed-key refusal) -- the service never writes config.yaml itself. It
+   bypasses /init on purpose: it is one stdlib process with no children to reap, and it runs as the
+   agent's uid so what it writes is the gateway's to read.
+
+   Reach: the docker network (an MCP client, by name) and the guest's LOOPBACK. Never another
+   interface. Its two secrets are FILES in a directory only this container mounts; the agent
+   container cannot see them. #}
+  {{ hermes_settings_service_container_name }}:
+    image: {{ hermes_image_repo }}:{{ hermes_image_tag }}@{{ hermes_image_digest }}
+    container_name: {{ hermes_settings_service_container_name }}
+    restart: unless-stopped
+    entrypoint: ["/opt/hermes/.venv/bin/python", "-m", "hermes_settings"]
+    command: []
+    user: "{{ hermes_uid }}:{{ hermes_uid }}"
+    working_dir: /opt/hub-settings
+    volumes:
+      - {{ hermes_config_dir }}/data:/opt/data:rw
+      - {{ hermes_config_dir }}/policy:/opt/hermes-policy:ro
+      - {{ hermes_config_dir }}/settings-service:/opt/hub-settings:ro
+      - {{ hermes_config_dir }}/settings-secrets:/run/hub-settings:ro
+      - {{ hermes_config_dir }}/settings-state:/var/lib/hub-settings:rw
+{% if hermes_managed_enforce | bool %}
+      - {{ hermes_config_dir }}/managed:{{ hermes_managed_mount_dir }}:ro
+{% endif %}
+    environment:
+      PYTHONPATH: /opt/hub-settings
+      HERMES_HOME: /opt/data
+{% if hermes_managed_enforce | bool %}
+      # Upstream's `config set` refuses a managed key by itself too -- a second refusal under ours.
+      HERMES_MANAGED_DIR: "{{ hermes_managed_mount_dir }}"
+{% endif %}
+      SETTINGS_OWNED_KEYS: /opt/hermes-policy/owned-keys.json
+      SETTINGS_CATALOGUE: /opt/hermes-policy/mcp-catalogue.json
+      SETTINGS_PROFILES: "{{ hermes_settings_profiles | join(',') }}"
+      SETTINGS_STATE_DIR: /var/lib/hub-settings
+      SETTINGS_DATA_ROOT: /opt/data
+      SETTINGS_HERMES_BIN: /opt/hermes/.venv/bin/hermes
+      SETTINGS_LISTEN: "0.0.0.0:{{ hermes_settings_service_port }}"
+      SETTINGS_GITHUB_REPO: "{{ hermes_settings_github_repo }}"
+      SETTINGS_TOKEN_FILE: /run/hub-settings/token
+      SETTINGS_GITHUB_TOKEN_FILE: /run/hub-settings/github-token
+      TZ: "{{ hermes_timezone }}"
+    ports:
+      - "127.0.0.1:{{ hermes_settings_service_port }}:{{ hermes_settings_service_port }}"
+    # /healthz is 200 only when the owned-keys list reads AND the policy self-test refuses a tier-C
+    # write; a service that would accept one is reported unhealthy (it also refuses to start).
+    healthcheck:
+      test:
+        - CMD
+        - /opt/hermes/.venv/bin/python
+        - -c
+        - "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:{{ hermes_settings_service_port }}/healthz', timeout=5).status == 200 else 1)"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    networks:
+      - {{ hermes_network }}
+{% endif %}
+
+networks:
+  {{ hermes_network }}:
+    external: true

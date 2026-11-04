@@ -1,0 +1,66 @@
+---
+# GENERATED from roles/config_agent_state/meta/argument_specs.py — DO NOT EDIT.
+# Regenerate with: venv/bin/python tools/argspec/cli.py x generate config_agent_state
+#
+# These are the constraints Ansible's role-argspec validator CANNOT enforce. It handles
+# type/required/choices/no_log, but has no numeric-range, length or pattern checking, so
+# without this file those declarations would be decorative.
+#
+# Include from the role's entrypoints:  - ansible.builtin.include_tasks: _argspec_guards.yml
+
+- name: "GUARD (generated) — agent_state_backup_keep must be >= 1"
+  ansible.builtin.assert:
+    that:
+      - "agent_state_backup_keep | int >= 1"
+    fail_msg: "agent_state_backup_keep violates a constraint declared in meta/argument_specs.py: must be >= 1. Got: {{ agent_state_backup_keep | default('(unset)') }}"
+    quiet: true
+  when: agent_state_backup_keep is defined
+
+- name: "GUARD (generated) — agent_state_backup_keep_monthly must be >= 0"
+  ansible.builtin.assert:
+    that:
+      - "agent_state_backup_keep_monthly | int >= 0"
+    fail_msg: "agent_state_backup_keep_monthly violates a constraint declared in meta/argument_specs.py: must be >= 0. Got: {{ agent_state_backup_keep_monthly | default('(unset)') }}"
+    quiet: true
+  when: agent_state_backup_keep_monthly is defined
+
+- name: "GUARD (generated) — agent_state_backup_label must be matching '^[A-Za-z0-9._-]{1,48}$'"
+  ansible.builtin.assert:
+    that:
+      - "agent_state_backup_label | default('') is match('^[A-Za-z0-9._-]{1,48}$')"
+    fail_msg: "agent_state_backup_label violates a constraint declared in meta/argument_specs.py: must be matching '^[A-Za-z0-9._-]{1,48}$'. Got: {{ agent_state_backup_label | default('(unset)') }}"
+    quiet: true
+  when: agent_state_backup_label is defined
+
+- name: "GUARD (generated) — agent_state_drill_port must be >= 1024; <= 65535"
+  ansible.builtin.assert:
+    that:
+      - "agent_state_drill_port | int >= 1024"
+      - "agent_state_drill_port | int <= 65535"
+    fail_msg: "agent_state_drill_port violates a constraint declared in meta/argument_specs.py: must be >= 1024; <= 65535. Got: {{ agent_state_drill_port | default('(unset)') }}"
+    quiet: true
+  when: agent_state_drill_port is defined
+
+- name: "GUARD (generated) — agent_state_health_retries must be >= 1"
+  ansible.builtin.assert:
+    that:
+      - "agent_state_health_retries | int >= 1"
+    fail_msg: "agent_state_health_retries violates a constraint declared in meta/argument_specs.py: must be >= 1. Got: {{ agent_state_health_retries | default('(unset)') }}"
+    quiet: true
+  when: agent_state_health_retries is defined
+
+- name: "GUARD (generated) — agent_state_product must be matching '^[a-z0-9-]+$'"
+  ansible.builtin.assert:
+    that:
+      - "agent_state_product | default('') is match('^[a-z0-9-]+$')"
+    fail_msg: "agent_state_product violates a constraint declared in meta/argument_specs.py: must be matching '^[a-z0-9-]+$'. Got: {{ agent_state_product | default('(unset)') }}"
+    quiet: true
+  when: agent_state_product is defined
+
+- name: "GUARD (generated) — agent_state_verify_max_age_seconds must be >= 1"
+  ansible.builtin.assert:
+    that:
+      - "agent_state_verify_max_age_seconds | int >= 1"
+    fail_msg: "agent_state_verify_max_age_seconds violates a constraint declared in meta/argument_specs.py: must be >= 1. Got: {{ agent_state_verify_max_age_seconds | default('(unset)') }}"
+    quiet: true
+  when: agent_state_verify_max_age_seconds is defined

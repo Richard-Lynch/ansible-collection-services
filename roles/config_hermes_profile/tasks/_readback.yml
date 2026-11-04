@@ -1,0 +1,24 @@
+---
+# One read-back through the hermes CLI: Hermes' OWN view of the profile, which is the only thing that
+# proves the file is the one it reads (a leaf can be on disk under a key hermes ignores). The check
+# fails when the command cannot run, never passes on an empty answer.
+- name: "Read back: {{ _hp_rb.name | default('(unnamed)') }}"
+  community.docker.docker_container_exec:
+    container: "{{ hermes_profile_container }}"
+    argv: "{{ _hp_rb.argv }}"
+    user: "{{ hermes_profile_uid }}:{{ hermes_profile_gid }}"
+  register: _hp_rb_out
+  changed_when: false
+  failed_when: false
+
+- name: "ASSERT — {{ _hp_rb.name | default('(unnamed)') }}"
+  ansible.builtin.assert:
+    that:
+      - _hp_rb_out.rc | default(1) == 0
+      - (_hp_rb_out.stdout | default('') | trim | length) > 0
+      - _hp_rb_out.stdout is search(_hp_rb.must_match)
+      - _hp_rb.must_not_match | default('') | length == 0 or _hp_rb_out.stdout is not search(_hp_rb.must_not_match)
+    fail_msg: >-
+      read-back '{{ _hp_rb.name | default('(unnamed)') }}' failed: rc={{ _hp_rb_out.rc | default('none') }}, output was
+      {{ (_hp_rb_out.stdout | default('') | trim)[:600] }}
+    quiet: true

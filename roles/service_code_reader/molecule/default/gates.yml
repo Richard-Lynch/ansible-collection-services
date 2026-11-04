@@ -1,0 +1,18 @@
+---
+# Run the role's REAL gate task files over `cfg_in` (a dict of option -> value). include_tasks
+# accepts only a literal dict under `vars:`, so each option is mapped explicitly; the two options a
+# fixture may override but `good` need not set fall back to the role's own generated default.
+- name: Run the real gates
+  ansible.builtin.include_tasks: "{{ item }}"
+  vars:
+    code_reader_imap_host: "{{ cfg_in.code_reader_imap_host }}"
+    code_reader_imap_user: "{{ cfg_in.code_reader_imap_user }}"
+    code_reader_imap_password: "{{ cfg_in.code_reader_imap_password }}"
+    code_reader_sender_allowlist: "{{ cfg_in.code_reader_sender_allowlist }}"
+    code_reader_token: "{{ cfg_in.code_reader_token }}"
+    code_reader_bind: "{{ cfg_in.code_reader_bind | default(code_reader_bind__default) }}"
+    code_reader_image: "{{ cfg_in.code_reader_image | default(code_reader_image__default) }}"
+  loop:
+    - "{{ role_root }}/tasks/_resolve_defaults.yml"
+    - "{{ role_root }}/tasks/_argspec_guards.yml"
+    - "{{ role_root }}/tasks/_preflight.yml"

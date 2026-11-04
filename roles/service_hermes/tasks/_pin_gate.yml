@@ -1,0 +1,27 @@
+---
+# The image pin gate, its own task file so a molecule scenario can feed it each malformed pin
+# and prove it refuses (a gate nobody has seen fail is a gate nobody knows can).
+
+- name: HARD GATE — the image must be pinned by tag AND digest, never floating
+  # A floating tag makes the deployed version a function of WHEN the play ran, so two
+  # converges from the same commit can produce different software. A tag WITHOUT a digest is
+  # the same defect one step removed: the registry can retag it under a running deployment. The
+  # compose file therefore says `repo:tag@digest`, and the digest is what actually decides.
+  # `stable`/`latest` on this project additionally point at a different digest than the newest
+  # versioned release.
+  ansible.builtin.assert:
+    that:
+      - hermes_image_repo | length > 0
+      - "':' not in hermes_image_repo.split('/')[-1]"
+      - "'@' not in hermes_image_repo"
+      - hermes_image_tag | length > 0
+      - hermes_image_tag not in ['latest', 'stable', 'main', 'edge', 'canary']
+      - "':' not in hermes_image_tag and '@' not in hermes_image_tag"
+      - hermes_image_digest is match('^sha256:[0-9a-f]{64}$')
+    fail_msg: >-
+      The image pin is not a valid tag + digest pair: repo '{{ hermes_image_repo }}', tag
+      '{{ hermes_image_tag }}', digest '{{ hermes_image_digest }}'. The tag must be a versioned
+      release (not latest/stable/main/edge/canary) and the digest must be sha256: followed by 64
+      lowercase hex characters. Both are declared together in inventory; a tag with
+      no digest can be retagged under a running deployment.
+    quiet: true

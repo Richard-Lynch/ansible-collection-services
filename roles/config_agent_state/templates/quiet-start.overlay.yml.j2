@@ -1,0 +1,9 @@
+# Rendered by config_agent_state restore - REMOVED before the final restart.
+# Starts the agent with its platforms, cron dispatch and webhook listener switched off, so that
+# nothing can act on half-restored state before the read-back passes.
+services:
+  {{ agent_state_stack_service }}:
+    environment:
+{% for k, v in (agent_state_quiet_start_env | dictsort) %}
+      {{ k }}: {{ v | string | to_json }}
+{% endfor %}

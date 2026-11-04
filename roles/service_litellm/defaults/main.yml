@@ -1,0 +1,167 @@
+---
+# Generic defaults only. Every value here is right for ANY caller on ANY machine -- no
+# hostnames, no site addresses, no credentials. defaults/SKIP: this file is maintained by hand
+# (the argspec declares the options without defaults).
+#
+# The four secrets and the Ollama api_base have NO default on purpose: they are either
+# credentials (which the calling play supplies from its secret store) or installation facts
+# (which come from inventory). A default for either would be one installation's config wearing
+# a default's clothing.
+
+litellm_container_name: litellm
+litellm_config_dir: /opt/litellm
+# The external Docker network the stack joins (created if absent). Callers that share one
+# network across several stacks set it in inventory.
+litellm_network: litellm
+
+# Images are always pinned -- molecule asserts no floating tag reaches the rendered compose.
+# Upstream litellm's own compose ships `docker.litellm.ai/berriai/litellm:main-stable`, a
+# FLOATING tag, which is why this pins an explicit release from the ghcr mirror instead.
+#
+# The TypeSafe AI (Jev) pass-through route (/typesafe/*) exists from LiteLLM v1.101.6
+# (litellm/proxy/pass_through_endpoints/llm_passthrough_endpoints.py registers
+# "/typesafe/{endpoint:path}"); an older pin answers 404 there even with a valid key.
+litellm_image: "ghcr.io/berriai/litellm:v1.104.2"
+litellm_postgres_image: "postgres:16.4-alpine"
+litellm_open_webui_image: "ghcr.io/open-webui/open-webui:v0.11.4"
+
+litellm_host_port: 4000
+litellm_open_webui_host_port: 8089
+# Loopback by default: until its first admin exists Open WebUI lets anyone who reaches it sign up,
+# and a Docker-published port bypasses the host firewall. "" publishes on every interface.
+litellm_open_webui_bind_address: "127.0.0.1"
+
+# Provider keys: empty means "do not render this provider at all". The role hard-gates on
+# at least one being non-empty, so an all-empty config fails loudly instead of starting a
+# proxy that advertises nothing.
+litellm_anthropic_api_key: ""
+litellm_openai_api_key: ""
+litellm_gemini_api_key: ""
+# OpenRouter: one key, hundreds of models, including providers with no direct account.
+litellm_openrouter_api_key: ""
+
+# ElevenLabs: a NATIVE provider on v1.104.2, so it joins model_list like the four above and
+# routes /v1/audio/speech: `LlmProviders.ELEVENLABS` is in provider_list and the cost map
+# carries elevenlabs models whose modes are audio_speech and audio_transcription. LiteLLM maps
+# the OpenAI voice names onto ElevenLabs voice ids, so an existing OpenAI TTS client reaches it
+# by changing only the model name.
+litellm_elevenlabs_api_key: ""
+
+# ---- web search -------------------------------------------------------------------------
+# Brave Search wires a SEARCH TOOL, not a model, and that distinction is the whole reason this
+# is a separate option rather than another provider key: search providers live in their OWN
+# registry. `brave` appears NOWHERE in `litellm.provider_list` and has no cost-map entry -- so a
+# grep for it reads as "unsupported" -- while /search_tools/ui/available_providers lists it as
+# "Brave Search". It is configured through the top-level `search_tools` block and served at
+# POST /v1/search. Empty means no search tool at all, rather than one that 401s.
+litellm_brave_search_api_key: ""
+# The name the tool is addressed by (/v1/search/<name>). Generic, so right for any caller.
+litellm_brave_search_tool_name: "brave-search"
+
+# ---- MCP gateway ------------------------------------------------------------------------
+# OFF by default, unlike the provider keys: an MCP server is reachable TOOL EXECUTION, not just a
+# model that answers text, so it is opt-in from inventory rather than something a deploy acquires
+# by default.
+#
+# Context7 is HTTP-transport and needs NO credential, which is what makes it wireable here at all:
+# a `stdio` server would run INSIDE the litellm container, which ships no node/npx, and would need
+# a derived image. The endpoint answers MCP `initialize` and lists the tools `resolve-library-id`
+# and `query-docs`.
+#
+# Brave is deliberately NOT here. Brave publishes no HOSTED MCP endpoint -- its own server
+# defaults to stdio and its HTTP transport is one you run yourself (npx/Docker) -- so there is no
+# URL to point this at. Brave's WEB SEARCH above is a different, working mechanism.
+litellm_mcp_context7_enabled: false
+litellm_mcp_context7_url: "https://mcp.context7.com/mcp"
+
+# TypeSafe AI (Jev) is a PASS-THROUGH upstream, listed apart from the providers above because it
+# is a different KIND of thing: Jev returns typed decisions (a probability, a choice, a score)
+# from its own /v1/systemone endpoint, not chat completions. LiteLLM proxies it at /typesafe/*
+# and it adds no model_list entry -- so it neither appears in /v1/models nor satisfies the role's
+# at-least-one-provider gate. Setting the key IS the configuration.
+litellm_typesafe_api_key: ""
+
+# Ollama is wired but OFF: a rendered entry with no Ollama host behind it would advertise models
+# that cannot answer. `litellm_ollama_api_base` is deliberately absent -- enabling without
+# supplying it from inventory fails the role's assert.
+litellm_ollama_enabled: false
+litellm_ollama_models: []
+
+# Numeric uid/gid the Postgres container writes its data as -- 70 in the alpine image. The
+# SERVER runs as root so the container starts and reports healthy, while its child processes
+# run as `postgres` and cannot read a root-owned data dir.
+litellm_postgres_uid: 70
+litellm_postgres_gid: 70
+
+# Numeric uid/gid the Redis container writes its data as. The redis SERVER runs as root, but
+# forks a CHILD as `redis` to write the RDB snapshot -- so a root-owned data dir passes every
+# manual write test and still fails every background save. 999 in the official alpine image.
+litellm_redis_uid: 999
+litellm_redis_gid: 999
+
+# OpenRouter model ids to list EXPLICITLY alongside the wildcard, so a client that builds its
+# model picker from GET /v1/models can actually offer them. Empty is the right default: the
+# wildcard already ROUTES everything, and which models a picker should surface is a choice each
+# installation makes in inventory.
+litellm_openrouter_models: []
+litellm_model_aliases: []
+
+litellm_num_retries: 2
+litellm_request_timeout: 600
+litellm_drop_params: true
+litellm_telemetry: false
+litellm_store_model_in_db: true
+
+# Close the console-login path that lets the MASTER KEY sign in as proxy admin. Default true
+# because the safe state should be the one you get without thinking about it -- but note it
+# requires a real admin account to exist first (LiteLLM refuses a password on /user/new, so the
+# account is created from an invitation link). Set false only to recover from losing that
+# account.
+litellm_disable_env_credential_login: true
+
+litellm_open_webui_container_name: open-webui
+litellm_open_webui_enable_signup: false
+# The name Open WebUI shows in its title bar and sign-in page (WEBUI_NAME).
+litellm_open_webui_name: "Open WebUI"
+# Extra Open WebUI connections (tasks_from: open_webui_connections). Which ones is the caller's
+# choice, so none by default; the entrypoint's argspec requires the list from the caller.
+litellm_open_webui_connections_apply: false
+# Open WebUI's external task model (tasks_from: open_webui_task_model); the value is the caller's.
+litellm_open_webui_task_model_apply: false
+
+# ---- branding -----------------------------------------------------------------------
+# Empty means "render nothing" -- each UI keeps its own upstream default. The actual image (an
+# installation's logo/favicon) is inventory, never a role default.
+#
+# LiteLLM (v1.104.2, proxy_server.py's /get_image and /get_favicon): UI_LOGO_PATH /
+# UI_LOGO_PATH_DARK / LITELLM_FAVICON_URL are plain os.getenv() reads with NO premium_user gate,
+# so they work on the free tier as container env vars. Each accepts an http(s) URL (fetched by
+# the BROWSER -- see the role README for why that matters on an internal-only UI) or a path
+# readable inside the litellm container.
+litellm_ui_logo_path: ""
+litellm_ui_logo_path_dark: ""
+litellm_ui_favicon_path: ""
+
+# Open WebUI (v0.11.4, env.py/config.py): no logo/favicon env var exists, and EVERY process
+# start wipes STATIC_DIR and re-copies the bundled frontend's own assets into it -- a file
+# merely placed there is reverted on the next restart. Each path here is a HOST file,
+# bind-mounted READ-ONLY over the one container-internal asset path it replaces; OWUI's own copy
+# step catches that write failure and logs rather than erroring, so the mount survives where a
+# plain file would not. Open WebUI's LICENSE permits replacing its branding only for deployments
+# with <= 50 end users or under an enterprise license; a caller must check that condition itself.
+litellm_open_webui_logo_path: ""
+litellm_open_webui_favicon_path: ""
+
+litellm_postgres_container_name: litellm-postgres
+litellm_postgres_user: litellm
+litellm_postgres_db: litellm
+litellm_timezone: "Etc/UTC"
+
+# Redis is ON by default, unlike most optional extras, because the proxy runs multiple workers
+# and WITHOUT a shared store each worker holds its own rate limits, budgets, router state and
+# cache -- so a limit is enforced once per worker and spend can overshoot by roughly the worker
+# count. On a gateway spending real money that is a correctness problem, so the safe default is
+# the one that makes budgets mean what they say. Turn it off only for a single-worker toy.
+litellm_redis_enabled: true
+litellm_redis_container_name: litellm-redis
+litellm_redis_image: "redis:7.4-alpine"

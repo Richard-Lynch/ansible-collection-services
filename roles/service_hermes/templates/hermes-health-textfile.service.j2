@@ -1,0 +1,15 @@
+# Rendered by roles/service_hermes. Writes hermes_gateway_healthy (and, when hooks are expected,
+# hermes_hooks_registered/expected) for the textfile collector.
+#
+# Each expected hook is a WHOLE command with spaces in it, so it is passed as ONE systemd argument:
+# a double quote wrapping the whole item ("--hooks-expect=<cmd>"), which systemd.service(5) honours
+# only at the start of an item. Inside it systemd still expands % specifiers, $VAR and C escapes,
+# so _health_exporter.yml refuses a command carrying % $ \ " before this is rendered.
+[Unit]
+Description=Hermes gateway health -> node exporter textfile
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/env python3 /usr/local/lib/hermes-health/hermes_health_textfile.py --url http://127.0.0.1:{{ hermes_dashboard_host_port }}/api/status --out {{ hermes_preflight_textfile_dir }}/hermes_gateway.prom{% if hermes_hooks_expected | length > 0 %} --hooks-container {{ hermes_container_name }} --hooks-user {{ hermes_uid }}{% for c in hermes_hooks_expected %} "--hooks-expect={{ c }}"{% endfor %}{% endif %}
+

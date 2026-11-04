@@ -1,0 +1,114 @@
+---
+# One run of the concurrent-write fixture, with the role's quiesce either SUBSTITUTED
+# (race_quiesce: true -> race_quiesce.yml stops the writer, as `compose stop` stops the dashboard)
+# or ABSENT (race_quiesce: false -> the control: nothing stops the writer during the merge).
+#
+# Leaves behind `race_result` for verify.yml to assert on, and always stops the writer.
+- name: Forget any snapshot an earlier run recorded
+  ansible.builtin.set_fact:
+    race_snapshot: {}
+
+- name: Start from an empty race directory
+  ansible.builtin.file:
+    path: "{{ race_dir }}"
+    state: "{{ item }}"
+    mode: "0755"
+  loop: [absent, directory]
+
+- name: Read the config the previous play left
+  ansible.builtin.slurp: { src: "{{ hermes_config_dir }}/data/config.yaml" }
+  register: _race_cfg0
+  no_log: true
+
+# A stale OWNED leaf, so the merge has a real diff (without one it writes nothing and the fixture
+# would pass by never touching the file), and the writer's counter reset.
+- name: Leave one owned leaf stale and reset the counter
+  ansible.builtin.copy:
+    dest: "{{ hermes_config_dir }}/data/config.yaml"
+    mode: "0640"
+    content: >-
+      {{ (_race_cfg0.content | b64decode | from_yaml)
+         | combine({'sessions': {'auto_prune': false}, 'display': {'writes': 0}}, recursive=true)
+         | to_nice_yaml(sort_keys=false) }}
+  no_log: true
+
+- block:
+    - name: Start the concurrent writer
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_playbook_python }}"
+          - "{{ playbook_dir }}/concurrent_writer.py"
+          - --config
+          - "{{ hermes_config_dir }}/data/config.yaml"
+          - --log
+          - "{{ race_dir }}/writer.log"
+          - --final
+          - "{{ race_dir }}/writer.final"
+          - --pidfile
+          - "{{ race_dir }}/writer.pid"
+      async: 120
+      poll: 0
+      changed_when: true
+
+    - name: Wait until it has committed a good number of writes
+      ansible.builtin.command:
+        argv: [wc, -l, "{{ race_dir }}/writer.log"]
+      register: _race_before
+      changed_when: false
+      until: _race_before.rc == 0 and (_race_before.stdout.split()[0] | int) >= 25
+      retries: 30
+      delay: 1
+
+    - name: Choose the quiesce for this run
+      ansible.builtin.set_fact:
+        hermes__merge_quiesce: "{{ race_quiesce | bool }}"
+        hermes__merge_quiesce_file: "{{ playbook_dir }}/race_quiesce.yml"
+
+    - name: Merge
+      ansible.builtin.include_tasks: merge_case.yml
+
+    - name: Has the writer already been stopped (by the quiesce)?
+      ansible.builtin.stat: { path: "{{ race_dir }}/writer.final" }
+      register: _race_stopped
+
+    # The control never quiesces it. A quiesce that FAILED to stop it is stopped here too, so the
+    # evidence below can still be read -- and the positive case then fails on that evidence
+    # (a lost update, or no write during the merge) instead of on a missing file.
+    - name: Stop the writer if the merge did not already
+      ansible.builtin.include_tasks: race_stop.yml
+      when: not _race_stopped.stat.exists
+
+    - name: Collect the evidence
+      ansible.builtin.slurp: { src: "{{ item }}" }
+      loop:
+        - "{{ race_dir }}/writer.final"
+        - "{{ hermes_config_dir }}/data/config.yaml"
+      register: _race_files
+      no_log: true
+
+    - name: Count what the writer committed
+      ansible.builtin.command:
+        argv: [wc, -l, "{{ race_dir }}/writer.log"]
+      register: _race_after
+      changed_when: false
+
+    - name: Keep it as race_result
+      ansible.builtin.set_fact:
+        race_result:
+          writes_before_merge: "{{ _race_before.stdout.split()[0] | int }}"
+          writes_total: "{{ _race_after.stdout.split()[0] | int }}"
+          final: "{{ _race_files.results[0].content | b64decode | from_json }}"
+          config: "{{ _race_files.results[1].content | b64decode | from_yaml }}"
+          snapshot: "{{ (race_snapshot.content | b64decode | from_yaml) if (race_snapshot is defined and race_snapshot.content is defined) else none }}"
+          diff_keys: "{{ hermes__merge.diff | map(attribute='key') | list }}"
+      no_log: true
+  always:
+    # Whatever happened above, no writer may outlive the case. kill -0 first: a writer already
+    # gone (the quiesce stopped it) is the normal case, not an error.
+    - name: Make sure no writer survives
+      ansible.builtin.shell: |
+        if [ -f "{{ race_dir }}/writer.pid" ] && kill -0 "$(cat "{{ race_dir }}/writer.pid")" 2>/dev/null; then
+          kill -TERM "$(cat "{{ race_dir }}/writer.pid")"
+        fi
+      changed_when: false
+      failed_when: false

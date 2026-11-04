@@ -1,0 +1,29 @@
+# Copyright: (c) 2026, Richard Lynch
+# GNU General Public License v3.0+ (see https://www.gnu.org/licenses/gpl-3.0.txt)
+---
+DOCUMENTATION:
+  name: hermes_user_layer_leaves
+  short_description: The owned leaves to project into the user config.yaml
+  author: Richard Lynch (@Richard-Lynch)
+  description:
+    - With the managed scope enforced, returns every owned leaf except managed-layer tier-C ones (the
+      overlay carries those, and upstream strips them from the user file on save). With it not enforced,
+      returns every leaf.
+  options:
+    _input:
+      description: Owned leaves.
+      type: list
+      required: true
+    managed_enforced:
+      description: Whether the managed overlay is in force (default true).
+      type: bool
+EXAMPLES: |
+  - name: User-layer leaves
+    ansible.builtin.set_fact:
+      user_leaves: "{{ owned | richard_lynch.services.hermes_user_layer_leaves(true) }}"
+    vars:
+      owned: [{key: approvals.mode, value: manual, tier: C}, {key: model.default, value: large-model, tier: B}]
+RETURN:
+  _value:
+    description: The owned leaves that belong in the user file.
+    type: list

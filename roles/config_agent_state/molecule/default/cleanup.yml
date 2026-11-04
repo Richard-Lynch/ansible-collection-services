@@ -1,0 +1,17 @@
+---
+# Cleanup - remove the scratch tree. In the test_sequence it runs BEFORE prepare and AFTER verify,
+# so a run starts from nothing and leaves nothing — whatever the previous run did, and whatever
+# molecule's "already prepared" flag says. prepare.yml's own "Start from empty" is then redundant
+# in the full sequence and is kept so that `molecule prepare` alone is still a pure function.
+- name: Cleanup - remove the scenario's scratch tree
+  hosts: localhost
+  gather_facts: false
+  vars_files: [vars.yml]
+  tasks:
+    - name: Refuse to delete anything but the scratch tree
+      ansible.builtin.import_tasks: _scratch_gate.yml
+
+    - name: Remove the scratch tree
+      ansible.builtin.file:
+        path: "{{ w }}"
+        state: absent

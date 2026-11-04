@@ -1,0 +1,114 @@
+---
+# config_agent_state main — install the mechanics and the two nightly jobs. It changes no agent
+# state: no backup is taken and nothing is mirrored by converging this. (`backup`, `mirror`
+# run them now.)
+- name: Resolve declared options over their generated defaults
+  ansible.builtin.include_tasks: _resolve_defaults.yml
+
+- name: Apply the generated argspec guards
+  ansible.builtin.include_tasks: _argspec_guards.yml
+
+- name: Shape-check the declared values
+  ansible.builtin.include_tasks: _gates.yml
+
+- name: Install and verify the tooling
+  ansible.builtin.include_tasks: _tools.yml
+
+- name: Install directory
+  ansible.builtin.file:
+    path: "{{ agent_state_install_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Install the script
+  ansible.builtin.copy:
+    src: agent_state.py
+    dest: "{{ agent_state_install_dir }}/agent_state.py"
+    mode: "0755"
+
+# agent_state.py imports it from its own directory.
+- name: Install the confined-I/O helper beside it
+  ansible.builtin.copy:
+    src: confined_io.py
+    dest: "{{ agent_state_install_dir }}/confined_io.py"
+    mode: "0644"
+
+- name: Mirror deploy key
+  ansible.builtin.include_tasks: _deploy_key.yml
+
+- name: Build the argument lists (the nightly wrapper's label is nightly)
+  ansible.builtin.include_tasks: _argv.yml
+  vars:
+    agent_state_backup_label: nightly
+
+- name: Textfile directory exists (the jobs write their metrics there)
+  ansible.builtin.file:
+    path: "{{ agent_state_textfile_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Job wrappers (arguments quoted once, here; units carry no shell)
+  ansible.builtin.template:
+    src: job.sh.j2
+    dest: "{{ agent_state_install_dir }}/{{ item.name }}.sh"
+    mode: "0750"
+  vars:
+    _job_argv: "{{ item.argv }}"
+  loop:
+    - { name: backup-nightly, argv: "{{ _as_backup_argv }}" }
+    - { name: mirror-nightly, argv: "{{ _as_mirror_argv }}" }
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Unit directory exists
+  ansible.builtin.file:
+    path: "{{ agent_state_unit_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Systemd units
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ agent_state_unit_dir }}/{{ item.dest }}"
+    mode: "0644"
+  loop:
+    - { src: job.service.j2, dest: "agent-state-backup.service", job: backup-nightly, what: "backup" }
+    - { src: job.timer.j2, dest: "agent-state-backup.timer", job: backup-nightly, what: "backup", cal: "{{ agent_state_backup_oncalendar }}" }
+    - { src: job.service.j2, dest: "agent-state-mirror.service", job: mirror-nightly, what: "mirror" }
+    - { src: job.timer.j2, dest: "agent-state-mirror.timer", job: mirror-nightly, what: "mirror", cal: "{{ agent_state_mirror_oncalendar }}" }
+  loop_control:
+    label: "{{ item.dest }}"
+  register: _as_units
+
+- name: Reload systemd after a unit change
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when: agent_state_enable_timers | bool and _as_units is changed
+
+- name: Enable and start the timers
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop: [agent-state-backup.timer, agent-state-mirror.timer]
+  when: agent_state_enable_timers | bool
+
+- name: Read the timers back from systemd
+  ansible.builtin.command:
+    argv: [systemctl, show, "{{ item }}", "--property=UnitFileState,ActiveState"]
+  register: _as_timer_state
+  changed_when: false
+  loop: [agent-state-backup.timer, agent-state-mirror.timer]
+  when: agent_state_enable_timers | bool
+
+- name: HARD GATE — both timers are enabled and active (systemd's answer, not the task result)
+  ansible.builtin.assert:
+    that:
+      - "'UnitFileState=enabled' in item.stdout_lines"
+      - "'ActiveState=active' in item.stdout_lines"
+    fail_msg: "{{ item.item }} is not enabled and active: {{ item.stdout_lines }}"
+    quiet: true
+  loop: "{{ _as_timer_state.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: agent_state_enable_timers | bool

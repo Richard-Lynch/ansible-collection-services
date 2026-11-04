@@ -1,0 +1,42 @@
+---
+# One agent-side subscription store the delivery must REFUSE: plant it, run the delivery, require
+# the named failure, and remove the plant whatever happened.
+- name: "Refuse: {{ subs_case.why }}"
+  block:
+    - name: Plant a store file
+      ansible.builtin.copy:
+        dest: "{{ render_root }}/data/webhook_subscriptions.json"
+        content: "{{ subs_case.body }}"
+        mode: "0600"
+      when: subs_case.kind == 'file'
+
+    - name: Plant a store symlink
+      ansible.builtin.file:
+        path: "{{ render_root }}/data/webhook_subscriptions.json"
+        src: /etc/hostname
+        state: link
+        force: true
+      when: subs_case.kind == 'link'
+
+    - name: Run the delivery
+      ansible.builtin.include_role:
+        name: service_hermes
+        tasks_from: _automations_deliver
+        public: true
+
+    - name: The role accepted it
+      ansible.builtin.fail:
+        msg: "ACCEPTED: {{ subs_case.why }}"
+  rescue:
+    - name: It must have refused for the stated reason
+      ansible.builtin.assert:
+        that:
+          - "'ACCEPTED' not in (ansible_failed_result.msg | default(''))"
+          - subs_case.expect in (ansible_failed_result.msg | default(''))
+        fail_msg: "{{ subs_case.why }}: failed, but not with '{{ subs_case.expect }}': {{ ansible_failed_result.msg | default('?') }}"
+        quiet: true
+  always:
+    - name: Remove the plant
+      ansible.builtin.file:
+        path: "{{ render_root }}/data/webhook_subscriptions.json"
+        state: absent

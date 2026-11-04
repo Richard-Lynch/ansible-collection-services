@@ -1,0 +1,5 @@
+#!/bin/sh
+# Rendered by config_agent_state. Arguments are quoted once, here, so the systemd unit carries
+# no shell. "$@" lets a caller append (a later --label wins).
+set -eu
+exec {{ _job_argv | map('quote') | join(' ') }} "$@"

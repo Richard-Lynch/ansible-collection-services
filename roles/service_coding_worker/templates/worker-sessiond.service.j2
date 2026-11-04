@@ -1,0 +1,19 @@
+# {{ ansible_managed }}
+[Unit]
+Description=worker-sessiond: session supervisor for the Hermes coding worker
+After=network-online.target docker.service
+Wants=network-online.target docker.service
+
+[Service]
+User={{ worker_user }}
+EnvironmentFile={{ worker_conf_dir }}/sessiond.env
+ExecStart=/usr/bin/python3 {{ worker_lib_dir }}/worker_sessiond.py --config {{ worker_conf_dir }}/sessiond.json --bind {{ worker_sessiond_bind }} --port {{ worker_sessiond_port }}
+Restart=on-failure
+RestartSec=3
+# tmux daemonises out of this unit's control group only if the group is not killed with it. With
+# the default KillMode a sessiond restart (every converge that changes it) would kill every live
+# card. `process` stops sessiond alone; the tmux server and the agents under it keep running.
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,67 @@
+---
+# Ansible loads ONLY defaults/main.yml on its own. This entrypoint's generated defaults are in
+# defaults/backup.yml, so without this the resolver would find no `__default` for any option declared
+# only here and leave it undefined.
+- name: Load this entrypoint's generated defaults
+  ansible.builtin.include_vars:
+    file: "{{ role_path }}/defaults/backup.yml"
+
+- name: Resolve declared options over their generated defaults
+  ansible.builtin.include_tasks: _resolve_defaults.yml
+
+- name: Apply the generated argspec guards
+  ansible.builtin.include_tasks: _argspec_guards.yml
+
+- name: Shape-check the declared values
+  ansible.builtin.include_tasks: _gates.yml
+
+- name: The role is installed
+  ansible.builtin.include_tasks: _installed.yml
+
+- name: Build the argument lists
+  ansible.builtin.include_tasks: _argv.yml
+
+- name: Textfile directory exists
+  ansible.builtin.file:
+    path: "{{ agent_state_textfile_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Take the backup
+  # Reports changed every time, honestly: each run creates a new archive.
+  ansible.builtin.command:
+    argv: "{{ _as_backup_argv }}"
+  register: _as_backup
+  changed_when: true
+
+- name: Parse the script's report
+  ansible.builtin.set_fact:
+    agent_state_last_backup: "{{ _as_backup.stdout_lines[-1] | from_json }}"
+
+- name: HARD GATE — the report names a real, non-empty, hashed archive
+  ansible.builtin.assert:
+    that:
+      - agent_state_last_backup.archive is match('.+\.tar\.zst\.age\Z')
+      - agent_state_last_backup.bytes | int > 0
+      - agent_state_last_backup.sha256 | length == 64
+    fail_msg: "the backup script reported success but its report does not describe an archive."
+    quiet: true
+
+- name: READ BACK — the archive and its manifest are on the share, and the size is the reported one
+  ansible.builtin.stat:
+    path: "{{ agent_state_backup_target }}/{{ item }}"
+    checksum_algorithm: sha256
+  register: _as_backup_stat
+  loop:
+    - "{{ agent_state_last_backup.archive }}"
+    - "{{ agent_state_last_backup.archive }}.manifest.json"
+
+- name: HARD GATE — what is on the share is what the script hashed
+  ansible.builtin.assert:
+    that:
+      - _as_backup_stat.results[0].stat.exists
+      - _as_backup_stat.results[1].stat.exists
+      - _as_backup_stat.results[0].stat.checksum == agent_state_last_backup.sha256
+      - _as_backup_stat.results[0].stat.size | int == agent_state_last_backup.bytes | int
+    fail_msg: "the archive on the share does not match the hash the script reported."
+    quiet: true

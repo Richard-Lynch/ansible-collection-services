@@ -1,0 +1,22 @@
+# {{ ansible_managed }}
+[Unit]
+Description=acpx-mcp: the coding worker's ACP sessions as MCP tools (session_new/prompt/cancel/list/resume/status)
+After=network-online.target worker-sessiond.service
+Wants=network-online.target worker-sessiond.service
+
+[Service]
+User={{ worker_user }}
+# ACPX_MCP_TOKEN (what a client presents) and WORKER_SESSIOND_TOKEN (what this presents to sessiond
+# on loopback); both are popped from the environment at start.
+EnvironmentFile={{ worker_conf_dir }}/acpx-mcp.env
+ExecStart=/usr/bin/python3 {{ worker_lib_dir }}/acpx_mcp.py --bind {{ worker_acpx_mcp_bind }} --port {{ worker_acpx_mcp_port }} --sessiond-url http://{{ worker_probe_sessiond_host }}:{{ worker_sessiond_port }}
+Restart=on-failure
+RestartSec=3
+# It only speaks HTTP: nothing to write, nothing to exec.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

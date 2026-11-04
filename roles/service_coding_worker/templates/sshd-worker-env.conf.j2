@@ -1,0 +1,5 @@
+# {{ ansible_managed }}
+# Names an ssh client forwards (terminal.env_passthrough becomes SendEnv). Names
+# only; the values never touch this host's disk. Every name is gated to WORKER_*, because accepting
+# something like PATH or LD_PRELOAD would let a login choose the environment of every command.
+AcceptEnv {{ worker_ssh_accept_env | join(' ') }}

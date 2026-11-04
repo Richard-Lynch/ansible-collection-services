@@ -1,0 +1,104 @@
+---
+# Merge litellm_open_webui_connections into Open WebUI's current connection list.
+#
+# In:  litellm__owui_current — the GET /openai/config body (OPENAI_API_BASE_URLS, OPENAI_API_KEYS,
+#      OPENAI_API_CONFIGS, ENABLE_OPENAI_API).
+# Out: litellm__owui_merged (the POST body), litellm__owui_current_norm (the same shape, nothing
+#      merged), litellm__owui_changed, litellm__owui_summary (no key values).
+#
+# A separate file so molecule can run THIS code against stub lists rather than a copy of it.
+#
+# Matching is by url. Open WebUI keys a connection's config by its INDEX in the url list, so an
+# undeclared connection must keep its index as well as its url, key and config — that is what
+# "untouched" means here, and the gate at the end asserts exactly that.
+
+- name: Merge the declared connections into Open WebUI's current list
+  ansible.builtin.set_fact:
+    litellm__owui_merge_result: "{{ _merge_json | from_json }}"
+  vars:
+    _merge_json: >-
+      {% set cur = litellm__owui_current %}
+      {% set urls = cur.OPENAI_API_BASE_URLS | default([], true) | list %}
+      {% set raw_keys = cur.OPENAI_API_KEYS | default([], true) | list %}
+      {% set keys = (raw_keys + [''] * ((urls | length) - (raw_keys | length)))[:urls | length] %}
+      {% set cfgs = cur.OPENAI_API_CONFIGS | default({}, true) %}
+      {% set norm = {'ENABLE_OPENAI_API': cur.ENABLE_OPENAI_API | default(true),
+                     'OPENAI_API_BASE_URLS': urls, 'OPENAI_API_KEYS': keys, 'OPENAI_API_CONFIGS': cfgs} %}
+      {% set ns = namespace(urls=urls, keys=keys, cfgs=cfgs, i=0) %}
+      {% for c in litellm_open_webui_connections %}
+      {%   if c.url in ns.urls %}
+      {%     set ns.i = ns.urls.index(c.url) %}
+      {%   else %}
+      {%     set ns.i = ns.urls | length %}
+      {%     set ns.urls = ns.urls + [c.url] %}
+      {%     set ns.keys = ns.keys + [''] %}
+      {%   endif %}
+      {%   set ns.keys = ns.keys[:ns.i] + [c.key] + ns.keys[ns.i + 1:] %}
+      {%   set k = ns.i | string %}
+      {%   set ns.cfgs = ns.cfgs | combine({k: (ns.cfgs[k] | default({}, true))
+                                              | combine({'enable': true,
+                                                         'model_ids': c.model_ids or [],
+                                                         'prefix_id': c.prefix_id or ''})}) %}
+      {% endfor %}
+      {{ {'current': norm,
+          'merged': {'ENABLE_OPENAI_API': norm.ENABLE_OPENAI_API, 'OPENAI_API_BASE_URLS': ns.urls,
+                     'OPENAI_API_KEYS': ns.keys, 'OPENAI_API_CONFIGS': ns.cfgs}} | to_json }}
+  no_log: true
+
+- name: Name the merge outputs
+  ansible.builtin.set_fact:
+    litellm__owui_current_norm: "{{ litellm__owui_merge_result.current }}"
+    litellm__owui_merged: "{{ litellm__owui_merge_result.merged }}"
+    litellm__owui_changed: "{{ litellm__owui_merge_result.merged != litellm__owui_merge_result.current }}"
+  no_log: true
+
+# The protective claim of this whole entrypoint is "every connection it does not declare is left
+# exactly as it was", so it is asserted rather than trusted: same index, same url, same key, same
+# config, for each one.
+- name: HARD GATE — every undeclared connection is unchanged, at the same index
+  ansible.builtin.assert:
+    that:
+      - _undeclared | from_json == _undeclared_after | from_json
+    fail_msg: >-
+      The merge changed a connection it does not own. Undeclared before:
+      {{ _undeclared | from_json | map(attribute='url') | list }}; after:
+      {{ _undeclared_after | from_json | map(attribute='url') | list }}. Refusing to write.
+    quiet: true
+  vars:
+    _declared_urls: "{{ litellm_open_webui_connections | map(attribute='url') | list }}"
+    _undeclared: >-
+      {% set out = [] %}
+      {% for u in litellm__owui_current_norm.OPENAI_API_BASE_URLS %}
+      {%   if u not in _declared_urls %}
+      {%     set _ = out.append({'i': loop.index0, 'url': u,
+                                 'key': litellm__owui_current_norm.OPENAI_API_KEYS[loop.index0] | hash('sha256'),
+                                 'cfg': litellm__owui_current_norm.OPENAI_API_CONFIGS[loop.index0 | string] | default(none)}) %}
+      {%   endif %}
+      {% endfor %}
+      {{ out | to_json }}
+    _undeclared_after: >-
+      {% set out = [] %}
+      {% for u in litellm__owui_merged.OPENAI_API_BASE_URLS %}
+      {%   if u not in _declared_urls %}
+      {%     set _ = out.append({'i': loop.index0, 'url': u,
+                                 'key': litellm__owui_merged.OPENAI_API_KEYS[loop.index0] | hash('sha256'),
+                                 'cfg': litellm__owui_merged.OPENAI_API_CONFIGS[loop.index0 | string] | default(none)}) %}
+      {%   endif %}
+      {% endfor %}
+      {{ out | to_json }}
+
+- name: Summarise the merge without key values
+  ansible.builtin.set_fact:
+    litellm__owui_summary: "{{ _summary_json | from_json }}"
+  vars:
+    _summary_json: >-
+      {% set out = [] %}
+      {% for u in litellm__owui_merged.OPENAI_API_BASE_URLS %}
+      {%   set key = litellm__owui_merged.OPENAI_API_KEYS[loop.index0] %}
+      {%   set _ = out.append({'index': loop.index0, 'url': u,
+                               'managed': u in (litellm_open_webui_connections | map(attribute='url') | list),
+                               'key': ('set (' ~ (key | length) ~ ' chars)') if key else 'empty',
+                               'new': u not in litellm__owui_current_norm.OPENAI_API_BASE_URLS,
+                               'config': litellm__owui_merged.OPENAI_API_CONFIGS[loop.index0 | string] | default({})}) %}
+      {% endfor %}
+      {{ out | to_json }}

@@ -1,0 +1,121 @@
+---
+# AUTO-GENERATED defaults resolver — DO NOT EDIT.
+#
+# Source of truth: roles/service_coding_worker/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate service_coding_worker
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+
+# Binds every declared option to its generated default, so a caller-supplied value
+# wins and an unsupplied one falls back rather than evaluating Undefined.
+#
+# Include this FIRST from every entrypoint:
+#   - ansible.builtin.include_tasks: _resolve_defaults.yml
+#
+# Role-specific setup logic belongs in tasks/setup_vars.yml, NOT here — this file is
+# overwritten on every generation.
+#
+# TWO BRANCHES, because `set_fact` persists for the whole play. A role invoked twice in
+# one play would otherwise see its OWN leftover facts on the second call, so a later
+# caller that omitted an option silently inherited the earlier caller's value instead of
+# the declared default. On a repeat call this ignores the role's own facts and rebinds
+# the defaults; an include-level `vars:` shadows the fact, so a value the caller DID
+# supply this time still wins. Roles called once per play only ever run the first branch.
+
+- name: Resolve declared options over their generated defaults
+  ansible.builtin.set_fact:
+    worker_work_root: "{{ worker_work_root | default(worker_work_root__default) if worker_work_root__default is defined else worker_work_root | default(omit) }}"
+    worker_claude_permission_mode: "{{ worker_claude_permission_mode | default(worker_claude_permission_mode__default) if worker_claude_permission_mode__default is defined else worker_claude_permission_mode | default(omit) }}"
+    worker_claude_settings: "{{ worker_claude_settings | default(worker_claude_settings__default) if worker_claude_settings__default is defined else worker_claude_settings | default(omit) }}"
+    worker_subscription_login: "{{ worker_subscription_login | default(worker_subscription_login__default) if worker_subscription_login__default is defined else worker_subscription_login | default(omit) }}"
+    worker_extra_env: "{{ worker_extra_env | default(worker_extra_env__default) if worker_extra_env__default is defined else worker_extra_env | default(omit) }}"
+    worker_mcp_catalogue: "{{ worker_mcp_catalogue | default(worker_mcp_catalogue__default) if worker_mcp_catalogue__default is defined else worker_mcp_catalogue | default(omit) }}"
+    worker_mcp_default_enabled: "{{ worker_mcp_default_enabled | default(worker_mcp_default_enabled__default) if worker_mcp_default_enabled__default is defined else worker_mcp_default_enabled | default(omit) }}"
+    worker_sessiond_bind: "{{ worker_sessiond_bind | default(worker_sessiond_bind__default) if worker_sessiond_bind__default is defined else worker_sessiond_bind | default(omit) }}"
+    worker_sessiond_port: "{{ worker_sessiond_port | default(worker_sessiond_port__default) if worker_sessiond_port__default is defined else worker_sessiond_port | default(omit) }}"
+    worker_ttyd_bind: "{{ worker_ttyd_bind | default(worker_ttyd_bind__default) if worker_ttyd_bind__default is defined else worker_ttyd_bind | default(omit) }}"
+    worker_ttyd_port: "{{ worker_ttyd_port | default(worker_ttyd_port__default) if worker_ttyd_port__default is defined else worker_ttyd_port | default(omit) }}"
+    worker_ttyd_title: "{{ worker_ttyd_title | default(worker_ttyd_title__default) if worker_ttyd_title__default is defined else worker_ttyd_title | default(omit) }}"
+    worker_tmux_session_prefix: "{{ worker_tmux_session_prefix | default(worker_tmux_session_prefix__default) if worker_tmux_session_prefix__default is defined else worker_tmux_session_prefix | default(omit) }}"
+    worker_card_tail_enabled: "{{ worker_card_tail_enabled | default(worker_card_tail_enabled__default) if worker_card_tail_enabled__default is defined else worker_card_tail_enabled | default(omit) }}"
+    worker_extra_authorized_keys: "{{ worker_extra_authorized_keys | default(worker_extra_authorized_keys__default) if worker_extra_authorized_keys__default is defined else worker_extra_authorized_keys | default(omit) }}"
+    worker_coder_ctl_src: "{{ worker_coder_ctl_src | default(worker_coder_ctl_src__default) if worker_coder_ctl_src__default is defined else worker_coder_ctl_src | default(omit) }}"
+    worker_ssh_accept_env: "{{ worker_ssh_accept_env | default(worker_ssh_accept_env__default) if worker_ssh_accept_env__default is defined else worker_ssh_accept_env | default(omit) }}"
+    worker_metrics_textfile: "{{ worker_metrics_textfile | default(worker_metrics_textfile__default) if worker_metrics_textfile__default is defined else worker_metrics_textfile | default(omit) }}"
+    worker_stuck_after_seconds: "{{ worker_stuck_after_seconds | default(worker_stuck_after_seconds__default) if worker_stuck_after_seconds__default is defined else worker_stuck_after_seconds | default(omit) }}"
+    worker_container_runtime: "{{ worker_container_runtime | default(worker_container_runtime__default) if worker_container_runtime__default is defined else worker_container_runtime | default(omit) }}"
+    worker_card_cpus: "{{ worker_card_cpus | default(worker_card_cpus__default) if worker_card_cpus__default is defined else worker_card_cpus | default(omit) }}"
+    worker_card_memory: "{{ worker_card_memory | default(worker_card_memory__default) if worker_card_memory__default is defined else worker_card_memory | default(omit) }}"
+    worker_vm_reserve_mb: "{{ worker_vm_reserve_mb | default(worker_vm_reserve_mb__default) if worker_vm_reserve_mb__default is defined else worker_vm_reserve_mb | default(omit) }}"
+    worker_card_dns: "{{ worker_card_dns | default(worker_card_dns__default) if worker_card_dns__default is defined else worker_card_dns | default(omit) }}"
+    worker_card_image_name: "{{ worker_card_image_name | default(worker_card_image_name__default) if worker_card_image_name__default is defined else worker_card_image_name | default(omit) }}"
+    worker_docker_bip: "{{ worker_docker_bip | default(worker_docker_bip__default) if worker_docker_bip__default is defined else worker_docker_bip | default(omit) }}"
+    worker_docker_address_pools: "{{ worker_docker_address_pools | default(worker_docker_address_pools__default) if worker_docker_address_pools__default is defined else worker_docker_address_pools | default(omit) }}"
+    worker_card_base_image: "{{ worker_card_base_image | default(worker_card_base_image__default) if worker_card_base_image__default is defined else worker_card_base_image | default(omit) }}"
+    worker_pr_allow_no_checks: "{{ worker_pr_allow_no_checks | default(worker_pr_allow_no_checks__default) if worker_pr_allow_no_checks__default is defined else worker_pr_allow_no_checks | default(omit) }}"
+    worker_pr_reviewer_logins: "{{ worker_pr_reviewer_logins | default(worker_pr_reviewer_logins__default) if worker_pr_reviewer_logins__default is defined else worker_pr_reviewer_logins | default(omit) }}"
+    worker_pr_poll_seconds: "{{ worker_pr_poll_seconds | default(worker_pr_poll_seconds__default) if worker_pr_poll_seconds__default is defined else worker_pr_poll_seconds | default(omit) }}"
+    worker_acp_enabled: "{{ worker_acp_enabled | default(worker_acp_enabled__default) if worker_acp_enabled__default is defined else worker_acp_enabled | default(omit) }}"
+    worker_acp_permissions: "{{ worker_acp_permissions | default(worker_acp_permissions__default) if worker_acp_permissions__default is defined else worker_acp_permissions | default(omit) }}"
+    worker_acp_cancel_budget_seconds: "{{ worker_acp_cancel_budget_seconds | default(worker_acp_cancel_budget_seconds__default) if worker_acp_cancel_budget_seconds__default is defined else worker_acp_cancel_budget_seconds | default(omit) }}"
+    worker_acp_keep_comms: "{{ worker_acp_keep_comms | default(worker_acp_keep_comms__default) if worker_acp_keep_comms__default is defined else worker_acp_keep_comms | default(omit) }}"
+    worker_acpx_mcp_bind: "{{ worker_acpx_mcp_bind | default(worker_acpx_mcp_bind__default) if worker_acpx_mcp_bind__default is defined else worker_acpx_mcp_bind | default(omit) }}"
+    worker_acpx_mcp_port: "{{ worker_acpx_mcp_port | default(worker_acpx_mcp_port__default) if worker_acpx_mcp_port__default is defined else worker_acpx_mcp_port | default(omit) }}"
+    worker_acpx_mcp_token: "{{ worker_acpx_mcp_token | default(worker_acpx_mcp_token__default) if worker_acpx_mcp_token__default is defined else worker_acpx_mcp_token | default(omit) }}"
+    worker_pr_ignore_bots: "{{ worker_pr_ignore_bots | default(worker_pr_ignore_bots__default) if worker_pr_ignore_bots__default is defined else worker_pr_ignore_bots | default(omit) }}"
+  when: not (_service_coding_worker__argspec_resolved | default(false))
+  # At least one option carries no_log, and set_fact would otherwise print every
+  # resolved value — including that one — in the task result.
+  no_log: true
+
+- name: Rebind the defaults on a repeat call, ignoring this role's own leftover facts
+  ansible.builtin.set_fact:
+    worker_work_root: "{{ worker_work_root__default if worker_work_root__default is defined else worker_work_root | default(omit) }}"
+    worker_claude_permission_mode: "{{ worker_claude_permission_mode__default if worker_claude_permission_mode__default is defined else worker_claude_permission_mode | default(omit) }}"
+    worker_claude_settings: "{{ worker_claude_settings__default if worker_claude_settings__default is defined else worker_claude_settings | default(omit) }}"
+    worker_subscription_login: "{{ worker_subscription_login__default if worker_subscription_login__default is defined else worker_subscription_login | default(omit) }}"
+    worker_extra_env: "{{ worker_extra_env__default if worker_extra_env__default is defined else worker_extra_env | default(omit) }}"
+    worker_mcp_catalogue: "{{ worker_mcp_catalogue__default if worker_mcp_catalogue__default is defined else worker_mcp_catalogue | default(omit) }}"
+    worker_mcp_default_enabled: "{{ worker_mcp_default_enabled__default if worker_mcp_default_enabled__default is defined else worker_mcp_default_enabled | default(omit) }}"
+    worker_sessiond_bind: "{{ worker_sessiond_bind__default if worker_sessiond_bind__default is defined else worker_sessiond_bind | default(omit) }}"
+    worker_sessiond_port: "{{ worker_sessiond_port__default if worker_sessiond_port__default is defined else worker_sessiond_port | default(omit) }}"
+    worker_ttyd_bind: "{{ worker_ttyd_bind__default if worker_ttyd_bind__default is defined else worker_ttyd_bind | default(omit) }}"
+    worker_ttyd_port: "{{ worker_ttyd_port__default if worker_ttyd_port__default is defined else worker_ttyd_port | default(omit) }}"
+    worker_ttyd_title: "{{ worker_ttyd_title__default if worker_ttyd_title__default is defined else worker_ttyd_title | default(omit) }}"
+    worker_tmux_session_prefix: "{{ worker_tmux_session_prefix__default if worker_tmux_session_prefix__default is defined else worker_tmux_session_prefix | default(omit) }}"
+    worker_card_tail_enabled: "{{ worker_card_tail_enabled__default if worker_card_tail_enabled__default is defined else worker_card_tail_enabled | default(omit) }}"
+    worker_extra_authorized_keys: "{{ worker_extra_authorized_keys__default if worker_extra_authorized_keys__default is defined else worker_extra_authorized_keys | default(omit) }}"
+    worker_coder_ctl_src: "{{ worker_coder_ctl_src__default if worker_coder_ctl_src__default is defined else worker_coder_ctl_src | default(omit) }}"
+    worker_ssh_accept_env: "{{ worker_ssh_accept_env__default if worker_ssh_accept_env__default is defined else worker_ssh_accept_env | default(omit) }}"
+    worker_metrics_textfile: "{{ worker_metrics_textfile__default if worker_metrics_textfile__default is defined else worker_metrics_textfile | default(omit) }}"
+    worker_stuck_after_seconds: "{{ worker_stuck_after_seconds__default if worker_stuck_after_seconds__default is defined else worker_stuck_after_seconds | default(omit) }}"
+    worker_container_runtime: "{{ worker_container_runtime__default if worker_container_runtime__default is defined else worker_container_runtime | default(omit) }}"
+    worker_card_cpus: "{{ worker_card_cpus__default if worker_card_cpus__default is defined else worker_card_cpus | default(omit) }}"
+    worker_card_memory: "{{ worker_card_memory__default if worker_card_memory__default is defined else worker_card_memory | default(omit) }}"
+    worker_vm_reserve_mb: "{{ worker_vm_reserve_mb__default if worker_vm_reserve_mb__default is defined else worker_vm_reserve_mb | default(omit) }}"
+    worker_card_dns: "{{ worker_card_dns__default if worker_card_dns__default is defined else worker_card_dns | default(omit) }}"
+    worker_card_image_name: "{{ worker_card_image_name__default if worker_card_image_name__default is defined else worker_card_image_name | default(omit) }}"
+    worker_docker_bip: "{{ worker_docker_bip__default if worker_docker_bip__default is defined else worker_docker_bip | default(omit) }}"
+    worker_docker_address_pools: "{{ worker_docker_address_pools__default if worker_docker_address_pools__default is defined else worker_docker_address_pools | default(omit) }}"
+    worker_card_base_image: "{{ worker_card_base_image__default if worker_card_base_image__default is defined else worker_card_base_image | default(omit) }}"
+    worker_pr_allow_no_checks: "{{ worker_pr_allow_no_checks__default if worker_pr_allow_no_checks__default is defined else worker_pr_allow_no_checks | default(omit) }}"
+    worker_pr_reviewer_logins: "{{ worker_pr_reviewer_logins__default if worker_pr_reviewer_logins__default is defined else worker_pr_reviewer_logins | default(omit) }}"
+    worker_pr_poll_seconds: "{{ worker_pr_poll_seconds__default if worker_pr_poll_seconds__default is defined else worker_pr_poll_seconds | default(omit) }}"
+    worker_acp_enabled: "{{ worker_acp_enabled__default if worker_acp_enabled__default is defined else worker_acp_enabled | default(omit) }}"
+    worker_acp_permissions: "{{ worker_acp_permissions__default if worker_acp_permissions__default is defined else worker_acp_permissions | default(omit) }}"
+    worker_acp_cancel_budget_seconds: "{{ worker_acp_cancel_budget_seconds__default if worker_acp_cancel_budget_seconds__default is defined else worker_acp_cancel_budget_seconds | default(omit) }}"
+    worker_acp_keep_comms: "{{ worker_acp_keep_comms__default if worker_acp_keep_comms__default is defined else worker_acp_keep_comms | default(omit) }}"
+    worker_acpx_mcp_bind: "{{ worker_acpx_mcp_bind__default if worker_acpx_mcp_bind__default is defined else worker_acpx_mcp_bind | default(omit) }}"
+    worker_acpx_mcp_port: "{{ worker_acpx_mcp_port__default if worker_acpx_mcp_port__default is defined else worker_acpx_mcp_port | default(omit) }}"
+    worker_acpx_mcp_token: "{{ worker_acpx_mcp_token__default if worker_acpx_mcp_token__default is defined else worker_acpx_mcp_token | default(omit) }}"
+    worker_pr_ignore_bots: "{{ worker_pr_ignore_bots__default if worker_pr_ignore_bots__default is defined else worker_pr_ignore_bots | default(omit) }}"
+  when: _service_coding_worker__argspec_resolved | default(false)
+  # At least one option carries no_log, and set_fact would otherwise print every
+  # resolved value — including that one — in the task result.
+  no_log: true
+
+- name: Record that this role has resolved its options in this play
+  ansible.builtin.set_fact:
+    _service_coding_worker__argspec_resolved: true

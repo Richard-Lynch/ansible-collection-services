@@ -1,0 +1,13 @@
+---
+galaxy_info:
+  role_name: service_model_explorer
+  namespace: richard_lynch
+  author: Richard Lynch
+  description: >-
+    Serve a read-only model-discovery app for a LiteLLM gateway — every model it can reach,
+    labelled by whether it enumerates (and so can appear in Open WebUI's picker) or only routes —
+    as a pre-built static bundle and a caller-supplied catalogue snapshot behind a pinned nginx.
+  license: GPL-3.0-or-later
+  min_ansible_version: "2.19"
+  galaxy_tags: [litellm, llm, models, nginx]
+dependencies: []

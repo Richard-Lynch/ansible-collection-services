@@ -1,0 +1,84 @@
+---
+# GENERATED from roles/service_code_reader/meta/argument_specs.py — DO NOT EDIT.
+# Regenerate with: venv/bin/python tools/argspec/cli.py x generate service_code_reader
+#
+# These are the constraints Ansible's role-argspec validator CANNOT enforce. It handles
+# type/required/choices/no_log, but has no numeric-range, length or pattern checking, so
+# without this file those declarations would be decorative.
+#
+# Include from the role's entrypoints:  - ansible.builtin.include_tasks: _argspec_guards.yml
+
+- name: "GUARD (generated) — code_reader_imap_host must be at least 1 long"
+  ansible.builtin.assert:
+    that:
+      - "code_reader_imap_host | default('') | length >= 1"
+    fail_msg: "code_reader_imap_host violates a constraint declared in meta/argument_specs.py: must be at least 1 long. Got: {{ code_reader_imap_host | default('(unset)') }}"
+    quiet: true
+  when: code_reader_imap_host is defined
+
+- name: "GUARD (generated) — code_reader_imap_password must be at least 1 long"
+  ansible.builtin.assert:
+    that:
+      - "code_reader_imap_password | default('') | length >= 1"
+    fail_msg: "code_reader_imap_password violates a constraint declared in meta/argument_specs.py: must be at least 1 long. Got: (value suppressed — no_log)"
+    quiet: true
+  when: code_reader_imap_password is defined
+
+- name: "GUARD (generated) — code_reader_imap_user must be at least 1 long"
+  ansible.builtin.assert:
+    that:
+      - "code_reader_imap_user | default('') | length >= 1"
+    fail_msg: "code_reader_imap_user violates a constraint declared in meta/argument_specs.py: must be at least 1 long. Got: {{ code_reader_imap_user | default('(unset)') }}"
+    quiet: true
+  when: code_reader_imap_user is defined
+
+- name: "GUARD (generated) — code_reader_network must be at least 1 long"
+  ansible.builtin.assert:
+    that:
+      - "code_reader_network | default('') | length >= 1"
+    fail_msg: "code_reader_network violates a constraint declared in meta/argument_specs.py: must be at least 1 long. Got: {{ code_reader_network | default('(unset)') }}"
+    quiet: true
+  when: code_reader_network is defined
+
+- name: "GUARD (generated) — code_reader_poll_seconds must be >= 5; <= 300"
+  ansible.builtin.assert:
+    that:
+      - "code_reader_poll_seconds | int >= 5"
+      - "code_reader_poll_seconds | int <= 300"
+    fail_msg: "code_reader_poll_seconds violates a constraint declared in meta/argument_specs.py: must be >= 5; <= 300. Got: {{ code_reader_poll_seconds | default('(unset)') }}"
+    quiet: true
+  when: code_reader_poll_seconds is defined
+
+- name: "GUARD (generated) — code_reader_port must be >= 1; <= 65535"
+  ansible.builtin.assert:
+    that:
+      - "code_reader_port | int >= 1"
+      - "code_reader_port | int <= 65535"
+    fail_msg: "code_reader_port violates a constraint declared in meta/argument_specs.py: must be >= 1; <= 65535. Got: {{ code_reader_port | default('(unset)') }}"
+    quiet: true
+  when: code_reader_port is defined
+
+- name: "GUARD (generated) — code_reader_sender_allowlist must be at least 1 long"
+  ansible.builtin.assert:
+    that:
+      - "code_reader_sender_allowlist | default('') | length >= 1"
+    fail_msg: "code_reader_sender_allowlist violates a constraint declared in meta/argument_specs.py: must be at least 1 long. Got: {{ code_reader_sender_allowlist | default('(unset)') }}"
+    quiet: true
+  when: code_reader_sender_allowlist is defined
+
+- name: "GUARD (generated) — code_reader_token must be at least 32 long"
+  ansible.builtin.assert:
+    that:
+      - "code_reader_token | default('') | length >= 32"
+    fail_msg: "code_reader_token violates a constraint declared in meta/argument_specs.py: must be at least 32 long. Got: (value suppressed — no_log)"
+    quiet: true
+  when: code_reader_token is defined
+
+- name: "GUARD (generated) — code_reader_ttl_seconds must be >= 60; <= 3600"
+  ansible.builtin.assert:
+    that:
+      - "code_reader_ttl_seconds | int >= 60"
+      - "code_reader_ttl_seconds | int <= 3600"
+    fail_msg: "code_reader_ttl_seconds violates a constraint declared in meta/argument_specs.py: must be >= 60; <= 3600. Got: {{ code_reader_ttl_seconds | default('(unset)') }}"
+    quiet: true
+  when: code_reader_ttl_seconds is defined

@@ -1,0 +1,203 @@
+---
+# AUTO-GENERATED defaults file — DO NOT EDIT.
+#
+# Source of truth: roles/service_coding_worker/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate service_coding_worker
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+# Entrypoint:      main
+
+# Repos live at work_root/name; worktrees at work_root/worktrees/card.
+worker_work_root__default: /srv/work
+
+# Claude Code permission mode for card sessions. dontAsk DENIES anything
+# worker_claude_settings does not allow, where the other two PROMPT, and
+# a prompt in an unattended card waits for nobody. Bypass modes are not
+# offered: widening what an unattended agent may do is a reviewed
+# configuration change, not a role knob.
+worker_claude_permission_mode__default: acceptEdits
+
+# Claude Code settings sessiond writes per card as the container's MANAGED
+# settings (/etc/claude-code, mounted read-only; without a container runtime
+# as a --settings file), OVERWRITTEN at each launch and resume. The
+# permissions allow and deny lists are the card's Bash allowlist; the
+# literal text {card_branch} in a rule becomes that card's branch. Empty
+# writes nothing. A bypass mode, or an allow rule admitting every Bash
+# command, is refused by the role and again by sessiond.
+worker_claude_settings__default: {}
+
+# Must stay false. The worker authenticates with its LiteLLM key only;
+# the role refuses true so a personal login cannot become a dependency.
+worker_subscription_login__default: false
+
+# Extra NAME to value pairs for the agent environment: the credentials MCP
+# catalogue entries refer to. Names are upper-case with underscores.
+worker_extra_env__default: {}
+
+# The REVIEWED MCP servers a card may ask for. Each item: name, transport
+# (http or stdio), reviewed_by, and url plus optional headers for http, or
+# command plus optional args and env for stdio. Header and env values must
+# be a dollar-brace reference such as a braced TOKEN name, never a literal.
+# A card requesting a name not listed here refuses to start.
+worker_mcp_catalogue__default: []
+
+# Catalogue names every card gets without asking.
+worker_mcp_default_enabled__default: []
+
+# Address worker-sessiond listens on. Loopback is right for any caller;
+# a caller on another guest sets a wider bind in inventory and relies on
+# the bearer token plus the guest firewall.
+worker_sessiond_bind__default: 127.0.0.1
+
+# worker-sessiond port.
+worker_sessiond_port__default: 7690
+
+# Interface NAME or address ttyd listens on (ttyd accepts an interface name,
+# so a DHCP change needs no edit). Loopback by default.
+worker_ttyd_bind__default: 127.0.0.1
+
+# ttyd port.
+worker_ttyd_port__default: 7681
+
+# Browser window title ttyd shows (its titleFixed client option).
+worker_ttyd_title__default: coding-worker
+
+# tmux sessions are named prefix plus the card id.
+worker_tmux_session_prefix__default: card-
+
+# Whether sessiond serves scrubbed pane text to the card. Leave it off until
+# the credential scrubber's canaries have passed on the target.
+worker_card_tail_enabled__default: false
+
+# More public keys allowed to log in as the worker user, one entry each. The
+# gateway's coder profile reaches the worker over ssh with its OWN key, so it
+# is listed here and the human jump-in key stays a separate decision.
+worker_extra_authorized_keys__default: []
+
+# Controller path of the coder skill's coder_ctl.py, installed as
+# /usr/local/bin/coder_ctl. The gateway's ssh terminal backend copies nothing
+# to the worker, so the skill's own script is not here unless this installs it.
+# Empty installs nothing.
+worker_coder_ctl_src__default: ''
+
+# Environment variable NAMES sshd accepts from a login (AcceptEnv), each of the
+# form WORKER_ plus upper-case letters, digits and underscores. The coder
+# profile forwards WORKER_SESSIOND_URL and _TOKEN this way (terminal.
+# env_passthrough), so the supervisor's token is never a file on the worker.
+# Empty removes the drop-in.
+worker_ssh_accept_env__default: []
+
+# File the root-run worker-metrics timer writes sessiond's stuck-card metrics to
+# (textfile-collector format). Must sit in the directory the guest's node exporter
+# textfile collector reads. An empty string installs no timer.
+worker_metrics_textfile__default: /var/lib/node_exporter/textfile_collector/hermes_worker.prom
+
+# A running card whose tmux pane has produced no output for longer than this
+# counts in hermes_worker_stuck_cards. It also describes an agent waiting at a
+# prompt, which is the other thing the alert is for.
+worker_stuck_after_seconds__default: 1800
+
+# Docker runtime every card container is created with, read back after the
+# start. Only sysbox-runc is accepted: runc would give the agent the VM's
+# kernel namespaces and no inner dockerd without --privileged.
+worker_container_runtime__default: sysbox-runc
+
+# CPU limit of each card container (docker --cpus).
+worker_card_cpus__default: 2
+
+# Memory limit of each card container, like 2g or 512m. It is also the swap
+# limit, so it is the whole budget. sessiond refuses to start a card whose
+# limit does not fit beside the running ones in the VM's memory.
+worker_card_memory__default: 2g
+
+# Memory the VM keeps for itself (sessiond, dockerd, tmux, ttyd, page cache)
+# when sessiond decides whether another card container fits.
+worker_vm_reserve_mb__default: 1024
+
+# Nameservers for the INNER dockerd of the default card image (its
+# /etc/docker/daemon.json `dns`). A card sits on its own bridge, so its
+# resolv.conf names docker's embedded 127.0.0.11; an inner dockerd that sees
+# only a loopback nameserver gives nested containers docker's public
+# fallback resolvers, which a firewall that allows only local DNS drops.
+# IP literals, never loopback. Empty writes no daemon.json.
+worker_card_dns__default: []
+
+# Repository name of the default card image. The tag is always the first 12
+# hex digits of the rendered Dockerfile's sha256, so a changed Dockerfile is
+# a new image and an unchanged one is never rebuilt.
+worker_card_image_name__default: coding-worker-card
+
+# The VM dockerd's bridge address in CIDR form (daemon.json `bip`), for a
+# network whose addresses would collide with docker's default bridge. Empty
+# leaves docker's own default.
+worker_docker_bip__default: ''
+
+# The VM dockerd's address pools for user-defined networks (daemon.json
+# `default-address-pools`), each item base (a CIDR) and size (a prefix
+# length). Every card gets its own network, so a pool of small subnets
+# keeps many cards from exhausting the defaults. Empty leaves docker's own.
+worker_docker_address_pools__default: []
+
+# Base of the default card image (git, gh, Docker, build tools). Used when a
+# repo has no .devcontainer; the agent CLIs are mounted in from the VM, not
+# baked in, so a version bump never rebuilds the image.
+worker_card_base_image__default: ubuntu:24.04
+
+# Whether the PR gate may mark ready a PR with NO checks at all. False: a gate
+# that passes on nothing is a gate for a repo that forgot to configure CI.
+worker_pr_allow_no_checks__default: false
+
+# GitHub logins whose PR comments reach the agent besides the repo owner and
+# anyone GitHub marks OWNER, MEMBER or COLLABORATOR. Everyone else is dropped:
+# review text becomes keystrokes in a credentialed agent.
+worker_pr_reviewer_logins__default: []
+
+# How often worker-sessiond polls the open PR of every running or paused card
+# and types new TRUSTED review feedback into that card's session, resuming a
+# paused card first (a stopped one is never woken). 0 turns sessiond's own
+# poller off and leaves polling to the coder skill's heartbeat. About five
+# GitHub API calls per card per poll, against the worker's PAT.
+worker_pr_poll_seconds__default: 300
+
+# Protocol mode: install the pinned acpx CLI and the Claude/Codex ACP
+# adapters into the read-only tools directory every card container mounts,
+# turn on worker-sessiond's ACP endpoints (session_new, prompt, a CONFIRMED
+# cancel, list, resume) and run acpx-mcp, the MCP server that exposes
+# exactly those to an MCP client. Off by default: it is a second way for an
+# unattended agent to run.
+worker_acp_enabled__default: false
+
+# acpx permission mode for protocol sessions, which have no person at a
+# prompt (requests acpx cannot approve are DENIED, never left waiting).
+# approve-reads lets the agent read and nothing else; approve-all lets it
+# edit and run commands inside its sysbox container. Widening it is a
+# reviewed inventory change.
+worker_acp_permissions__default: approve-reads
+
+# How long a protocol cancel may spend confirming a COOPERATIVE stop (the
+# turn settled and no tool left running) before it kills the card's
+# container instead. Kept under 5 s so the whole cancel, kill included,
+# returns within 5 s.
+worker_acp_cancel_budget_seconds__default: 4.0
+
+# Extra process names (comm) a cancel's sweep treats as the agent's own
+# rather than as a tool left running, e.g. a stdio MCP server's binary.
+worker_acp_keep_comms__default: []
+
+# Address acpx-mcp listens on. A client on another guest (the agent) needs a
+# wider bind in inventory; the bearer token and the guest firewall gate it.
+worker_acpx_mcp_bind__default: 127.0.0.1
+
+# acpx-mcp port (MCP streamable HTTP at /mcp).
+worker_acpx_mcp_port__default: 7691
+
+# Bearer token an MCP client presents to acpx-mcp. Required (16+
+# characters, different from the sessiond token) when protocol mode is on:
+# a client holding it can drive ACP sessions and nothing else sessiond does.
+worker_acpx_mcp_token__default: ''
+
+# Skip comments by Bot-typed GitHub accounts when feeding PR feedback to the
+# agent; the CI verdict already carries what the integrations know.
+worker_pr_ignore_bots__default: true

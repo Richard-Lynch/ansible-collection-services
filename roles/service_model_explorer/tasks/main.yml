@@ -1,0 +1,260 @@
+---
+# service_model_explorer — serve the model-discovery app as static files behind nginx.
+#
+# Render config, ensure the shared network, converge the stack, restart only on a real config
+# change, then PROVE the result with read-backs rather than trusting the deploy's own exit code.
+#
+# WHAT THIS ROLE DOES NOT DO: it does not build the app, and it does not talk to the gateway.
+# The Vite bundle is built on the controller (so the deployed artefact is exactly what was
+# reviewed, and the host needs no node toolchain), and the catalogue snapshot is the caller's
+# data (model_explorer_catalogue_src). This role only ships and serves them.
+
+- name: Resolve declared defaults
+  ansible.builtin.include_tasks: _resolve_defaults.yml
+
+- name: Store vars
+  ansible.builtin.set_fact:
+    model_explorer_files: "{{ role_path }}/files"
+    # The built bundle on the CONTROLLER: `npm ci && npm run build` in files/app, unless the
+    # caller points model_explorer_dist_dir at a bundle built elsewhere.
+    model_explorer__dist: "{{ model_explorer_dist_dir if (model_explorer_dist_dir | default('') | length > 0) else role_path ~ '/files/app/dist' }}"
+
+# ---------------------------------------------------------------------------------------
+# Preflight. The bundle is a BUILD ARTEFACT and is gitignored, so a fresh clone has none --
+# and without this gate the role would happily deploy an empty directory and nginx would
+# serve 404s, which reads as a broken app rather than a missing build step.
+# ---------------------------------------------------------------------------------------
+- name: Stat the built bundle on the controller
+  ansible.builtin.stat:
+    path: "{{ model_explorer__dist }}/index.html"
+  register: model_explorer__dist_stat
+  delegate_to: localhost
+
+- name: HARD GATE — the app must have been built before it can be deployed
+  ansible.builtin.assert:
+    that:
+      - model_explorer__dist_stat.stat.exists
+    fail_msg: >-
+      No built bundle at {{ model_explorer__dist }}/index.html. `dist/` is a build artefact, so
+      a fresh checkout has none. Build it first:
+        cd {{ role_path }}/files/app && npm ci && npm run build
+    quiet: true
+
+# The catalogue is what makes the app useful. It is the caller's file and is shipped on its own
+# (below), so it is checked SEPARATELY from the bundle: "you did not build" and "there is no
+# catalogue" must be distinguishable -- the second would deploy an app whose every load shows
+# "could not load".
+- name: Stat the catalogue snapshot on the controller
+  ansible.builtin.stat:
+    path: "{{ model_explorer_catalogue_src }}"
+  register: model_explorer__cat_stat
+  delegate_to: localhost
+
+- name: HARD GATE — the catalogue snapshot must exist and be non-empty
+  ansible.builtin.assert:
+    that:
+      - model_explorer__cat_stat.stat.exists
+      - model_explorer__cat_stat.stat.size > 0
+    fail_msg: >-
+      model_explorer_catalogue_src ({{ model_explorer_catalogue_src }}) is missing or empty, so
+      every page load would show "could not load the catalogue". Generate the snapshot first.
+    quiet: true
+
+# ---------------------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------------------
+# Only files/compose/ is passed to deployment_config, NOT files/ -- that role RECURSES its
+# source directory, and files/app holds the app's source plus node_modules. Pointing it at
+# files/ would copy a whole JS toolchain onto the host.
+- name: Deploy the compose project and nginx config
+  ansible.builtin.include_role:
+    name: richard_lynch.common.deployment_config
+  vars:
+    deployment_config_source: "{{ model_explorer_files }}/compose"
+    deployment_config_destination: "{{ model_explorer_config_dir }}"
+    deployment_config_file_mode: "0644"
+
+- name: Ensure the site directory exists
+  ansible.builtin.file:
+    path: "{{ model_explorer_config_dir }}/site"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# `synchronize` rather than a `copy` of the directory, specifically so REMOVED files are
+# removed on the host. A bundle's asset filenames are content-hashed, so every rebuild leaves
+# the previous bundle's assets behind under a plain copy -- they accumulate forever.
+# catalogue.json is EXCLUDED: it is shipped separately from model_explorer_catalogue_src below,
+# and an excluded file is also protected from `delete`, so the sync never removes it.
+- name: Sync the built bundle to the host
+  ansible.posix.synchronize:
+    # `private_key` IS REQUIRED. rsync spawns its OWN ssh, which knows nothing about Ansible's
+    # connection settings and ignores ANSIBLE_PRIVATE_KEY_FILE, so without it rsync falls through
+    # to whatever agent and password auth the controller offers and fails with
+    # `Permission denied (publickey,password)` / `rsync error (code 255)` -- while every other
+    # task against the same host connects fine, because only rsync brings its own ssh. It is a
+    # MODULE PARAMETER, not a task keyword: at task level ansible-lint rejects it as
+    # "conflicting action statements".
+    #
+    # The key the CONNECTION is configured with, wherever it came from: the host's
+    # ansible_ssh_private_key_file, else ansible_private_key_file, else the ANSIBLE_PRIVATE_KEY_FILE
+    # environment variable Ansible itself reads. None of them (a controller that authenticates
+    # through an ssh-agent alone) passes no key and no identity options, so rsync's ssh uses the
+    # agent exactly as Ansible's does.
+    private_key: "{{ _me_sync_key if _me_sync_key | length > 0 else omit }}"
+    # `private_key` ALONE IS NOT ENOUGH. `-i <key>` only ADDS an identity; ssh still offers
+    # everything the agent holds first, and an agent that refuses to sign for a key it does not
+    # manage ("agent refused operation") gets the connection rejected before the on-disk key is
+    # ever tried:
+    #
+    # IdentitiesOnly=yes  -> use ONLY the -i key, do not offer the agent's keys
+    # IdentityAgent=none  -> do not talk to the agent at all, so it cannot refuse on our behalf
+    # (both only when a key is given: with no key they would leave rsync nothing to present)
+    # `_ssh_args`, with the leading underscore — `ssh_args` is rejected outright ("Unsupported
+    # parameters"). The underscore-prefixed names are the module's documented pass-throughs.
+    ssh_connection_multiplexing: false
+    # ONLY the identity options. Host-key policy (StrictHostKeyChecking, known_hosts) is the
+    # controller's Ansible configuration, which the module already propagates into rsync's
+    # --rsh; restating it here would make a controller-wide decision look like a per-task one.
+    _ssh_args: "{{ '-o IdentitiesOnly=yes -o IdentityAgent=none' if _me_sync_key | length > 0 else omit }}"
+    src: "{{ model_explorer__dist }}/"
+    dest: "{{ model_explorer_config_dir }}/site/"
+    delete: true
+    recursive: true
+    rsync_opts:
+      # Modes are set explicitly rather than preserved: the controller's umask is not the
+      # host's concern, and nginx needs only read.
+      - "--chmod=D755,F644"
+      # --no-owner --no-group, and these are LOAD-BEARING for idempotence rather than tidiness.
+      #
+      # `synchronize` passes --archive, which implies -o -g: rsync then tries to make the
+      # destination match the CONTROLLER's uid/gid on every run. The directory above is owned
+      # root:root by the `file` task, so the two tasks would fight in a loop -- rsync reporting
+      # `.d....og... ./` (owner+group differ) and CHANGED on every run, and the `file` task
+      # changing the ownership straight back: a no-op that looks like work. Ownership is owned
+      # by the `file` task above; rsync must not have an opinion about it.
+      - "--no-owner"
+      - "--no-group"
+      - "--exclude=catalogue.json"
+  vars:
+    _me_sync_key: >-
+      {{ ansible_ssh_private_key_file | default(ansible_private_key_file | default('', true), true)
+         | default(lookup('env', 'ANSIBLE_PRIVATE_KEY_FILE'), true) }}
+  register: model_explorer__synced
+
+# The caller's snapshot, shipped on its own so refreshing it needs no rebuild of the bundle.
+- name: Ship the catalogue snapshot
+  ansible.builtin.copy:
+    src: "{{ model_explorer_catalogue_src }}"
+    dest: "{{ model_explorer_config_dir }}/site/catalogue.json"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Ensure the shared docker network exists
+  community.docker.docker_network:
+    name: "{{ model_explorer_network }}"
+    attachable: true
+    state: present
+
+# ---------------------------------------------------------------------------------------
+# Converge
+# ---------------------------------------------------------------------------------------
+- name: Deploy the model explorer
+  community.docker.docker_compose_v2:
+    project_src: "{{ model_explorer_config_dir }}"
+    state: present
+    recreate: auto
+
+# `deployment_config_changed` is set INLINE by deployment_config (its handler fires too late to
+# be read mid-run). The bundle sync is ORed in because nginx serves the files from a bind mount
+# -- a content change needs no restart for nginx to serve it, but the compose project should
+# still reflect a changed config file.
+#
+# NOT the bundle sync alone: restarting nginx because an asset changed would be a restart for
+# nothing, since a bind-mounted static file is re-read on the next request.
+- name: Restart when the compose project or nginx config changed
+  community.docker.docker_compose_v2:
+    project_src: "{{ model_explorer_config_dir }}"
+    state: restarted
+  when: deployment_config_changed | default(false)
+
+# ---------------------------------------------------------------------------------------
+# Read-backs. A deploy that "succeeded" is not evidence the app works.
+# ---------------------------------------------------------------------------------------
+- name: Read back the container's state
+  no_log: true  # the result carries every Env VALUE
+  community.docker.docker_container_info:
+    name: "{{ model_explorer_container_name }}"
+  register: model_explorer__container
+
+- name: HARD GATE — the container must be running
+  # Reads State.Status via `default` on the attribute, because docker_container_info returns
+  # {"exists": false} with NO `container` key for a missing container -- and a bare
+  # `container.State.Status` raises UndefinedError while RESOLVING fail_msg, i.e. before either
+  # condition is evaluated. The likeliest real failure would then report a Jinja error instead
+  # of naming the container. (Same lesson as service_litellm's own gate.)
+  ansible.builtin.assert:
+    that:
+      - (model_explorer__container.container | default({}, true)).get('State', {}).get('Status', 'ABSENT') == 'running'
+    fail_msg: >-
+      The {{ model_explorer_container_name }} container is not running after deploy (state:
+      {{ (model_explorer__container.container | default({}, true)).get('State', {}).get('Status', 'ABSENT') }}).
+      ABSENT means it does not exist at all — check `docker compose ps` and the project's logs
+      in {{ model_explorer_config_dir }}.
+    quiet: true
+
+- name: Verify the app answers over HTTP
+  ansible.builtin.uri:
+    url: "http://localhost:{{ model_explorer_host_port }}/index.html"
+    method: GET
+    status_code: [200]
+    return_content: true
+  register: model_explorer__index
+  retries: 6
+  delay: 5
+  until: model_explorer__index.status | default(0) == 200
+  changed_when: false
+
+- name: HARD GATE — the served page must be the app, not merely a 200
+  # A 200 is not proof: nginx's own welcome page, a directory listing and an error page are all
+  # 200s. This asserts the served HTML carries the app's own title and its module bundle, so a
+  # misconfigured root that serves SOMETHING cannot pass as a working deploy.
+  ansible.builtin.assert:
+    that:
+      - "'Model Explorer' in model_explorer__index.content"
+      - "'type=\"module\"' in model_explorer__index.content"
+    fail_msg: >-
+      The app's port answered 200 but did not serve the app's own index.html — nginx is serving
+      something else (its default welcome page, or a stale root). Check the site/ mount in
+      {{ model_explorer_config_dir }}.
+    quiet: true
+
+# The catalogue is a SEPARATE request, because the page loading and its data loading fail
+# independently: index.html can serve perfectly while catalogue.json 404s, and the app would
+# then render its "could not load" state on every visit. That is honest in the browser but it
+# is still a broken deploy, and it must fail HERE rather than be discovered by a user.
+- name: Verify the catalogue snapshot is served and parseable
+  ansible.builtin.uri:
+    url: "http://localhost:{{ model_explorer_host_port }}/catalogue.json"
+    method: GET
+    status_code: [200]
+    return_content: true
+  register: model_explorer__catalogue
+  changed_when: false
+
+- name: HARD GATE — the served catalogue must parse and carry models
+  # Parsed with `content | from_json` rather than `.json`: `uri` populates `.json` only when the
+  # RESPONSE declares a JSON content-type, so reading `.json` could turn "I could not parse it"
+  # into a confident "no models are listed".
+  ansible.builtin.assert:
+    that:
+      - model_explorer__catalogue.content | from_json is mapping
+      - (model_explorer__catalogue.content | from_json).get('enumerated', []) | length > 0
+      - (model_explorer__catalogue.content | from_json).get('openrouter', []) | length > 0
+    fail_msg: >-
+      The served catalogue.json is missing, unparseable, or carries no models — the app would
+      show "could not load the catalogue" on every visit. Check model_explorer_catalogue_src
+      ({{ model_explorer_catalogue_src }}) and re-run.
+    quiet: true

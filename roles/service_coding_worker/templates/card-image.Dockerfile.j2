@@ -1,0 +1,40 @@
+# {{ ansible_managed }}
+# The default card image: what a card container has when its repo has no .devcontainer.
+#
+# Deliberately NOT in it: Claude Code, Codex and Node. They are bind-mounted read-only from the
+# VM ({{ worker_node_dir }}), so a pinned-version bump is a converge and not an image rebuild, and
+# the version a card runs is the version the role's read-back asserted. Run under the sysbox
+# runtime, which is what lets the dockerd below start without --privileged.
+FROM {{ worker_card_base_image }}
+
+ENV DEBIAN_FRONTEND=noninteractive
+# python3-venv: Debian/Ubuntu split ensurepip out of python3, so without it `python3 -m venv`
+# fails and a repo's bootstrap script has no way to build its venv.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      bash build-essential ca-certificates curl docker.io git gh iproute2 iptables jq \
+      less openssh-client procps python3 python3-pip python3-venv ripgrep sudo tzdata unzip xz-utils \
+ && rm -rf /var/lib/apt/lists/*
+
+# uv, pinned. The role fetched this tarball into the build context with get_url, verified against
+# worker_tools.uv_sha256_linux_x64; the build verifies the SAME digest again before unpacking, so
+# the bytes that become /usr/local/bin/uv are the bytes the pin names (no installer script, no
+# network in this step). The pin is part of this file, so a bump is a new image tag.
+COPY uv-{{ worker_tools.uv_version }}-x86_64-unknown-linux-gnu.tar.gz /tmp/uv.tar.gz
+RUN echo "{{ worker_tools.uv_sha256_linux_x64 }}  /tmp/uv.tar.gz" | sha256sum -c - \
+ && tar -xzf /tmp/uv.tar.gz -C /usr/local/bin --strip-components=1 \
+      uv-x86_64-unknown-linux-gnu/uv uv-x86_64-unknown-linux-gnu/uvx \
+ && rm /tmp/uv.tar.gz \
+ && test "$(uv --version | cut -d " " -f1-2)" = "uv {{ worker_tools.uv_version }}" \
+ && python3 -c 'import venv, ensurepip'
+
+{% if worker_card_dns | length > 0 %}
+# The inner dockerd's resolvers. A card's own resolv.conf names docker's embedded 127.0.0.11, so
+# without this a nested container gets docker's public fallback (8.8.8.8), which a firewall
+# allowing only local DNS drops: worker_card_dns names the resolver the VM itself uses.
+RUN mkdir -p /etc/docker && printf '%s\n' '{{ {'dns': worker_card_dns} | to_json }}' > /etc/docker/daemon.json
+
+{% endif %}
+# The agent runs as root INSIDE the container; sysbox maps that to an unprivileged range on the
+# VM, and bind mounts are id-mapped back to the card's files.
+WORKDIR /root

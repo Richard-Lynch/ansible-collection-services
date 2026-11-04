@@ -1,0 +1,122 @@
+---
+# config_hermes_profile — provision ONE named Hermes profile.
+#
+# Shape: resolve, derive, read the API BEFORE (so a break is attributable), gate on the default
+# profile's key placement, create the profile if it is absent, write the files, read the API AFTER
+# (COLD when the compose dir is given and this run created the profile), then read the result back
+# through the hermes CLI itself. Without hermes_profile_apply it stops after computing and reporting
+# what would change.
+- name: Resolve declared options over their generated defaults
+  ansible.builtin.include_tasks: _resolve_defaults.yml
+
+- name: Apply the generated argspec guards
+  ansible.builtin.include_tasks: _argspec_guards.yml
+
+- name: Derive the profile directory from the data directory
+  # _hp_created is RESET here: set_fact is play-scoped, so a second call of this role in the same
+  # play (a second profile after the first) would otherwise inherit the first call's "created"
+  # and force-overwrite a curated SOUL.
+  ansible.builtin.set_fact:
+    _hp_dir: "{{ hermes_profile_data_dir | regex_replace('/+$', '') }}/profiles/{{ hermes_profile_name }}"
+    _hp_created: false
+
+- name: Stat the profile directory
+  ansible.builtin.stat:
+    path: "{{ _hp_dir }}"
+  register: _hp_stat
+
+- name: BEFORE — the API must already be serving, or a later break could not be attributed
+  ansible.builtin.include_tasks: _models_probe.yml
+  vars:
+    _hp_phase: before
+  when: hermes_profile_apply | bool
+
+# Upstream behaviour: once a named profile exists, an API_SERVER_KEY supplied only through the compose
+# env_file is invisible and the API server does not START. The running process still holds its key,
+# so no probe of it can see the break: the only cheap, deterministic check BEFORE creating the first
+# named profile is that the key is where a restarted gateway will read it — a line in the DEFAULT
+# profile's .env (HERMES_HOME/.env). The name is checked, never the value.
+- name: Derive the confined walk's anchor
+  ansible.builtin.include_tasks: _anchor.yml
+  when: hermes_profile_apply | bool and not _hp_stat.stat.exists
+
+- name: Read the default profile's .env through the confined walk (names only are kept)
+  # The data directory is the agent's, so data/.env may be a link: read by name, root would read
+  # whatever it names. agent_dir.py refuses a link instead of following it.
+  ansible.builtin.script:
+    cmd: "{{ _hp_helper }} --read-file {{ ((_hp_rel | dirname | dirname) ~ '/.env') | quote }}"
+    executable: python3
+  register: _hp_default_env_read
+  changed_when: false
+  check_mode: false
+  no_log: true
+  when: hermes_profile_apply | bool and not _hp_stat.stat.exists
+
+- name: Take its existence and text
+  ansible.builtin.set_fact:
+    _hp_default_env: {stat: {exists: "{{ (_hp_default_env_read.stdout | from_json).exists | default(false) | bool }}"}}
+    _hp_default_env_raw: {content: "{{ ((_hp_default_env_read.stdout | from_json).content | default('')) | b64encode }}"}
+  no_log: true
+  when: hermes_profile_apply | bool and not _hp_stat.stat.exists
+
+- name: Reduce it to the variable NAMES it declares
+  ansible.builtin.set_fact:
+    _hp_default_env_names: >-
+      {{ ((_hp_default_env_raw.content | default('') | b64decode) if _hp_default_env.stat.exists | default(false) else '')
+         | regex_findall('(?m)^\s*(?:export\s+)?([A-Z][A-Z0-9_]*)\s*=') }}
+  no_log: true
+  when: hermes_profile_apply | bool and not _hp_stat.stat.exists
+
+- name: HARD GATE — the default profile's .env must carry API_SERVER_KEY before the first named profile exists
+  ansible.builtin.assert:
+    that: "'API_SERVER_KEY' in _hp_default_env_names"
+    fail_msg: >-
+      {{ hermes_profile_data_dir }}/.env {{ 'does not exist' if not _hp_default_env.stat.exists else 'has no API_SERVER_KEY= line' }}.
+      With a named profile present the API server reads its key from THIS file and ignores the compose
+      env_file (an upstream behaviour), so creating {{ hermes_profile_name }} now would break the API at
+      the next gateway start. Put the key in the default profile's .env first (and test it cold with
+      a GET of /v1/models after a restart), then re-run.
+    quiet: true
+  when: hermes_profile_apply | bool and not _hp_stat.stat.exists
+
+- name: Create the profile through hermes itself, when absent
+  ansible.builtin.include_tasks: _create.yml
+  when: hermes_profile_apply | bool and not _hp_stat.stat.exists
+
+- name: Write (or preview) the profile's files
+  ansible.builtin.include_tasks: _files.yml
+
+- name: Say whether the AFTER probe will be cold
+  ansible.builtin.debug:
+    msg: >-
+      AFTER probe: {{ 'COLD (gateway restarted through compose in ' ~ hermes_profile_compose_dir ~ ')'
+                      if (_hp_created | bool and hermes_profile_compose_dir | length > 0)
+                      else ('warm (the process was not restarted; it still holds the key it started with. '
+                            ~ ('A cold probe needs hermes_profile_compose_dir' if _hp_created | bool
+                               else 'The profile already existed, so this process started with a named profile present and the probe is meaningful') ~ ')') }}
+  when: hermes_profile_apply | bool
+
+- name: Restart the gateway through compose, so the AFTER probe is cold
+  # Only in the run that created the profile: that is the first start with a named profile present,
+  # which is when the missing-key break shows. Through compose, never docker_container restart: true
+  # (which recreates the container outside compose's knowledge and detaches it from the project).
+  community.docker.docker_compose_v2:
+    project_src: "{{ hermes_profile_compose_dir }}"
+    state: restarted
+  when: hermes_profile_apply | bool and _hp_created | bool and hermes_profile_compose_dir | length > 0
+
+- name: AFTER — the API must still be serving
+  ansible.builtin.include_tasks: _models_probe.yml
+  vars:
+    _hp_phase: after
+    # after a restart the API takes a moment: retry; without one a single read is the test
+    _hp_retries: "{{ 12 if (_hp_created | bool and hermes_profile_compose_dir | length > 0) else 1 }}"
+  when: hermes_profile_apply | bool
+
+- name: Read the result back through the hermes CLI
+  ansible.builtin.include_tasks: _readback.yml
+  loop: "{{ hermes_profile_readbacks }}"
+  loop_control:
+    loop_var: _hp_rb
+    label: "{{ _hp_rb.name | default('(unnamed)') }}"
+  when: hermes_profile_apply | bool

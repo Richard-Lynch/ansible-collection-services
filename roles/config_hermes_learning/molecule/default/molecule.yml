@@ -1,0 +1,25 @@
+---
+dependency: { name: galaxy }
+driver: { name: default }
+platforms: [{ name: localhost }]
+provisioner:
+  name: ansible
+  env:
+    ANSIBLE_ROLES_PATH: "${MOLECULE_PROJECT_DIRECTORY}/../"
+    ANSIBLE_COLLECTIONS_PATH: "${MOLECULE_PROJECT_DIRECTORY}/../../collections.galaxy:${MOLECULE_PROJECT_DIRECTORY}/../../../../.."
+  inventory: { host_vars: { localhost: { ansible_connection: local } } }
+  playbooks: { prepare: prepare.yml, converge: converge.yml, verify: verify.yml, cleanup: cleanup.yml }
+verifier: { name: ansible }
+scenario:
+  # WHAT THIS PROVES: the role installs, renders a secret-free config and the probe set, and its
+  # read-back runs the REAL host script and the REAL inner ledger script (exec_mode local, against
+  # a fixture agent home) and requires read_ok 1 with the staged write counted. A second converge
+  # must be changed=0. The script's judgement (loss cap, ping age, probe checks, recall@5, the
+  # cannot-tell paths) is in tests/test_hermes_learning.py, which runs the same code offline.
+  # WHAT IT CANNOT: docker exec into a live agent, the plugin install, /v1/runs. Those are the
+  # converge's read-backs on a real guest.
+  #
+  # destroy/create are no-ops for this driver, but destroy RESETS molecule's "already prepared"
+  # flag; without it the run after a PASSING one skips prepare and tests the previous run's
+  # leftovers. cleanup removes the scratch roots at both ends.
+  test_sequence: [destroy, syntax, create, cleanup, prepare, converge, idempotence, verify, cleanup, destroy]

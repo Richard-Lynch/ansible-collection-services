@@ -1,0 +1,15 @@
+---
+# AUTO-GENERATED defaults file — DO NOT EDIT.
+#
+# Source of truth: roles/config_mcp_servers/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate config_mcp_servers
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+# Entrypoint:      main
+
+# Declared enablement: client profile name to the list of catalogue names it
+# starts with. The live enablement moves within the catalogue afterwards
+# (tier A-range) and is reported, never reverted, by the probe.
+mcp_clients__default: {}

@@ -1,0 +1,51 @@
+---
+# One bad input against the role's own _gates.yml. The gate must FAIL, naming the expected gate
+# (`expect`); if it does not fail, the case id lands in `survivors` and verify.yml fails on it. Every case rewrites the WHOLE input (good
+# plus one override), so no case inherits the previous case's bad field.
+- name: "Bad case {{ item.id }}: write the input"
+  ansible.builtin.copy:
+    dest: "{{ render_root }}/bad-{{ item.id }}.json"
+    content: "{{ _good | combine(item.over) | to_json }}"
+    mode: "0644"
+
+- name: "Bad case {{ item.id }}: the gate must refuse it"
+  block:
+    - name: Load the input
+      ansible.builtin.include_vars:
+        file: "{{ render_root }}/bad-{{ item.id }}.json"
+
+    - name: Set the architecture this case asks for
+      ansible.builtin.set_fact:
+        ansible_architecture: "{{ item.over.ansible_architecture | default('x86_64') }}"
+
+    - name: Run the gates
+      ansible.builtin.include_role:
+        name: service_coding_worker
+        tasks_from: _gates
+
+    - name: The gate let it through
+      ansible.builtin.set_fact:
+        _gate_survivors: "{{ _gate_survivors | default([]) + [item.id] }}"
+  rescue:
+    # The refusal must come from the gate this case targets. A looped assert fails with
+    # "One or more items failed" and the per-item messages in `results`, so the whole failed
+    # result is searched rather than its top-level msg.
+    - name: The refusal must name the expected gate, not an unrelated one
+      ansible.builtin.assert:
+        that:
+          - item.expect in (ansible_failed_result | to_json)
+        fail_msg: >-
+          Bad case {{ item.id }} was refused, but not by its own gate: expected
+          '{{ item.expect }}' in {{ ansible_failed_result.msg | default('?') }}
+          {{ ansible_failed_result.results | default([]) | selectattr('failed', 'defined') | selectattr('failed') | map(attribute='msg') | list }}
+        quiet: true
+
+    - name: The gate refused it, as it must
+      ansible.builtin.set_fact:
+        _gate_refused: "{{ _gate_refused | default([]) + [item.id] }}"
+
+- name: Persist the outcome so far for verify
+  ansible.builtin.copy:
+    dest: "{{ render_root }}/gate-outcome.json"
+    content: "{{ {'refused': _gate_refused | default([]), 'survivors': _gate_survivors | default([])} | to_json }}"
+    mode: "0644"

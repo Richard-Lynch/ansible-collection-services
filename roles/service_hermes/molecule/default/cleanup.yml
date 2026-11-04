@@ -1,0 +1,14 @@
+---
+# Cleanup - the same roots prepare.yml starts empty, removed BEFORE prepare and AFTER verify (see
+# the test_sequence in molecule.yml), so a run starts from nothing and leaves nothing whatever the
+# previous run did and whatever molecule's "already prepared" flag says.
+- name: Cleanup - remove the render roots
+  hosts: localhost
+  gather_facts: false
+  vars_files: [vars/merge.yml]
+  tasks:
+    - name: Remove the render roots
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop: [/tmp/molecule-hermes, "{{ render_root }}", /tmp/molecule-hermes-m5]

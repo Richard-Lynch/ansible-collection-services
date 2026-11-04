@@ -1,0 +1,81 @@
+---
+# A live config as a running agent leaves it: the role's keys STALE or hand-set, plus keys the
+# role does not own (the agent's migration marker, a dashboard preference, a key the agent
+# added under a parent the role also writes to). Seeded here and NOT in converge, so converge
+# stays idempotent and molecule's idempotence step is a real test.
+- name: Prepare - clean roots, and a live config with unowned keys and stale owned ones
+  hosts: localhost
+  gather_facts: false
+  vars_files: [vars/merge.yml]
+  tasks:
+    # The template variants' root. Cleared HERE (once) and not in converge, so converge stays
+    # idempotent while still rendering from a known-clean state.
+    - name: Start the render roots empty
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop: [/tmp/molecule-hermes, "{{ render_root }}", /tmp/molecule-hermes-m5]
+
+    - name: Create the data directory
+      ansible.builtin.file:
+        path: "{{ render_root }}/data"
+        state: directory
+        mode: "0755"
+
+    - name: Seed the live config
+      ansible.builtin.copy:
+        dest: "{{ render_root }}/data/config.yaml"
+        mode: "0640"
+        content: |
+          _config_version: 50
+          display:
+            compact: true
+          model:
+            default: stale/model
+            agent_added: 1
+          sessions:
+            auto_prune: false
+          curator:
+            interval_days: 7
+          platform_toolsets:
+            api_server: [web, terminal]
+          hooks_auto_accept: false
+          providers:
+            example-gateway:
+              api_key: sk-molecule-inline-legacy-key
+
+    # A skill delivered earlier and since REMOVED from the source: the delivery must prune it.
+    - name: Seed a delivered skill the source no longer has
+      ansible.builtin.file:
+        path: "{{ render_root }}/estate-skills/stale-skill"
+        state: directory
+        mode: "0755"
+
+    - name: Seed its file, read-only like every delivered file
+      ansible.builtin.copy:
+        dest: "{{ render_root }}/estate-skills/stale-skill/SKILL.md"
+        content: "stale\n"
+        mode: "0444"
+
+    # Automations play: a data dir; a stale cron script in the STAGING dir the source no longer has (the
+    # prune must remove it); a personal script beside estate/ (nothing may touch it); and a legacy
+    # copy in data/scripts/estate as the earlier delivery left it (shadowed by the mount on the
+    # guest, and never deleted: root deleting under the agent's tree by name is the bug).
+    - name: Create the automations play's data, scripts, legacy and staging directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - /tmp/molecule-hermes-m5/data/scripts/estate
+        - /tmp/molecule-hermes-m5/estate-scripts
+
+    - name: Seed a stale staged script, a personal one and a legacy copy
+      ansible.builtin.copy:
+        dest: "{{ item }}"
+        content: "print('seeded')\n"
+        mode: "0644"
+      loop:
+        - /tmp/molecule-hermes-m5/estate-scripts/retired_watchdog.py
+        - /tmp/molecule-hermes-m5/data/scripts/estate/legacy_copy.py
+        - /tmp/molecule-hermes-m5/data/scripts/my_own_watchdog.py

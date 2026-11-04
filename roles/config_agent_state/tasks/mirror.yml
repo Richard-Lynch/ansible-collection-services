@@ -1,0 +1,62 @@
+---
+# Ansible loads ONLY defaults/main.yml on its own. This entrypoint's generated defaults are in
+# defaults/mirror.yml, so without this the resolver would find no `__default` for any option declared
+# only here and leave it undefined.
+- name: Load this entrypoint's generated defaults
+  ansible.builtin.include_vars:
+    file: "{{ role_path }}/defaults/mirror.yml"
+
+- name: Resolve declared options over their generated defaults
+  ansible.builtin.include_tasks: _resolve_defaults.yml
+
+- name: Apply the generated argspec guards
+  ansible.builtin.include_tasks: _argspec_guards.yml
+
+- name: Shape-check the declared values
+  ansible.builtin.include_tasks: _gates.yml
+
+- name: The role is installed
+  ansible.builtin.include_tasks: _installed.yml
+
+- name: Mirror deploy key
+  ansible.builtin.include_tasks: _deploy_key.yml
+
+- name: Build the argument lists
+  ansible.builtin.include_tasks: _argv.yml
+
+- name: Textfile directory exists
+  ansible.builtin.file:
+    path: "{{ agent_state_textfile_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Mirror layer-2 state (the scan runs before anything is staged)
+  ansible.builtin.command:
+    argv: "{{ _as_mirror_argv }}"
+  register: _as_mirror
+  failed_when: false
+  changed_when: false
+
+- name: Parse the script's report
+  ansible.builtin.set_fact:
+    agent_state_last_mirror: "{{ (_as_mirror.stdout_lines | default([]))[-1] | default('{}') | from_json }}"
+
+- name: HARD GATE — the scan did not block, and the script did not refuse
+  # rc 3 is a scan finding (file, rule and line are named, never the value); rc 2 is a refusal.
+  # Either way nothing was staged, committed or pushed.
+  ansible.builtin.assert:
+    that:
+      - _as_mirror.rc == 0
+    fail_msg: >-
+      mirror failed (rc={{ _as_mirror.rc }}).
+      {% if agent_state_last_mirror.blocked | default(false) %}BLOCKED by the secret/PII scan:
+      {{ agent_state_last_mirror.count }} finding(s), first ones
+      {{ agent_state_last_mirror.findings | default([]) | map(attribute='file') | list | unique | list | join(', ') }}
+      (rules {{ agent_state_last_mirror.findings | default([]) | map(attribute='rule') | list | unique | list | join(', ') }}).
+      {% else %}{{ _as_mirror.stderr | default('') | trim }}{% endif %}
+    quiet: true
+
+- name: Report whether the mirror moved (changed only when a commit was made)
+  ansible.builtin.debug:
+    msg: "mirror head {{ agent_state_last_mirror.head }} committed={{ agent_state_last_mirror.committed }} pushed={{ agent_state_last_mirror.pushed }}"
+  changed_when: agent_state_last_mirror.committed | bool or agent_state_last_mirror.pushed | bool

@@ -1,0 +1,43 @@
+---
+# Write the repaired subscription store, as root, without ever writing THROUGH the agent's tree.
+# Included by _automations_reconcile.yml; molecule includes it directly. Takes hermes__subs_path,
+# hermes__subs_stat and hermes__subs_audit.repaired.
+#
+# WHY NOT `copy: dest=<store> follow=false`. On the
+# data/ fallback the agent owns the directory, so it can swap the store for a symlink AFTER the
+# reconcile's stat/islnk gate has passed. `follow: false` does not cover that: copy tests
+# `os.path.isdir(dest)` FIRST, and that follows links, so a store swapped for a link to a host
+# DIRECTORY made root write the repaired JSON into that directory, chowned to the agent's uid
+# (ansible-core 2.21 modules/copy.py, the `if os.path.isdir(b_dest)` branch). A link to a FILE is
+# replaced rather than followed, but via an unlink-then-open(dest, 'w') pair the agent can race to
+# truncate the link's target. Both are root writes outside the tree, and no assert can close them,
+# because the swap happens between two tasks.
+#
+# So the bytes are written in hermes_config_dir (root-owned; the container mounts only its
+# subdirectories, never the directory itself), and then moved in with ONE rename(2). rename
+# replaces the final path component, whatever it is now: a symlink is replaced, never followed; a
+# directory makes it fail with EISDIR. A cross-device move fails with EXDEV, never a silent
+# copy-and-unlink. The parent data/ cannot be swapped by the agent: it is the bind-mount SOURCE,
+# its entry lives in the root-owned hermes_config_dir, and the container sees it only as a mount
+# point.
+- name: Stage the repaired store outside the agent's tree
+  ansible.builtin.copy:
+    dest: "{{ hermes_config_dir }}/.webhook_subscriptions.repair.json"
+    content: "{{ hermes__subs_audit.repaired | to_nice_json }}"
+    owner: "{{ hermes__subs_stat.stat.uid }}"
+    group: "{{ hermes__subs_stat.stat.gid }}"
+    mode: "{{ hermes__subs_stat.stat.mode }}"
+  no_log: true # route secrets live in this file
+
+# The adapter reloads the store when its stat identity changes, and the rename gives it a new
+# inode, so the repaired file is picked up on the next POST with no restart.
+- name: Move it over the store with one rename (replaces a planted link, never follows it)
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - import os, sys; os.rename(sys.argv[1], sys.argv[2])
+      - "{{ hermes_config_dir }}/.webhook_subscriptions.repair.json"
+      - "{{ hermes__subs_path }}"
+  # Runs only when the audit flagged a toolsets key, and a rename always replaces the store.
+  changed_when: true

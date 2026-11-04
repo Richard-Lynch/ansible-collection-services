@@ -1,0 +1,453 @@
+---
+# AUTO-GENERATED argument spec — DO NOT EDIT.
+#
+# Source of truth: roles/service_coding_worker/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate service_coding_worker
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+argument_specs:
+  main:
+    short_description: 'Coding worker VM: one sysbox dev container per card, agents inside it'
+    description:
+      - 'Turns a VM into a coding worker for an agent hub: Docker with the sysbox runtime, git,'
+      - tmux, the Claude Code and Codex CLIs routed through a LiteLLM gateway with the
+      - "worker's own virtual key, repo checkouts, worker-sessiond (the session supervisor:"
+      - a worktree and a sysbox container per card, the agent running INSIDE the container
+      - under a tmux session named after the card; list, pause, resume, stop, done, the
+      - GitHub PR feedback loop and the CI gate), and ttyd for jump-in from a browser.
+      - 'It needs a real kernel (a VM, not an LXC guest): sysbox is what lets each card run'
+      - its own inner dockerd without --privileged.
+      - Which host, user, repos, models and listeners are installation configuration and
+      - come from inventory; the role knows how, not which. No credential is written into a
+      - 'tracked or world-readable file: the agent environment is a 0600 file owned by the'
+      - worker user.
+    version_added: '1.0'
+    author: Collection maintainers
+    options:
+      worker_user:
+        description:
+          - Unprivileged account the agents, tmux, sessiond and ttyd run as.
+          - Created if absent. Its home directory is derived, never hardcoded.
+        type: str
+        required: true
+      worker_git_user_name:
+        description:
+          - git user.name for commits the agents make.
+        type: str
+        required: true
+      worker_git_user_email:
+        description:
+          - git user.email for commits the agents make.
+        type: str
+        required: true
+      worker_ssh_authorized_key:
+        description:
+          - Public key allowed to log in as the worker user. This is the jump-in path
+          - from a laptop (ssh then tmux attach) and the key the coder profile uses.
+        type: str
+        required: true
+      worker_tools:
+        description:
+          - 'Pinned versions. Keys: claude_code_version, codex_version, node_version and'
+          - node_sha256_linux_x64 (the official tarball is verified against it);
+          - gh_version and gh_sha256_linux_amd64 (the cli/cli release tarball; the
+          - distro gh is too old for sessiond's PR loop); uv_version and
+          - uv_sha256_linux_x64 (the astral-sh/uv release tarball baked into the
+          - default card image, so a card can build the repo's venv); with worker_acp_enabled
+          - also acpx_version, claude_agent_acp_version and codex_acp_version (the
+          - ACP client and the two adapters protocol mode runs).
+          - 'Floating tags are refused: the deployed agent would depend on WHEN the'
+          - play ran.
+        type: dict
+        required: true
+      worker_repos:
+        description:
+          - 'Repositories the supervisor may create worktrees for. Each item: name,'
+          - url, base_branch. A card naming any other repo is refused, so a card can
+          - never point the supervisor at an arbitrary path.
+        type: list
+        required: true
+        elements: dict
+      worker_work_root:
+        description:
+          - Repos live at work_root/name; worktrees at work_root/worktrees/card.
+        type: str
+        required: false
+        default: /srv/work
+      worker_litellm_url:
+        description:
+          - LiteLLM base URL WITHOUT a /v1 suffix. Claude Code appends /v1/messages;
+          - Codex gets the /v1 form from this value.
+        type: str
+        required: true
+      worker_litellm_api_key:
+        description:
+          - The worker's own LiteLLM virtual key (its spend is its own line).
+        type: str
+        required: true
+        no_log: true
+      worker_claude_model:
+        description:
+          - Model alias Claude Code asks LiteLLM for.
+        type: str
+        required: true
+      worker_codex_model:
+        description:
+          - Model alias Codex asks LiteLLM for.
+        type: str
+        required: true
+      worker_claude_permission_mode:
+        description:
+          - Claude Code permission mode for card sessions. dontAsk DENIES anything
+          - worker_claude_settings does not allow, where the other two PROMPT, and
+          - a prompt in an unattended card waits for nobody. Bypass modes are not
+          - 'offered: widening what an unattended agent may do is a reviewed'
+          - configuration change, not a role knob.
+        type: str
+        required: false
+        default: acceptEdits
+        choices:
+          - default
+          - acceptEdits
+          - dontAsk
+      worker_claude_settings:
+        description:
+          - Claude Code settings sessiond writes per card as the container's MANAGED
+          - settings (/etc/claude-code, mounted read-only; without a container runtime
+          - as a --settings file), OVERWRITTEN at each launch and resume. The
+          - permissions allow and deny lists are the card's Bash allowlist; the
+          - literal text {card_branch} in a rule becomes that card's branch. Empty
+          - writes nothing. A bypass mode, or an allow rule admitting every Bash
+          - command, is refused by the role and again by sessiond.
+        type: dict
+        required: false
+        default: {}
+      worker_subscription_login:
+        description:
+          - Must stay false. The worker authenticates with its LiteLLM key only;
+          - the role refuses true so a personal login cannot become a dependency.
+        type: bool
+        required: false
+        default: false
+      worker_github_token:
+        description:
+          - PR-scoped GitHub token (clone, push a branch, open a PR; no merge).
+        type: str
+        required: true
+        no_log: true
+      worker_extra_env:
+        description:
+          - 'Extra NAME to value pairs for the agent environment: the credentials MCP'
+          - catalogue entries refer to. Names are upper-case with underscores.
+        type: dict
+        required: false
+        default: {}
+        no_log: true
+      worker_mcp_catalogue:
+        description:
+          - 'The REVIEWED MCP servers a card may ask for. Each item: name, transport'
+          - (http or stdio), reviewed_by, and url plus optional headers for http, or
+          - command plus optional args and env for stdio. Header and env values must
+          - be a dollar-brace reference such as a braced TOKEN name, never a literal.
+          - A card requesting a name not listed here refuses to start.
+        type: list
+        required: false
+        default: []
+        elements: dict
+      worker_mcp_default_enabled:
+        description:
+          - Catalogue names every card gets without asking.
+        type: list
+        required: false
+        default: []
+        elements: str
+      worker_sessiond_bind:
+        description:
+          - Address worker-sessiond listens on. Loopback is right for any caller;
+          - a caller on another guest sets a wider bind in inventory and relies on
+          - the bearer token plus the guest firewall.
+        type: str
+        required: false
+        default: 127.0.0.1
+      worker_sessiond_port:
+        description:
+          - worker-sessiond port.
+        type: int
+        required: false
+        default: 7690
+      worker_sessiond_token:
+        description:
+          - Bearer token every sessiond call except /healthz must present.
+        type: str
+        required: true
+        no_log: true
+      worker_ttyd_bind:
+        description:
+          - Interface NAME or address ttyd listens on (ttyd accepts an interface name,
+          - so a DHCP change needs no edit). Loopback by default.
+        type: str
+        required: false
+        default: 127.0.0.1
+      worker_ttyd_port:
+        description:
+          - ttyd port.
+        type: int
+        required: false
+        default: 7681
+      worker_ttyd_title:
+        description:
+          - Browser window title ttyd shows (its titleFixed client option).
+        type: str
+        required: false
+        default: coding-worker
+      worker_ttyd_credential:
+        description:
+          - "user:password for ttyd's own basic auth: the ORIGIN gate on the worker's"
+          - 'LAN interface. A human never types it: the reverse proxy in front of ttyd'
+          - adds it to each request after its own authentication passes, so it stops
+          - only a direct connection to ttyd. It appears in the ttyd command line, so
+          - it is not a secret from the agents.
+        type: str
+        required: true
+        no_log: true
+      worker_tmux_session_prefix:
+        description:
+          - tmux sessions are named prefix plus the card id.
+        type: str
+        required: false
+        default: card-
+      worker_card_tail_enabled:
+        description:
+          - Whether sessiond serves scrubbed pane text to the card. Leave it off until
+          - the credential scrubber's canaries have passed on the target.
+        type: bool
+        required: false
+        default: false
+      worker_extra_authorized_keys:
+        description:
+          - More public keys allowed to log in as the worker user, one entry each. The
+          - gateway's coder profile reaches the worker over ssh with its OWN key, so it
+          - is listed here and the human jump-in key stays a separate decision.
+        type: list
+        required: false
+        default: []
+        elements: str
+      worker_coder_ctl_src:
+        description:
+          - Controller path of the coder skill's coder_ctl.py, installed as
+          - /usr/local/bin/coder_ctl. The gateway's ssh terminal backend copies nothing
+          - to the worker, so the skill's own script is not here unless this installs it.
+          - Empty installs nothing.
+        type: str
+        required: false
+        default: ''
+      worker_ssh_accept_env:
+        description:
+          - Environment variable NAMES sshd accepts from a login (AcceptEnv), each of the
+          - form WORKER_ plus upper-case letters, digits and underscores. The coder
+          - profile forwards WORKER_SESSIOND_URL and _TOKEN this way (terminal.
+          - env_passthrough), so the supervisor's token is never a file on the worker.
+          - Empty removes the drop-in.
+        type: list
+        required: false
+        default: []
+        elements: str
+      worker_metrics_textfile:
+        description:
+          - File the root-run worker-metrics timer writes sessiond's stuck-card metrics to
+          - (textfile-collector format). Must sit in the directory the guest's node exporter
+          - textfile collector reads. An empty string installs no timer.
+        type: str
+        required: false
+        default: /var/lib/node_exporter/textfile_collector/hermes_worker.prom
+      worker_stuck_after_seconds:
+        description:
+          - A running card whose tmux pane has produced no output for longer than this
+          - counts in hermes_worker_stuck_cards. It also describes an agent waiting at a
+          - prompt, which is the other thing the alert is for.
+        type: int
+        required: false
+        default: 1800
+      worker_container_runtime:
+        description:
+          - Docker runtime every card container is created with, read back after the
+          - "start. Only sysbox-runc is accepted: runc would give the agent the VM's"
+          - kernel namespaces and no inner dockerd without --privileged.
+        type: str
+        required: false
+        default: sysbox-runc
+        choices:
+          - sysbox-runc
+      worker_sysbox:
+        description:
+          - 'Pinned sysbox-ce package. Keys: version (x.y.z) and sha256_linux_amd64 (64'
+          - hex, from the release's own checksum list). Installed from the project's
+          - release .deb; the role refuses another CPU and an unchecked download.
+        type: dict
+        required: true
+      worker_card_cpus:
+        description:
+          - CPU limit of each card container (docker --cpus).
+        type: float
+        required: false
+        default: 2
+      worker_card_memory:
+        description:
+          - Memory limit of each card container, like 2g or 512m. It is also the swap
+          - limit, so it is the whole budget. sessiond refuses to start a card whose
+          - limit does not fit beside the running ones in the VM's memory.
+        type: str
+        required: false
+        default: 2g
+      worker_vm_reserve_mb:
+        description:
+          - Memory the VM keeps for itself (sessiond, dockerd, tmux, ttyd, page cache)
+          - when sessiond decides whether another card container fits.
+        type: int
+        required: false
+        default: 1024
+      worker_card_dns:
+        description:
+          - Nameservers for the INNER dockerd of the default card image (its
+          - /etc/docker/daemon.json `dns`). A card sits on its own bridge, so its
+          - resolv.conf names docker's embedded 127.0.0.11; an inner dockerd that sees
+          - only a loopback nameserver gives nested containers docker's public
+          - fallback resolvers, which a firewall that allows only local DNS drops.
+          - IP literals, never loopback. Empty writes no daemon.json.
+        type: list
+        required: false
+        default: []
+        elements: str
+      worker_card_image_name:
+        description:
+          - Repository name of the default card image. The tag is always the first 12
+          - hex digits of the rendered Dockerfile's sha256, so a changed Dockerfile is
+          - a new image and an unchanged one is never rebuilt.
+        type: str
+        required: false
+        default: coding-worker-card
+      worker_docker_bip:
+        description:
+          - The VM dockerd's bridge address in CIDR form (daemon.json `bip`), for a
+          - network whose addresses would collide with docker's default bridge. Empty
+          - leaves docker's own default.
+        type: str
+        required: false
+        default: ''
+      worker_docker_address_pools:
+        description:
+          - The VM dockerd's address pools for user-defined networks (daemon.json
+          - '`default-address-pools`), each item base (a CIDR) and size (a prefix'
+          - length). Every card gets its own network, so a pool of small subnets
+          - keeps many cards from exhausting the defaults. Empty leaves docker's own.
+        type: list
+        required: false
+        default: []
+        elements: dict
+      worker_card_base_image:
+        description:
+          - Base of the default card image (git, gh, Docker, build tools). Used when a
+          - repo has no .devcontainer; the agent CLIs are mounted in from the VM, not
+          - baked in, so a version bump never rebuilds the image.
+        type: str
+        required: false
+        default: ubuntu:24.04
+      worker_pr_allow_no_checks:
+        description:
+          - 'Whether the PR gate may mark ready a PR with NO checks at all. False: a gate'
+          - that passes on nothing is a gate for a repo that forgot to configure CI.
+        type: bool
+        required: false
+        default: false
+      worker_pr_reviewer_logins:
+        description:
+          - GitHub logins whose PR comments reach the agent besides the repo owner and
+          - 'anyone GitHub marks OWNER, MEMBER or COLLABORATOR. Everyone else is dropped:'
+          - review text becomes keystrokes in a credentialed agent.
+        type: list
+        required: false
+        default: []
+        elements: str
+      worker_pr_poll_seconds:
+        description:
+          - How often worker-sessiond polls the open PR of every running or paused card
+          - and types new TRUSTED review feedback into that card's session, resuming a
+          - paused card first (a stopped one is never woken). 0 turns sessiond's own
+          - poller off and leaves polling to the coder skill's heartbeat. About five
+          - GitHub API calls per card per poll, against the worker's PAT.
+        type: int
+        required: false
+        default: 300
+      worker_acp_enabled:
+        description:
+          - 'Protocol mode: install the pinned acpx CLI and the Claude/Codex ACP'
+          - adapters into the read-only tools directory every card container mounts,
+          - turn on worker-sessiond's ACP endpoints (session_new, prompt, a CONFIRMED
+          - cancel, list, resume) and run acpx-mcp, the MCP server that exposes
+          - 'exactly those to an MCP client. Off by default: it is a second way for an'
+          - unattended agent to run.
+        type: bool
+        required: false
+        default: false
+      worker_acp_permissions:
+        description:
+          - acpx permission mode for protocol sessions, which have no person at a
+          - prompt (requests acpx cannot approve are DENIED, never left waiting).
+          - approve-reads lets the agent read and nothing else; approve-all lets it
+          - edit and run commands inside its sysbox container. Widening it is a
+          - reviewed inventory change.
+        type: str
+        required: false
+        default: approve-reads
+        choices:
+          - approve-reads
+          - approve-all
+          - deny-all
+      worker_acp_cancel_budget_seconds:
+        description:
+          - How long a protocol cancel may spend confirming a COOPERATIVE stop (the
+          - turn settled and no tool left running) before it kills the card's
+          - container instead. Kept under 5 s so the whole cancel, kill included,
+          - returns within 5 s.
+        type: float
+        required: false
+        default: 4.0
+      worker_acp_keep_comms:
+        description:
+          - Extra process names (comm) a cancel's sweep treats as the agent's own
+          - rather than as a tool left running, e.g. a stdio MCP server's binary.
+        type: list
+        required: false
+        default: []
+        elements: str
+      worker_acpx_mcp_bind:
+        description:
+          - Address acpx-mcp listens on. A client on another guest (the agent) needs a
+          - wider bind in inventory; the bearer token and the guest firewall gate it.
+        type: str
+        required: false
+        default: 127.0.0.1
+      worker_acpx_mcp_port:
+        description:
+          - acpx-mcp port (MCP streamable HTTP at /mcp).
+        type: int
+        required: false
+        default: 7691
+      worker_acpx_mcp_token:
+        description:
+          - Bearer token an MCP client presents to acpx-mcp. Required (16+
+          - 'characters, different from the sessiond token) when protocol mode is on:'
+          - a client holding it can drive ACP sessions and nothing else sessiond does.
+        type: str
+        required: false
+        default: ''
+        no_log: true
+      worker_pr_ignore_bots:
+        description:
+          - Skip comments by Bot-typed GitHub accounts when feeding PR feedback to the
+          - agent; the CI verdict already carries what the integrations know.
+        type: bool
+        required: false
+        default: true

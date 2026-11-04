@@ -1,0 +1,244 @@
+---
+# Delivery, BEFORE the stack converges: the send gate (script + config) into the read-only
+# policy directory, and the caller's cron scripts into the root-owned estate-scripts/ staging
+# directory, which the compose file mounts read-only at the agent's scripts/estate/.
+#
+# Neither needs a restart of its own: Hermes runs a shell hook as a fresh subprocess per tool call
+# and a cron script per tick, so both are read at use. What DOES need a restart -- the hook's
+# registration and the webhook listener's routes, both config.yaml leaves -- is restarted by the
+# owned-leaf merge (a drifted leaf quiesces the stack, and the converge starts it). Adding the
+# estate-scripts mount itself changes the compose file, which recreates the container.
+
+# ---- the send gate ---------------------------------------------------------------------------
+- name: Stage the send gate in the policy directory (root-owned, read-only to the container)
+  ansible.builtin.copy:
+    dest: "{{ hermes_config_dir }}/policy/hub_gate.py"
+    mode: "0644"
+    content: "{{ lookup('ansible.builtin.file', role_path ~ '/scripts/hub_gate.py', rstrip=False) }}"
+  when: hermes_hub_gate_enabled | bool
+
+- name: Render the send gate's config (allowlist and protected paths; no secret)
+  ansible.builtin.copy:
+    dest: "{{ hermes_config_dir }}/policy/hub_gate.json"
+    mode: "0644"
+    content: >-
+      {{ {'allowed_recipients': hermes_hub_gate_allowed_recipients | map('lower') | list,
+          'protected_paths': hermes_hub_gate_protected_paths} | to_nice_json }}
+  when: hermes_hub_gate_enabled | bool
+
+# Disabling the gate removes the files too: a stale hub_gate.py with no registration is inert,
+# but a stale config next to a re-enabled gate would be read before the new one is rendered.
+- name: Remove the send gate when it is disabled
+  ansible.builtin.file:
+    path: "{{ hermes_config_dir }}/policy/{{ item }}"
+    state: absent
+  loop: [hub_gate.py, hub_gate.json]
+  when: not (hermes_hub_gate_enabled | bool)
+
+# ---- the read-only subscription store ---------------------------------------------------------
+# hermes_webhook_subscriptions_readonly: a root-owned `{}` mounted READ-ONLY as a file over the
+# agent's data/webhook_subscriptions.json (compose). Upstream honours a hand-written `toolsets`
+# there (webhook.py toolsets_for_source at v0.22.2) and has no seam to cap it, so the only
+# structural control is that the agent uid cannot write the file at all.
+#
+# Mounting over a file that still holds routes would drop them silently, so the converge REFUSES
+# until they are moved into hermes_webhook_routes (static, tier C). The agent's file is stat'd
+# without following: a planted symlink is refused, never read through.
+- name: Stat the agent's subscription store without following it
+  ansible.builtin.stat:
+    path: "{{ hermes_config_dir }}/data/webhook_subscriptions.json"
+    follow: false
+  register: hermes__subs_agent_stat
+  when: hermes_webhook_enabled | bool and hermes_webhook_subscriptions_readonly | bool
+
+- name: Read the agent's subscription store (only a regular, non-empty file)
+  ansible.builtin.slurp:
+    src: "{{ hermes_config_dir }}/data/webhook_subscriptions.json"
+  register: hermes__subs_agent_raw
+  when:
+    - hermes_webhook_enabled | bool and hermes_webhook_subscriptions_readonly | bool
+    - hermes__subs_agent_stat.stat.exists
+    - hermes__subs_agent_stat.stat.isreg | default(false)
+    - (hermes__subs_agent_stat.stat.size | default(0) | int) > 0
+  no_log: true # route secrets live in this file
+
+# Only the route NAMES leave this task; the file's secrets stay under no_log.
+- name: Name the dynamic routes the agent's store still holds
+  ansible.builtin.set_fact:
+    hermes__subs_agent_names: >-
+      {{ ((hermes__subs_agent_raw.content | b64decode | trim | from_json) | default({}, true)).keys() | list
+         if hermes__subs_agent_raw.content is defined else [] }}
+  when: hermes_webhook_enabled | bool and hermes_webhook_subscriptions_readonly | bool
+
+- name: HARD GATE - the store is a plain file (or the empty mountpoint) and holds no dynamic routes
+  ansible.builtin.assert:
+    that:
+      - not hermes__subs_agent_stat.stat.exists or (hermes__subs_agent_stat.stat.isreg | default(false))
+      - hermes__subs_agent_names | length == 0
+    fail_msg: >-
+      hermes_webhook_subscriptions_readonly would mount an empty store over
+      {{ hermes_config_dir }}/data/webhook_subscriptions.json, which
+      {{ ('is not a regular file (link=' ~ (hermes__subs_agent_stat.stat.islnk | default('?')) ~ '); remove it by hand after reading where it points')
+         if hermes__subs_agent_stat.stat.exists and not (hermes__subs_agent_stat.stat.isreg | default(false))
+         else ('still holds dynamic routes ' ~ hermes__subs_agent_names ~ '. Declare the ones to keep in hermes_webhook_routes, then remove them with `hermes webhook remove <name>`') }}.
+      Or set hermes_webhook_subscriptions_readonly: false to keep dynamic routes on purpose.
+    quiet: true
+  when: hermes_webhook_enabled | bool and hermes_webhook_subscriptions_readonly | bool
+
+- name: Ensure the subscription staging directory (root-owned, outside the agent's tree)
+  ansible.builtin.file:
+    path: "{{ hermes_config_dir }}/subscriptions"
+    state: directory
+    follow: false
+    owner: "{{ hermes__estate_owner | default('root') }}"
+    group: "{{ hermes__estate_group | default('root') }}"
+    mode: "0755"
+  when: hermes_webhook_enabled | bool and hermes_webhook_subscriptions_readonly | bool
+
+# A CONSTANT: after the first converge this is a no-op, so the file-bind inode is never replaced.
+- name: Stage the empty, read-only subscription store
+  ansible.builtin.copy:
+    dest: "{{ hermes_config_dir }}/subscriptions/webhook_subscriptions.json"
+    content: "{}\n"
+    owner: "{{ hermes__estate_owner | default('root') }}"
+    group: "{{ hermes__estate_group | default('root') }}"
+    mode: "0644"
+  when: hermes_webhook_enabled | bool and hermes_webhook_subscriptions_readonly | bool
+
+# ---- cron scripts ----------------------------------------------------------------------------
+# The scripts are STAGED OUTSIDE the agent's tree, in {{ hermes_config_dir }}/estate-scripts
+# (root-owned 0755, files 0644, under the root-owned config dir), and the compose file bind-mounts
+# that directory READ-ONLY at /opt/data/scripts/estate. Hermes needs them at that path: cron's
+# _resolve_script_path (cron/scheduler_script.py at v0.22.2) resolve()s every job script and
+# refuses anything outside HERMES_HOME/scripts/, so a symlink to another directory would be
+# refused, and a nested mount is the only way in. Read-only is the MOUNT, not a mode the agent
+# could chmod back.
+#
+# Why not deliver into data/scripts/estate: data/ is the agent's (uid 10000), so any component
+# under it can be a symlink by the time root looks. A delivery that mkdirs, chowns, copies and
+# PRUNES by name there lets a planted `data/scripts/estate -> /etc` make root chown /etc, write
+# the scripts into it, and delete every file in it the source does not have.
+# Nothing here writes or deletes under data/ by name any more: the one thing root still needs
+# there (the agent-owned scripts/ dir and the empty mountpoint, so docker does not invent
+# scripts/ as root and lock the agent out of its own watchdogs) is done by agent_dir.py, which
+# walks from the root-owned config dir with O_NOFOLLOW + dir_fd and refuses a link.
+#
+# A pre-existing data/scripts/estate (root-owned, with copies) is SHADOWED by the mount and never
+# read while it is in place. It is deliberately not deleted here, because deleting under the
+# agent's tree by name is exactly the operation this design avoids.
+#
+# (`hermes__estate_owner`/`_group`/`_uid` are a TEST SEAM, like hermes__merge_quiesce: molecule
+# runs unprivileged and sets them to its own user. A real converge never sets them.)
+- name: Stat the cron scripts staging directory without following it
+  ansible.builtin.stat:
+    path: "{{ hermes_config_dir }}/estate-scripts"
+    follow: false
+  register: hermes__estate_stage_stat
+  when: hermes_cron_scripts_source | length > 0
+
+- name: HARD GATE - the staging directory is a real directory, writable by its owner alone (or absent)
+  ansible.builtin.assert:
+    that:
+      - >-
+        (not hermes__estate_stage_stat.stat.exists)
+        or (hermes__estate_stage_stat.stat.isdir and not hermes__estate_stage_stat.stat.islnk
+            and hermes__estate_stage_stat.stat.pw_name == (hermes__estate_owner | default('root'))
+            and not hermes__estate_stage_stat.stat.wgrp and not hermes__estate_stage_stat.stat.woth)
+    fail_msg: >-
+      {{ hermes_config_dir }}/estate-scripts is not a real directory owned by
+      {{ hermes__estate_owner | default('root') }} and writable by its owner alone
+      (link={{ hermes__estate_stage_stat.stat.islnk | default('?') }},
+      owner={{ hermes__estate_stage_stat.stat.pw_name | default('?') }},
+      mode={{ hermes__estate_stage_stat.stat.mode | default('?') }}). Refusing to write or prune through it.
+    quiet: true
+  when: hermes_cron_scripts_source | length > 0
+
+- name: Ensure the cron scripts staging directory exists (root-owned, outside the agent's tree)
+  ansible.builtin.file:
+    path: "{{ hermes_config_dir }}/estate-scripts"
+    state: directory
+    follow: false
+    owner: "{{ hermes__estate_owner | default('root') }}"
+    group: "{{ hermes__estate_group | default('root') }}"
+    mode: "0755"
+  when: hermes_cron_scripts_source | length > 0
+
+- name: List the cron scripts on the controller
+  ansible.builtin.find:
+    paths: "{{ hermes_cron_scripts_source }}"
+    patterns: ["*.py", "*.sh"]
+    file_type: file
+  register: hermes__cron_src
+  delegate_to: localhost
+  become: false
+  when: hermes_cron_scripts_source | length > 0
+
+- name: HARD GATE - an empty scripts source would delete every delivered cron script
+  ansible.builtin.assert:
+    that: [hermes__cron_src.matched | int > 0]
+    fail_msg: "hermes_cron_scripts_source '{{ hermes_cron_scripts_source }}' holds no .py or .sh; leave it empty to deliver none."
+    quiet: true
+  when: hermes_cron_scripts_source | length > 0
+
+- name: Copy each cron script, root-owned 0644
+  ansible.builtin.copy:
+    src: "{{ item.path }}"
+    dest: "{{ hermes_config_dir }}/estate-scripts/{{ item.path | basename }}"
+    owner: "{{ hermes__estate_owner | default('root') }}"
+    group: "{{ hermes__estate_group | default('root') }}"
+    mode: "0644"
+  loop: "{{ hermes__cron_src.files | default([]) }}"
+  loop_control: { label: "{{ item.path | basename }}" }
+  when: hermes_cron_scripts_source | length > 0
+
+# Non-secret settings only (a cron script does not inherit the gateway's env). The seeded job
+# names are added so a script can tell seeded jobs from personal ones without a second list.
+- name: Render the cron scripts' settings
+  ansible.builtin.copy:
+    dest: "{{ hermes_config_dir }}/estate-scripts/automations.json"
+    owner: "{{ hermes__estate_owner | default('root') }}"
+    group: "{{ hermes__estate_group | default('root') }}"
+    mode: "0644"
+    content: >-
+      {{ hermes_cron_scripts_config
+         | combine({'estate_job_names': hermes_cron_seed | map(attribute='name') | list}) | to_nice_json }}
+  when: hermes_cron_scripts_source | length > 0
+
+# The prune runs over the ROOT-OWNED staging directory only (gated above), never over data/.
+- name: List what is staged now
+  ansible.builtin.find:
+    paths: "{{ hermes_config_dir }}/estate-scripts"
+    file_type: any
+    hidden: true
+  register: hermes__cron_dest
+  when: hermes_cron_scripts_source | length > 0
+
+- name: Remove staged scripts the source no longer has
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: >-
+    {{ hermes__cron_dest.files | default([]) | map(attribute='path')
+       | reject('search', '/automations[.]json$')
+       | reject('in', hermes__cron_src.files | default([]) | map(attribute='path') | map('basename')
+                       | map('regex_replace', '^', hermes_config_dir ~ '/estate-scripts/') | list)
+       | list }}
+  loop_control: { label: "{{ item | basename }}" }
+  when: hermes_cron_scripts_source | length > 0
+
+# The agent-owned scripts/ dir and the empty mountpoint under it, BEFORE compose starts: a missing
+# bind-mount target would be invented by docker as root, scripts/ with it, and the agent could no
+# longer write its own watchdogs there. A link anywhere on the walk is refused (rc 2), never
+# followed; the mountpoint is only ensured, never chowned, so an earlier root-owned one stays so.
+- name: Ensure the agent's scripts dir and the scripts mountpoint, refusing any link (agent_dir.py)
+  ansible.builtin.script:
+    cmd: >-
+      {{ role_path }}/scripts/agent_dir.py
+      --anchor {{ hermes_config_dir | quote }}
+      --anchor-uid {{ hermes__estate_uid | default(0) | int }}
+      --uid {{ hermes_state_uid | int }} --gid {{ hermes_state_gid | int }}
+      --own data/scripts --ensure data/scripts/estate
+    executable: python3
+  register: hermes__agent_dirs
+  changed_when: (hermes__agent_dirs.stdout | default('{}', true) | from_json).changed | default(false)
+  when: hermes_cron_scripts_source | length > 0

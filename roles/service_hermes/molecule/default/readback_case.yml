@@ -1,0 +1,23 @@
+---
+# One canned /v1/models result through the REAL classifier (tasks/_models_readback.yml): the
+# verdict, error class and status must be exactly what the case declares. Every verdict is fed
+# from a different input so none is reachable only by accident.
+- name: "Read-back: {{ rb_case.why }}"
+  block:
+    - name: Classify the canned result
+      ansible.builtin.include_role:
+        name: service_hermes
+        tasks_from: _models_readback
+        public: true
+      vars:
+        hermes__models: "{{ rb_case.result }}"
+    - name: Verdict, class and status are what the case expects
+      ansible.builtin.assert:
+        that:
+          - hermes__rb_verdict == rb_case.verdict
+          - hermes__rb_class == rb_case.class
+          - hermes__rb_status | int == rb_case.status
+        fail_msg: >-
+          {{ rb_case.why }}: got verdict={{ hermes__rb_verdict }} class={{ hermes__rb_class }}
+          status={{ hermes__rb_status }}, wanted {{ rb_case.verdict }}/{{ rb_case.class }}/{{ rb_case.status }}
+        quiet: true

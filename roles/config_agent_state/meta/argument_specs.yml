@@ -1,0 +1,853 @@
+---
+# AUTO-GENERATED argument spec — DO NOT EDIT.
+#
+# Source of truth: roles/config_agent_state/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate config_agent_state
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+argument_specs:
+  main:
+    short_description: Install the agent-state backup and mirror jobs and their timers
+    description:
+      - Installs the mechanics, renders the nightly backup and mirror units, and reads
+      - them back. Layer 2 (persona, memory, skills, jobs) goes to git with a
+      - pre-commit secret and PII scan that blocks from the first run; layer 3 (the
+      - runtime tree) goes to the backup share as an age-encrypted tar with SQLite
+      - copied through the online-backup API. Converging this changes no agent state.
+    version_added: '1.0'
+    author: Collection maintainers
+    options:
+      agent_state_root:
+        description:
+          - Absolute path of the agent's state directory on this host (the directory the
+          - container bind-mounts as its data volume).
+        type: str
+        required: true
+      agent_state_mirror_paths:
+        description:
+          - 'Layer-2 paths, relative to the state root, mirrored to git: persona, memory, skills,'
+          - cron jobs, webhook routes. Files only; never the runtime layer.
+        type: list
+        required: true
+        elements: str
+      agent_state_repo_url:
+        description:
+          - Remote URL of the (private) mirror repository.
+        type: str
+        required: true
+      agent_state_deploy_key:
+        description:
+          - PRIVATE deploy key for the mirror repository (OpenSSH format), read from a secret
+          - store by the play. Written 0600 on the host; never printed.
+        type: str
+        required: true
+        no_log: true
+      agent_state_backup_target:
+        description:
+          - Absolute path of the mounted backup share directory. The job REFUSES if it is not an
+          - existing directory, so an unmounted share cannot silently fill the host's disk.
+        type: str
+        required: true
+      agent_state_backup_recipient:
+        description:
+          - age PUBLIC key (age1...) the archives are encrypted to. The private key stays in a
+          - secret store and never lives on the host.
+        type: str
+        required: true
+      agent_state_textfile_dir:
+        description:
+          - Directory the node exporter's textfile collector reads. The backup and mirror jobs
+          - write a last-success TIMESTAMP there (the alert computes age from it, so a job that
+          - stops running cannot leave a frozen 'age' behind).
+        type: str
+        required: true
+      agent_state_product:
+        description:
+          - Which agent product this state belongs to (the role is built for Hermes and keeps
+          - every product-specific value an option). It names the archives and the metrics
+          - label so a second product can share a backup share without colliding. Lowercase
+          - letters, digits and hyphens.
+        type: str
+        required: false
+        default: hermes
+      agent_state_python:
+        description:
+          - Interpreter that runs agent_state.py. It must be 3.12 or newer (tarfile extraction
+          - filters); the script refuses an older one rather than extracting unfiltered.
+        type: str
+        required: false
+        default: python3
+      agent_state_install_dir:
+        description:
+          - Where the role installs agent_state.py on the host.
+        type: str
+        required: false
+        default: /usr/local/lib/agent-state
+      agent_state_mirror_exclude:
+        description:
+          - fnmatch patterns (matched per path and per component) left out of the mirror.
+        type: list
+        required: false
+        default: []
+        elements: str
+      agent_state_mirror_skip_names_file:
+        description:
+          - File (relative to the root) listing names, one per line (``name`` or ``name:hash``),
+          - that the mirror leaves out wherever they appear as a path component. For Hermes this is
+          - "``skills/.bundled_manifest``: the image's own skills return with the image, and their"
+          - sample addresses and ``api_key=`` lines would block the secret scan on every run.
+          - Empty excludes nothing.
+        type: str
+        required: false
+        default: ''
+      agent_state_config_file:
+        description:
+          - 'Optional config file (relative to the root) mirrored as a MASKED snapshot: any line'
+          - whose key looks like a credential has its value replaced. Empty means none.
+        type: str
+        required: false
+        default: ''
+      agent_state_mask_patterns:
+        description:
+          - Extra regexes of config KEY names to mask, added to the built-in set.
+        type: list
+        required: false
+        default: []
+        elements: str
+      agent_state_scan_patterns:
+        description:
+          - Extra regexes the pre-commit scan blocks on, added to the built-in secret and PII
+          - shapes. The scan blocks from the very first run.
+        type: list
+        required: false
+        default: []
+        elements: str
+      agent_state_repo_branch:
+        description:
+          - Branch the mirror pushes to.
+        type: str
+        required: false
+        default: main
+      agent_state_key_dir:
+        description:
+          - Directory (0700) holding the deploy key on the host.
+        type: str
+        required: false
+        default: /etc/agent-state
+      agent_state_mirror_dir:
+        description:
+          - Working clone the mirror commits in. Rebuildable; holds no state of its own.
+        type: str
+        required: false
+        default: /var/lib/agent-state/mirror
+      agent_state_git_author_name:
+        description:
+          - Commit author name.
+        type: str
+        required: false
+        default: agent-state-mirror
+      agent_state_git_author_email:
+        description:
+          - Commit author email.
+        type: str
+        required: false
+        default: agent-state-mirror@localhost
+      agent_state_backup_keep:
+        description:
+          - Newest archives kept (the ring).
+        type: int
+        required: false
+        default: 14
+      agent_state_backup_keep_monthly:
+        description:
+          - How many months' FIRST archive are kept beyond the ring.
+        type: int
+        required: false
+        default: 12
+      agent_state_backup_exclude:
+        description:
+          - fnmatch patterns left out of the runtime tar (caches, logs, sandboxes, browser
+          - profiles). A pattern ending in a slash matches a directory name.
+        type: list
+        required: false
+        default: []
+        elements: str
+      agent_state_sqlite_files:
+        description:
+          - SQLite files (relative to the root) copied with the online-backup API instead of a
+          - file copy, then integrity-checked. A live database copied as a file loses its WAL.
+        type: list
+        required: false
+        default: []
+        elements: str
+      agent_state_packages:
+        description:
+          - OS packages the mechanics need. The role asserts each binary is present afterwards
+          - whether or not it installed anything.
+        type: list
+        required: false
+        default:
+          - age
+          - zstd
+          - git
+        elements: str
+      agent_state_enable_timers:
+        description:
+          - Enable and start the systemd timers. False only where there is no systemd (the
+          - molecule scenario); the units are still rendered and read back.
+        type: bool
+        required: false
+        default: true
+      agent_state_unit_dir:
+        description:
+          - Where unit files are written.
+        type: str
+        required: false
+        default: /etc/systemd/system
+      agent_state_backup_oncalendar:
+        description:
+          - OnCalendar of the nightly backup.
+        type: str
+        required: false
+        default: '*-*-* 02:00:00'
+      agent_state_mirror_oncalendar:
+        description:
+          - OnCalendar of the nightly mirror.
+        type: str
+        required: false
+        default: '*-*-* 02:30:00'
+  backup:
+    short_description: Take one encrypted state backup now
+    description:
+      - SQLite files via the online-backup API (integrity-checked; a corrupt database
+      - REFUSES the backup), tar, zstd, age, sha256 manifest, ring prune, last-success
+      - timestamp metric. A new archive each run, so it reports changed every time.
+    version_added: '1.0'
+    author: Collection maintainers
+    options:
+      agent_state_root:
+        description:
+          - Absolute path of the agent's state directory on this host (the directory the
+          - container bind-mounts as its data volume).
+        type: str
+        required: true
+      agent_state_backup_target:
+        description:
+          - Absolute path of the mounted backup share directory. The job REFUSES if it is not an
+          - existing directory, so an unmounted share cannot silently fill the host's disk.
+        type: str
+        required: true
+      agent_state_backup_recipient:
+        description:
+          - age PUBLIC key (age1...) the archives are encrypted to. The private key stays in a
+          - secret store and never lives on the host.
+        type: str
+        required: true
+      agent_state_textfile_dir:
+        description:
+          - Directory the node exporter's textfile collector reads. The backup and mirror jobs
+          - write a last-success TIMESTAMP there (the alert computes age from it, so a job that
+          - stops running cannot leave a frozen 'age' behind).
+        type: str
+        required: true
+      agent_state_product:
+        description:
+          - Which agent product this state belongs to (the role is built for Hermes and keeps
+          - every product-specific value an option). It names the archives and the metrics
+          - label so a second product can share a backup share without colliding. Lowercase
+          - letters, digits and hyphens.
+        type: str
+        required: false
+        default: hermes
+      agent_state_python:
+        description:
+          - Interpreter that runs agent_state.py. It must be 3.12 or newer (tarfile extraction
+          - filters); the script refuses an older one rather than extracting unfiltered.
+        type: str
+        required: false
+        default: python3
+      agent_state_install_dir:
+        description:
+          - Where the role installs agent_state.py on the host.
+        type: str
+        required: false
+        default: /usr/local/lib/agent-state
+      agent_state_backup_keep:
+        description:
+          - Newest archives kept (the ring).
+        type: int
+        required: false
+        default: 14
+      agent_state_backup_keep_monthly:
+        description:
+          - How many months' FIRST archive are kept beyond the ring.
+        type: int
+        required: false
+        default: 12
+      agent_state_backup_exclude:
+        description:
+          - fnmatch patterns left out of the runtime tar (caches, logs, sandboxes, browser
+          - profiles). A pattern ending in a slash matches a directory name.
+        type: list
+        required: false
+        default: []
+        elements: str
+      agent_state_sqlite_files:
+        description:
+          - SQLite files (relative to the root) copied with the online-backup API instead of a
+          - file copy, then integrity-checked. A live database copied as a file loses its WAL.
+        type: list
+        required: false
+        default: []
+        elements: str
+      agent_state_backup_label:
+        description:
+          - Label in the archive name, e.g. pre-upgrade.
+        type: str
+        required: false
+        default: manual
+  mirror:
+    short_description: Mirror layer-2 state to git now (scan blocks the commit)
+    description:
+      - Syncs the mirror paths and a masked config snapshot into the work clone, scans
+      - every file, and only if the scan is clean commits and pushes. A finding fails
+      - the entrypoint, stages nothing and reports file, rule and line (never a value).
+    version_added: '1.0'
+    author: Collection maintainers
+    options:
+      agent_state_root:
+        description:
+          - Absolute path of the agent's state directory on this host (the directory the
+          - container bind-mounts as its data volume).
+        type: str
+        required: true
+      agent_state_mirror_paths:
+        description:
+          - 'Layer-2 paths, relative to the state root, mirrored to git: persona, memory, skills,'
+          - cron jobs, webhook routes. Files only; never the runtime layer.
+        type: list
+        required: true
+        elements: str
+      agent_state_repo_url:
+        description:
+          - Remote URL of the (private) mirror repository.
+        type: str
+        required: true
+      agent_state_deploy_key:
+        description:
+          - PRIVATE deploy key for the mirror repository (OpenSSH format), read from a secret
+          - store by the play. Written 0600 on the host; never printed.
+        type: str
+        required: true
+        no_log: true
+      agent_state_textfile_dir:
+        description:
+          - Directory the node exporter's textfile collector reads. The backup and mirror jobs
+          - write a last-success TIMESTAMP there (the alert computes age from it, so a job that
+          - stops running cannot leave a frozen 'age' behind).
+        type: str
+        required: true
+      agent_state_product:
+        description:
+          - Which agent product this state belongs to (the role is built for Hermes and keeps
+          - every product-specific value an option). It names the archives and the metrics
+          - label so a second product can share a backup share without colliding. Lowercase
+          - letters, digits and hyphens.
+        type: str
+        required: false
+        default: hermes
+      agent_state_python:
+        description:
+          - Interpreter that runs agent_state.py. It must be 3.12 or newer (tarfile extraction
+          - filters); the script refuses an older one rather than extracting unfiltered.
+        type: str
+        required: false
+        default: python3
+      agent_state_install_dir:
+        description:
+          - Where the role installs agent_state.py on the host.
+        type: str
+        required: false
+        default: /usr/local/lib/agent-state
+      agent_state_mirror_exclude:
+        description:
+          - fnmatch patterns (matched per path and per component) left out of the mirror.
+        type: list
+        required: false
+        default: []
+        elements: str
+      agent_state_mirror_skip_names_file:
+        description:
+          - File (relative to the root) listing names, one per line (``name`` or ``name:hash``),
+          - that the mirror leaves out wherever they appear as a path component. For Hermes this is
+          - "``skills/.bundled_manifest``: the image's own skills return with the image, and their"
+          - sample addresses and ``api_key=`` lines would block the secret scan on every run.
+          - Empty excludes nothing.
+        type: str
+        required: false
+        default: ''
+      agent_state_config_file:
+        description:
+          - 'Optional config file (relative to the root) mirrored as a MASKED snapshot: any line'
+          - whose key looks like a credential has its value replaced. Empty means none.
+        type: str
+        required: false
+        default: ''
+      agent_state_mask_patterns:
+        description:
+          - Extra regexes of config KEY names to mask, added to the built-in set.
+        type: list
+        required: false
+        default: []
+        elements: str
+      agent_state_scan_patterns:
+        description:
+          - Extra regexes the pre-commit scan blocks on, added to the built-in secret and PII
+          - shapes. The scan blocks from the very first run.
+        type: list
+        required: false
+        default: []
+        elements: str
+      agent_state_repo_branch:
+        description:
+          - Branch the mirror pushes to.
+        type: str
+        required: false
+        default: main
+      agent_state_key_dir:
+        description:
+          - Directory (0700) holding the deploy key on the host.
+        type: str
+        required: false
+        default: /etc/agent-state
+      agent_state_mirror_dir:
+        description:
+          - Working clone the mirror commits in. Rebuildable; holds no state of its own.
+        type: str
+        required: false
+        default: /var/lib/agent-state/mirror
+      agent_state_git_author_name:
+        description:
+          - Commit author name.
+        type: str
+        required: false
+        default: agent-state-mirror
+      agent_state_git_author_email:
+        description:
+          - Commit author email.
+        type: str
+        required: false
+        default: agent-state-mirror@localhost
+  restore:
+    short_description: Restore agent state while the stack is stopped
+    description:
+      - Stop the stack; unpack into a stage directory; validate while stopped (ciphertext
+      - sha, member sha, integrity_check, row counts, required paths); swap atomically,
+      - keeping the old tree aside; quiet start; wait healthy; re-write layer-2 files;
+      - read-back; remove the overlay; restart; read-back again. A corrupt or tampered
+      - archive is refused BEFORE anything is touched.
+    version_added: '1.0'
+    author: Collection maintainers
+    options:
+      agent_state_restore_confirm:
+        description:
+          - 'Gate: a restore replaces live state and stops the stack. Must be true.'
+        type: bool
+        required: true
+      agent_state_root:
+        description:
+          - Absolute path of the agent's state directory on this host (the directory the
+          - container bind-mounts as its data volume).
+        type: str
+        required: true
+      agent_state_restore_identity:
+        description:
+          - age PRIVATE key (AGE-SECRET-KEY-...) read from a secret store for this run. Written to a
+          - 0600 temp file for the decrypt and removed in an always block.
+        type: str
+        required: true
+        no_log: true
+      agent_state_mirror_paths:
+        description:
+          - 'Layer-2 paths, relative to the state root, mirrored to git: persona, memory, skills,'
+          - cron jobs, webhook routes. Files only; never the runtime layer.
+        type: list
+        required: true
+        elements: str
+      agent_state_product:
+        description:
+          - Which agent product this state belongs to (the role is built for Hermes and keeps
+          - every product-specific value an option). It names the archives and the metrics
+          - label so a second product can share a backup share without colliding. Lowercase
+          - letters, digits and hyphens.
+        type: str
+        required: false
+        default: hermes
+      agent_state_python:
+        description:
+          - Interpreter that runs agent_state.py. It must be 3.12 or newer (tarfile extraction
+          - filters); the script refuses an older one rather than extracting unfiltered.
+        type: str
+        required: false
+        default: python3
+      agent_state_install_dir:
+        description:
+          - Where the role installs agent_state.py on the host.
+        type: str
+        required: false
+        default: /usr/local/lib/agent-state
+      agent_state_backup_target:
+        description:
+          - Absolute path of the mounted backup share directory. The job REFUSES if it is not an
+          - existing directory, so an unmounted share cannot silently fill the host's disk.
+        type: str
+        required: false
+      agent_state_restore_from:
+        description:
+          - Archive file name inside the backup target (runtime or both scope). The play takes
+          - it from a vars file, never from the command line.
+        type: str
+        required: false
+      agent_state_restore_scope:
+        description:
+          - 'mind: only the mirror paths, from git. runtime: the archive. both: the archive,'
+          - then the mirror paths over it (layer 2 is newer than last night's tar).
+        type: str
+        required: false
+        default: runtime
+        choices:
+          - mind
+          - runtime
+          - both
+      agent_state_restore_ref:
+        description:
+          - Git ref the mind scope restores from.
+        type: str
+        required: false
+        default: HEAD
+      agent_state_restore_quiet_start:
+        description:
+          - Start with the quiet-start overlay (platforms, cron dispatch and webhooks off) until
+          - the read-back passes, so nothing can act on half-restored state.
+        type: bool
+        required: false
+        default: true
+      agent_state_quiet_start_env:
+        description:
+          - Environment the quiet-start overlay sets. Which variables disable a product's
+          - platforms, cron dispatch and webhook listener is product knowledge declared in
+          - inventory; an empty dict with quiet start on is REFUSED, not treated as 'nothing to
+          - disable'.
+        type: dict
+        required: false
+        default: {}
+      agent_state_required_paths:
+        description:
+          - Paths that must exist in the restored tree or the restore is refused.
+        type: list
+        required: false
+        default: []
+        elements: str
+      agent_state_stack_managed:
+        description:
+          - Stop and start the compose stack around the restore. False only where there is no
+          - docker daemon (the molecule scenario).
+        type: bool
+        required: false
+        default: true
+      agent_state_stack_project_dir:
+        description:
+          - Compose project directory of the agent stack (required when managed).
+        type: str
+        required: false
+        default: ''
+      agent_state_stack_service:
+        description:
+          - Compose service name of the agent (required for quiet start).
+        type: str
+        required: false
+        default: ''
+      agent_state_stack_compose_file:
+        description:
+          - Compose file name inside the project directory.
+        type: str
+        required: false
+        default: docker-compose.yml
+      agent_state_health_url:
+        description:
+          - URL that answers 200 once the agent is healthy (required when managed).
+        type: str
+        required: false
+        default: ''
+      agent_state_health_retries:
+        description:
+          - Health polls, 5 s apart.
+        type: int
+        required: false
+        default: 30
+      agent_state_readback_checks:
+        description:
+          - 'Read-backs run after the restore: dicts of name, url, status (default 200) and'
+          - contains (optional substring of the body). Declared per product in inventory.
+        type: list
+        required: false
+        default: []
+        elements: dict
+      agent_state_readback_api_key:
+        description:
+          - Bearer key the read-backs present, when the API needs one.
+        type: str
+        required: false
+        default: ''
+        no_log: true
+      agent_state_repo_url:
+        description:
+          - Remote URL of the (private) mirror repository.
+        type: str
+        required: false
+      agent_state_deploy_key:
+        description:
+          - PRIVATE deploy key for the mirror repository (OpenSSH format), read from a secret
+          - store by the play. Written 0600 on the host; never printed.
+        type: str
+        required: false
+        no_log: true
+      agent_state_key_dir:
+        description:
+          - Directory (0700) holding the deploy key on the host.
+        type: str
+        required: false
+        default: /etc/agent-state
+  drill:
+    short_description: Restore the latest backup into an isolated scratch container
+    description:
+      - Restores into a scratch directory under a second container that is isolated by
+      - construction (no published port, internal network with no egress, scratch env
+      - with no credential, no deploy key), runs the read-backs, asserts the mirror
+      - gained no commit during the window, and tears everything down in an always block.
+    version_added: '1.0'
+    author: Collection maintainers
+    options:
+      agent_state_drill_confirm:
+        description:
+          - Gate for the isolated restore drill.
+        type: bool
+        required: true
+      agent_state_backup_target:
+        description:
+          - Absolute path of the mounted backup share directory. The job REFUSES if it is not an
+          - existing directory, so an unmounted share cannot silently fill the host's disk.
+        type: str
+        required: true
+      agent_state_restore_identity:
+        description:
+          - age PRIVATE key (AGE-SECRET-KEY-...) read from a secret store for this run. Written to a
+          - 0600 temp file for the decrypt and removed in an always block.
+        type: str
+        required: true
+        no_log: true
+      agent_state_drill_image:
+        description:
+          - The pinned image reference (repo:tag@sha256:...) the drill runs.
+        type: str
+        required: true
+      agent_state_drill_port:
+        description:
+          - Port the agent LISTENS on inside the drill container (it must match the product env
+          - 'in agent_state_drill_env). Nothing is published on the host: the drill is reached by'
+          - its address on an internal docker network.
+        type: int
+        required: true
+      agent_state_product:
+        description:
+          - Which agent product this state belongs to (the role is built for Hermes and keeps
+          - every product-specific value an option). It names the archives and the metrics
+          - label so a second product can share a backup share without colliding. Lowercase
+          - letters, digits and hyphens.
+        type: str
+        required: false
+        default: hermes
+      agent_state_python:
+        description:
+          - Interpreter that runs agent_state.py. It must be 3.12 or newer (tarfile extraction
+          - filters); the script refuses an older one rather than extracting unfiltered.
+        type: str
+        required: false
+        default: python3
+      agent_state_install_dir:
+        description:
+          - Where the role installs agent_state.py on the host.
+        type: str
+        required: false
+        default: /usr/local/lib/agent-state
+      agent_state_drill_dir:
+        description:
+          - Scratch directory the drill restores into. Removed afterwards.
+        type: str
+        required: false
+        default: /var/tmp/agent-state-drill
+      agent_state_drill_env:
+        description:
+          - Scratch environment for the drill container. Any key that looks like a credential is
+          - 'REFUSED: the drill must hold no Slack, mail or API tokens and no spendable key.'
+        type: dict
+        required: false
+        default: {}
+      agent_state_drill_command:
+        description:
+          - The container command the drill runs (the compose `command:`). Empty leaves the image's
+          - own default, which for an agent image is usually an INTERACTIVE shell that exits at once
+          - without a TTY (Hermes prints its banner and shuts down). Set it to what the real
+          - 'stack runs (Hermes: gateway run).'
+        type: list
+        required: false
+        default: []
+        elements: str
+      agent_state_drill_scratch_secrets:
+        description:
+          - Environment names that receive a RANDOM value generated for this run only (never read
+          - from a secret store, never stored). The drill container needs some credential to start its
+          - API; it gets a throwaway nobody else holds. Names here are exempt from the
+          - credential-name refusal that applies to agent_state_drill_env.
+        type: list
+        required: false
+        default: []
+        elements: str
+      agent_state_drill_readback_key_env:
+        description:
+          - "Which scratch secret the drill's read-backs present as a bearer key (empty: none)."
+        type: str
+        required: false
+        default: ''
+      agent_state_drill_data_path:
+        description:
+          - Path inside the container where the state directory is mounted.
+        type: str
+        required: false
+        default: /opt/data
+      agent_state_drill_health_path:
+        description:
+          - Path on the drill container that answers 200 once the agent is up.
+        type: str
+        required: false
+        default: /health
+      agent_state_drill_archive:
+        description:
+          - 'Archive to drill: a file name, or latest.'
+        type: str
+        required: false
+        default: latest
+      agent_state_drill_readbacks:
+        description:
+          - Read-backs against the drill container (same shape as the restore's).
+        type: list
+        required: false
+        default: []
+        elements: dict
+      agent_state_required_paths:
+        description:
+          - Paths that must exist in the restored tree or the restore is refused.
+        type: list
+        required: false
+        default: []
+        elements: str
+      agent_state_mirror_dir:
+        description:
+          - Working clone the mirror commits in. Rebuildable; holds no state of its own.
+        type: str
+        required: false
+        default: /var/lib/agent-state/mirror
+      agent_state_health_retries:
+        description:
+          - Health polls, 5 s apart.
+        type: int
+        required: false
+        default: 30
+      agent_state_stack_managed:
+        description:
+          - Stop and start the compose stack around the restore. False only where there is no
+          - docker daemon (the molecule scenario).
+        type: bool
+        required: false
+        default: true
+  verify:
+    short_description: 'Read-only: backup age, manifest check, mirror vs live'
+    description:
+      - Reports the newest archive's age and ciphertext hash against its manifest, and how
+      - many live mirror-path files differ from the mirror's HEAD. Fails when the newest
+      - backup is older than the limit or its hash does not match.
+    version_added: '1.0'
+    author: Collection maintainers
+    options:
+      agent_state_root:
+        description:
+          - Absolute path of the agent's state directory on this host (the directory the
+          - container bind-mounts as its data volume).
+        type: str
+        required: true
+      agent_state_mirror_paths:
+        description:
+          - 'Layer-2 paths, relative to the state root, mirrored to git: persona, memory, skills,'
+          - cron jobs, webhook routes. Files only; never the runtime layer.
+        type: list
+        required: true
+        elements: str
+      agent_state_backup_target:
+        description:
+          - Absolute path of the mounted backup share directory. The job REFUSES if it is not an
+          - existing directory, so an unmounted share cannot silently fill the host's disk.
+        type: str
+        required: true
+      agent_state_product:
+        description:
+          - Which agent product this state belongs to (the role is built for Hermes and keeps
+          - every product-specific value an option). It names the archives and the metrics
+          - label so a second product can share a backup share without colliding. Lowercase
+          - letters, digits and hyphens.
+        type: str
+        required: false
+        default: hermes
+      agent_state_python:
+        description:
+          - Interpreter that runs agent_state.py. It must be 3.12 or newer (tarfile extraction
+          - filters); the script refuses an older one rather than extracting unfiltered.
+        type: str
+        required: false
+        default: python3
+      agent_state_install_dir:
+        description:
+          - Where the role installs agent_state.py on the host.
+        type: str
+        required: false
+        default: /usr/local/lib/agent-state
+      agent_state_mirror_exclude:
+        description:
+          - fnmatch patterns (matched per path and per component) left out of the mirror.
+        type: list
+        required: false
+        default: []
+        elements: str
+      agent_state_mirror_skip_names_file:
+        description:
+          - File (relative to the root) listing names, one per line (``name`` or ``name:hash``),
+          - that the mirror leaves out wherever they appear as a path component. For Hermes this is
+          - "``skills/.bundled_manifest``: the image's own skills return with the image, and their"
+          - sample addresses and ``api_key=`` lines would block the secret scan on every run.
+          - Empty excludes nothing.
+        type: str
+        required: false
+        default: ''
+      agent_state_mirror_dir:
+        description:
+          - Working clone the mirror commits in. Rebuildable; holds no state of its own.
+        type: str
+        required: false
+        default: /var/lib/agent-state/mirror
+      agent_state_verify_max_age_seconds:
+        description:
+          - verify fails when the newest backup is older than this (36 h).
+        type: int
+        required: false
+        default: 129600

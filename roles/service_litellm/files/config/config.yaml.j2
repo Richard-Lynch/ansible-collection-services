@@ -1,0 +1,187 @@
+---
+# Rendered by roles/service_litellm. Do not edit on the host.
+#
+# Every provider block is conditional on its key resolving non-empty. A model_list entry
+# with an empty api_key LOADS FINE and only fails at request time -- a silent
+# misconfiguration, so the entry is omitted entirely instead.
+#
+# Keys are referenced as os.environ/<NAME> so the VALUES live only in app.env (0600 on the
+# host, never in this file and never in a log).
+#
+# Wildcard model_name per provider: a new upstream model is usable the day it ships with no
+# config change. Add an explicit alias below a wildcard if you want a stable local name.
+model_list:
+{% if litellm_anthropic_api_key | default('') | length > 0 %}
+  # ---- Anthropic ----
+  - model_name: "anthropic/*"
+    litellm_params:
+      model: "anthropic/*"
+      api_key: os.environ/ANTHROPIC_API_KEY
+{% endif %}
+{% if litellm_openai_api_key | default('') | length > 0 %}
+  # ---- OpenAI ----
+  - model_name: "openai/*"
+    litellm_params:
+      model: "openai/*"
+      api_key: os.environ/OPENAI_API_KEY
+{% endif %}
+{% if litellm_gemini_api_key | default('') | length > 0 %}
+  # ---- Google Gemini ----
+  - model_name: "gemini/*"
+    litellm_params:
+      model: "gemini/*"
+      api_key: os.environ/GEMINI_API_KEY
+{% endif %}
+{% if litellm_openrouter_api_key | default('') | length > 0 %}
+  # ---- OpenRouter ----
+{# A real provider, not a pass-through: OpenRouter is OpenAI-compatible and LiteLLM has a native
+   `openrouter` provider, so it joins model_list like the three above. Its value is breadth
+   (hundreds of models behind one key, including ones with no direct account) rather than a
+   cheaper path to providers that are configured directly. #}
+  - model_name: "openrouter/*"
+    litellm_params:
+      model: "openrouter/*"
+      api_key: os.environ/OPENROUTER_API_KEY
+{% endif %}
+{% if litellm_elevenlabs_api_key | default('') | length > 0 %}
+  # ---- ElevenLabs (text to speech) ----
+  # A NATIVE provider, so it belongs in model_list exactly like the four above rather than in
+  # some TTS-specific block — verified on the running build, not assumed: provider_list carries
+  # `LlmProviders.ELEVENLABS` and the cost map carries 5 elevenlabs/* models whose modes are
+  # audio_speech and audio_transcription.
+  #
+  # The wildcard is what makes this one entry serve TTS: LiteLLM resolves the concrete model
+  # name against its cost map at request time and takes the MODE from there, so
+  # `elevenlabs/eleven_multilingual_v2` routes to /v1/audio/speech with no per-model entry. Same
+  # reasoning as the provider wildcards above, and the same reason this role has no
+  # litellm_tts_models option.
+  - model_name: "elevenlabs/*"
+    litellm_params:
+      model: "elevenlabs/*"
+      api_key: os.environ/ELEVENLABS_API_KEY
+{% endif %}
+{% if litellm_openrouter_api_key | default('') | length > 0 and litellm_openrouter_models | default([]) | length > 0 %}
+  # ---- OpenRouter: EXPLICIT entries, in addition to the wildcard above ----
+{# The wildcard routes every OpenRouter model but enumerates NONE of them -- OpenRouter has no
+   provider model-info class on this LiteLLM build (get_provider_model_info() -> None), so it
+   contributes nothing to GET /v1/models. Open WebUI builds its model picker from exactly that
+   endpoint, with no query parameters, so an OpenRouter model is unpickable no matter how well
+   it routes; `?return_wildcard_routes=true` only appends the literal pattern strings, it does
+   not expand them.
+
+   So each id below is named explicitly to make it SELECTABLE. The wildcard stays: it is what
+   keeps every unlisted model reachable the day it ships, and dropping it to "tidy up" would
+   silently break every model not on this list. #}
+{% for _m in litellm_openrouter_models %}
+  - model_name: "{{ _m }}"
+    litellm_params:
+      model: "{{ _m }}"
+      api_key: os.environ/OPENROUTER_API_KEY
+{% endfor %}
+{% endif %}
+{% if litellm_model_aliases | default([]) | length > 0 %}
+  # ---- stable aliases ----
+  # Clients ask for these names, never a vendor id, so a model can be re-pointed here without
+  # touching any consumer. The provider wildcards above stay: they keep every unaliased model
+  # routable by name. The key variable follows the model's provider prefix; the role asserts
+  # that provider has a key before rendering, since an entry with no key loads and then fails
+  # only at request time.
+{% for _a in litellm_model_aliases %}
+{% set _prov = _a.model.split('/')[0] %}
+  - model_name: "{{ _a.name }}"
+    litellm_params:
+      model: "{{ _a.model }}"
+      api_key: os.environ/{{ _prov | upper }}_API_KEY
+{% endfor %}
+{% endif %}
+{% if litellm_ollama_enabled | bool and litellm_ollama_models | default([]) | length > 0 %}
+  # ---- Local Ollama ----
+  # Ollama has no wildcard support, so each model is named explicitly. No api_key: a local
+  # Ollama does not authenticate.
+{% for _model in litellm_ollama_models %}
+  - model_name: "{{ _model }}"
+    litellm_params:
+      model: "ollama/{{ _model }}"
+      api_base: "{{ litellm_ollama_api_base }}"
+{% endfor %}
+{% endif %}
+
+{% if litellm_brave_search_api_key | default('') | length > 0 %}
+# ---- web search ----------------------------------------------------------------------
+# A TOP-LEVEL block, not part of model_list: a search provider is not an LLM provider on this
+# build. `config.get("search_tools")` in proxy_server.py is what reads this (v1.104.2), and the
+# router is constructed with them even when model_list is empty.
+#
+# The schema is `search_tool_name` + `litellm_params.search_provider`, taken from
+# litellm/types/search.py rather than from the general docs. The proxy serves it at
+# POST /v1/search/<name>, and also accepts the name in the body at POST /v1/search.
+#
+# Only the KEY is referenced here, as os.environ — BraveSearchConfig reads BRAVE_API_KEY itself
+# and sends it as `X-Subscription-Token`. Note a generic `auth_type: api_key` would be WRONG for
+# Brave: that puts the credential in `Authorization: ApiKey ...`, which Brave does not read.
+search_tools:
+  - search_tool_name: "{{ litellm_brave_search_tool_name }}"
+    litellm_params:
+      search_provider: brave
+      api_key: os.environ/BRAVE_API_KEY
+{% endif %}
+{% if litellm_mcp_context7_enabled | bool %}
+# ---- MCP gateway ---------------------------------------------------------------------
+# A DICT KEYED BY SERVER NAME, not a list — `load_servers_from_config` iterates
+# `mcp_servers_config.items()` (v1.104.2), so a list here is not merely stylistically different,
+# it fails to load. Fields are from MCPServer in litellm/types/mcp_server/mcp_server_manager.py;
+# transport is one of sse/http/stdio and auth_type one of none/api_key/bearer_token/...
+#
+# `transport: http` + `auth_type: none` is the whole configuration for Context7: it is hosted,
+# needs no credential, and so needs no secret plumbing and no derived image. A `stdio` server
+# would instead be executed INSIDE this container, which ships no node/npx.
+#
+{# The endpoint answers MCP `initialize` and lists `resolve-library-id` and `query-docs`; probe
+   any new server the same way before adding it — an entry pointing at a dead URL registers fine
+   and simply exposes no tools, which is indistinguishable from an unconfigured gateway. #}
+mcp_servers:
+  context7:
+    url: "{{ litellm_mcp_context7_url }}"
+    transport: http
+    auth_type: none
+    description: "Up-to-date library documentation (resolve-library-id, query-docs)"
+{% endif %}
+
+litellm_settings:
+  # Exposes /metrics for Prometheus.
+{# On v1.104.2 /metrics/ requires the master key as a bearer token, and /metrics (no trailing
+   slash) answers 307, which a Prometheus scrape does not follow. #}
+  callbacks: ["prometheus"]
+  drop_params: {{ litellm_drop_params | bool | lower }}
+  telemetry: {{ litellm_telemetry | bool | lower }}
+  request_timeout: {{ litellm_request_timeout | int }}
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL
+  store_model_in_db: {{ litellm_store_model_in_db | bool | lower }}
+  # Stop the master key doubling as a proxy-admin CONSOLE login. With UI_PASSWORD unset LiteLLM
+  # falls back to username `admin` + the master key (v1.104.2 auth/login_utils.py), so an API
+  # credential that necessarily gets copied into clients, scripts and secret stores is also a
+  # full admin console login — a shared static secret with no per-person attribution. The proxy
+  # warns about this itself, in a red banner.
+{#
+   THIS LINE LIVES IN THE TEMPLATE on purpose: the role owns config.yaml and rewrites it on every
+   converge, so a setting applied by editing the deployed file is silently reverted by the next
+   deploy. A security setting applied outside the thing that renders the file is not applied; it
+   is borrowed.
+
+   Requires a real admin account to exist first, or nobody can sign in. Create it from an
+   invitation link (LiteLLM refuses a password on /user/new); flipping this to false is the
+   escape hatch if you ever lose the account. #}
+  disable_env_credential_login: {{ litellm_disable_env_credential_login | bool | lower }}
+
+router_settings:
+  num_retries: {{ litellm_num_retries | int }}
+{% if litellm_model_aliases | default([]) | selectattr('fallback', 'defined') | list | length > 0 %}
+  # An alias's fallback is another ALIAS on a different upstream (asserted by the role).
+  fallbacks:
+{% for _a in litellm_model_aliases | selectattr('fallback', 'defined') %}
+    - "{{ _a.name }}": ["{{ _a.fallback }}"]
+{% endfor %}
+{% endif %}

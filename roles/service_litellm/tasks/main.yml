@@ -1,0 +1,473 @@
+---
+# service_litellm — LiteLLM gateway + Open WebUI + Postgres as one compose stack.
+#
+# Render config, ensure the shared network, converge the stack, restart only on a real config
+# change, then PROVE the result with read-backs rather than trusting the deploy's own exit code.
+
+- name: Store vars
+  ansible.builtin.set_fact:
+    litellm_files: "{{ role_path }}/files"
+    # Which providers actually resolved. Computed once, asserted below, and reused by the
+    # read-back at the end so "what should be loaded" and "what is loaded" come from one place.
+    litellm__providers_present: >-
+      {{ (['anthropic'] if (litellm_anthropic_api_key | default('') | length > 0) else [])
+         + (['openai'] if (litellm_openai_api_key | default('') | length > 0) else [])
+         + (['gemini'] if (litellm_gemini_api_key | default('') | length > 0) else [])
+         + (['openrouter'] if (litellm_openrouter_api_key | default('') | length > 0) else [])
+         + (['elevenlabs'] if (litellm_elevenlabs_api_key | default('') | length > 0) else [])
+         + (['ollama'] if (litellm_ollama_enabled | bool
+                           and (litellm_ollama_models | default([]) | length > 0)) else []) }}
+
+# ---------------------------------------------------------------------------------------
+# Preflight. These gates exist because every failure they catch is SILENT at run time:
+# LiteLLM starts happily with no usable provider, with a non-sk- master key it then rejects
+# on every request, or with an Ollama entry pointing nowhere.
+# ---------------------------------------------------------------------------------------
+- name: HARD GATE — the master key must carry the sk- prefix
+  ansible.builtin.assert:
+    that:
+      - litellm_master_key | default('') | length > 0
+      - litellm_master_key is string
+      - litellm_master_key.startswith('sk-')
+    fail_msg: >-
+      litellm_master_key must be a non-empty string starting with 'sk-'. LiteLLM requires the
+      prefix on the proxy admin key; without it every authenticated request is rejected.
+    quiet: true
+  no_log: true
+
+- name: HARD GATE — the salt key must be present
+  ansible.builtin.assert:
+    that:
+      - litellm_salt_key | default('') | length > 0
+    fail_msg: >-
+      litellm_salt_key is required. It encrypts provider credentials at rest in Postgres and
+      is IMMUTABLE once any model is stored — create it once and never roll it.
+    quiet: true
+  no_log: true
+
+- name: HARD GATE — Redis, when enabled, must have a password
+  ansible.builtin.assert:
+    that:
+      - litellm_redis_password | default('') | length > 0
+      # redis.conf quotes it as "<value>": a quote, a backslash or whitespace would end or
+      # re-escape the string, so the server would load a different password than the proxy sends.
+      # Counted rather than anchored: every character must be printable ASCII other than a quote or
+      # a backslash (the class has no escape in it, so no YAML/Jinja escaping layer can change it).
+      - >-
+        (litellm_redis_password | default('') | length)
+        == (litellm_redis_password | default('') | regex_findall('[]!#-[^-~]') | length)
+    fail_msg: >-
+      litellm_redis_enabled is true but litellm_redis_password is empty or carries a quote, a
+      backslash or whitespace (redis.conf could not hold it verbatim). This Redis holds every
+      budget counter and rate-limit window for the gateway; running it unauthenticated on a
+      shared docker network would let anything else on that network reset them.
+    quiet: true
+  no_log: true
+  when: litellm_redis_enabled | bool
+
+- name: HARD GATE — at least one upstream provider must be configured
+  ansible.builtin.assert:
+    that:
+      - litellm__providers_present | length > 0
+    fail_msg: >-
+      No LLM provider resolved, so this proxy would start with an empty model_list and answer
+      every request with a routing error. Supply at least one provider key (for example
+      litellm_anthropic_api_key), then re-run.
+      Providers checked: anthropic, openai, gemini, openrouter, elevenlabs, ollama.
+    quiet: true
+
+- name: HARD GATE — every model alias must be well formed, keyed and unique
+  vars:
+    _names: "{{ litellm_model_aliases | map(attribute='name') | list }}"
+    _provs: "{{ litellm_model_aliases | map(attribute='model') | map('regex_replace', '/.*$', '') | list }}"
+  ansible.builtin.assert:
+    that:
+      - litellm_model_aliases | selectattr('name', 'defined') | selectattr('model', 'defined') | list | length == litellm_model_aliases | length
+      - _names | unique | length == _names | length
+      - _provs | difference(litellm__providers_present) | length == 0
+      # a fallback must name another alias
+      - >-
+        litellm_model_aliases | selectattr('fallback', 'defined')
+        | map(attribute='fallback') | difference(_names) | length == 0
+    fail_msg: >-
+      litellm_model_aliases is malformed, duplicated, names a provider with no key
+      ({{ _provs | default([]) | difference(litellm__providers_present) }}), or has a fallback that
+      is not another alias.
+    quiet: true
+  when: litellm_model_aliases | default([]) | length > 0
+
+- name: HARD GATE — a fallback alias must route to a DIFFERENT provider than the alias it covers
+  vars:
+    _byname: "{{ dict(litellm_model_aliases | map(attribute='name') | zip(litellm_model_aliases)) }}"
+  ansible.builtin.assert:
+    that:
+      - _byname[item.fallback].model.split('/')[0] != item.model.split('/')[0]
+    fail_msg: >-
+      alias {{ item.name }} falls back to {{ item.fallback }} on the SAME provider
+      ({{ item.model.split('/')[0] }}); a provider outage would take both down together.
+    quiet: true
+  loop: "{{ litellm_model_aliases | selectattr('fallback', 'defined') | list }}"
+  loop_control: {label: "{{ item.name }}"}
+  when: litellm_model_aliases | default([]) | length > 0
+
+- name: HARD GATE — enabling the Ollama upstream requires its api_base
+  ansible.builtin.assert:
+    that:
+      - litellm_ollama_api_base | default('') | length > 0
+    fail_msg: >-
+      litellm_ollama_enabled is true but litellm_ollama_api_base is unset. The address of an
+      Ollama host is installation-specific — set it in inventory, not as a role default.
+    quiet: true
+  when: litellm_ollama_enabled | bool
+
+# Open WebUI's branding paths become bind-mount sources (compose `- src:/dest:ro`). Docker
+# silently CREATES an empty directory at a missing source path rather than failing the mount,
+# which would render Open WebUI's static/logo.png as a directory — a confusing failure far
+# from its cause. Catch it here, on the host, before compose ever gets to try.
+- name: Stat each configured Open WebUI branding path on this host
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: litellm__webui_branding_stat
+  loop: >-
+    {{ [litellm_open_webui_logo_path | default(''), litellm_open_webui_favicon_path | default('')]
+       | reject('equalto', '') | list }}
+  loop_control:
+    label: "{{ item }}"
+
+- name: HARD GATE — an Open WebUI branding path, when set, must exist on this host
+  ansible.builtin.assert:
+    that:
+      - litellm__webui_branding_stat.results | rejectattr('stat.exists') | list | length == 0
+    fail_msg: >-
+      A litellm_open_webui_*_path does not exist on this host: {{
+      litellm__webui_branding_stat.results | rejectattr('stat.exists')
+      | map(attribute='item') | list }}. Docker would silently bind-mount an empty
+      DIRECTORY at that path instead of the file, which breaks Open WebUI's static
+      asset in a way that is hard to trace back to a missing file.
+    quiet: true
+  when: litellm__webui_branding_stat.results | default([]) | length > 0
+
+# ---------------------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------------------
+# app.env is rendered SEPARATELY below, at 0600. deployment_config applies ONE mode to every
+# file it writes, and the compose file wants 0640 while a file holding live provider keys must
+# not be group-readable.
+#
+# WHY app.env.j2 LIVES IN `templates/` AND NOT `files/`: deployment_config renders EVERY `.j2`
+# it finds under its source directory and has no exclude mechanism. A credential template under
+# `files/` would be rendered TWICE per converge — once at 0640, then again at 0600 below — so the
+# file holding every provider key would exist group-readable between the two tasks, and the role
+# would report `changed` on every run. Keeping it in `templates/` means deployment_config never
+# sees it, so the 0600 render below is the only write. (`template:` resolves a bare filename
+# against the role's own templates/ directory, which is why `src:` needs no path.)
+- name: Deploy compose project and LiteLLM config
+  ansible.builtin.include_role:
+    name: richard_lynch.common.deployment_config
+    # deployment_config renders every .j2 in the source dir with a template task that has no
+    # no_log, and some of them carry credentials: --diff would print them.
+    apply:
+      no_log: true
+  vars:
+    deployment_config_source: "{{ litellm_files }}"
+    deployment_config_destination: "{{ litellm_config_dir }}"
+    deployment_config_file_mode: "0640"
+
+- name: Render app.env with the live credentials (0600, never group-readable)
+  ansible.builtin.template:
+    src: app.env.j2
+    dest: "{{ litellm_config_dir }}/app.env"
+    owner: root
+    group: root
+    mode: "0600"
+  register: litellm__env_file
+  no_log: true
+
+# The other services' credentials, each in its own 0600 file the compose file names by env_file
+# (compose reads it on the host and resolves it into the service's config hash, so a rotated value
+# recreates that container at the deploy step below). The compose file is 0640 and must carry no
+# credential: deployment_config writes it group-readable.
+- name: Render each service's credential env file (0600, never group-readable)
+  ansible.builtin.template:
+    src: "{{ item }}.env.j2"
+    dest: "{{ litellm_config_dir }}/{{ item }}.env"
+    owner: root
+    group: root
+    mode: "0600"
+  loop: "{{ ['postgres', 'open-webui'] + (['redis'] if litellm_redis_enabled | bool else []) }}"
+  register: litellm__service_env_files
+  no_log: true
+
+# requirepass lives in redis.conf, not on redis-server's argv. The redis server drops to the
+# image's redis uid before it reads its config, so the file is that uid's, 0600, in a directory
+# mounted read-only (a directory, so a re-render is read by the next start: a single-file bind
+# mount would pin the old inode).
+- name: Redis config directory (the redis uid's, 0700)
+  ansible.builtin.file:
+    path: "{{ litellm_config_dir }}/redis"
+    state: directory
+    owner: "{{ litellm_redis_uid | string }}"
+    group: "{{ litellm_redis_gid | string }}"
+    mode: "0700"
+  when: litellm_redis_enabled | bool
+
+- name: Render redis.conf (requirepass, appendonly, noeviction; 0600, the redis uid's)
+  ansible.builtin.template:
+    src: redis.conf.j2
+    dest: "{{ litellm_config_dir }}/redis/redis.conf"
+    owner: "{{ litellm_redis_uid | string }}"
+    group: "{{ litellm_redis_gid | string }}"
+    mode: "0600"
+  register: litellm__redis_conf
+  no_log: true
+  when: litellm_redis_enabled | bool
+
+# OWNERSHIP IS PER SERVICE, not uniform. Open WebUI runs and writes as root, but Redis and
+# Postgres do not: each SERVER process runs as root, so the container starts, a root `touch`
+# inside the data directory succeeds and the healthcheck reports healthy — yet the CHILD
+# processes run as the image's own user (`redis` forks one to write the RDB snapshot; postgres'
+# backends run as `postgres`) and cannot write a root-owned 0750 directory. The symptoms are
+# "Failed opening the temp RDB file ... Permission denied" on every save, and a database that
+# refuses every query ("could not open file global/pg_filenode.map: Permission denied") while
+# its container is reported healthy. So each data directory is owned by the uid/gid its
+# image's children use.
+#
+# `*_uid`/`*_gid` are options rather than constants so a different image can override them:
+# redis 999, postgres 70, both alpine.
+- name: Ensure the stack's data directories exist
+  ansible.builtin.file:
+    path: "{{ litellm_config_dir }}/data/{{ item.name }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop: >-
+    {{ [{'name': 'postgres',
+         'owner': litellm_postgres_uid | string,
+         'group': litellm_postgres_gid | string,
+         'mode': '0750'},
+        {'name': 'open-webui', 'owner': 'root', 'group': 'root', 'mode': '0750'}]
+       + ([{'name': 'redis',
+            'owner': litellm_redis_uid | string,
+            'group': litellm_redis_gid | string,
+            'mode': '0750'}] if (litellm_redis_enabled | bool) else []) }}
+  loop_control:
+    label: "{{ item.name }} ({{ item.owner }}:{{ item.group }} {{ item.mode }})"
+
+- name: Ensure the shared monitoring network exists
+  community.docker.docker_network:
+    name: "{{ litellm_network }}"
+    attachable: true
+    state: present
+
+# ---------------------------------------------------------------------------------------
+# Converge
+# ---------------------------------------------------------------------------------------
+- name: Deploy the LiteLLM stack
+  community.docker.docker_compose_v2:
+    project_src: "{{ litellm_config_dir }}"
+    state: present
+    recreate: auto
+    # Deliberately NO `wait:`. It imposes a SECOND, stricter deadline in front of the read-backs
+    # below, which already retry (12x5s for liveness) and are the thing that actually proves the
+    # stack works. A cold first boot runs DB migrations and Open WebUI's own startup, so a
+    # fixed wait here fails the play while the service is still legitimately coming up — and the
+    # retrying read-back would have caught a genuine failure anyway.
+
+# `deployment_config_changed` is set INLINE by deployment_config (its handler fires too late
+# to be read mid-run). app.env is rendered by this role, so its own changed status is ORed in
+# — a rotated provider key changes only that file, and without this the container would keep
+# serving the old credential until something else happened to change.
+- name: Restart the stack when its config changed
+  community.docker.docker_compose_v2:
+    project_src: "{{ litellm_config_dir }}"
+    state: restarted
+  when: >-
+    (deployment_config_changed | default(false))
+    or (litellm__env_file.changed | default(false))
+    or (litellm__service_env_files.changed | default(false))
+    or (litellm__redis_conf.changed | default(false))
+
+# ---------------------------------------------------------------------------------------
+# Read-backs. A deploy that "succeeded" is not evidence the service works.
+# ---------------------------------------------------------------------------------------
+- name: Read back each container's state
+  no_log: true  # the result carries every Env VALUE
+  community.docker.docker_container_info:
+    name: "{{ item }}"
+  register: litellm__containers
+  loop: >-
+    {{ [litellm_postgres_container_name, litellm_container_name,
+        litellm_open_webui_container_name]
+       + ([litellm_redis_container_name] if (litellm_redis_enabled | bool) else []) }}
+
+# Flattened to `<name>=<status>` BEFORE the assert, with ABSENT standing in for a container that
+# does not exist. docker_container_info returns {"exists": false} with NO `container` key, so
+# `map(attribute='container.State.Status')` raises UndefinedError on it — and because `fail_msg` is
+# resolved during task argument finalisation, it would raise BEFORE either condition is evaluated,
+# so a missing container (the likeliest real failure) would die with a Jinja error instead of
+# naming the container. A gate that cannot report is barely better than one that cannot fire.
+- name: Summarise each container's state (ABSENT for one that does not exist)
+  ansible.builtin.set_fact:
+    litellm__states: >-
+      {{ litellm__containers.results | map(attribute='item')
+         | zip(litellm__containers.results
+               | map(attribute='container.State.Status', default='ABSENT'))
+         | map('join', '=')
+         | list }}
+
+- name: HARD GATE — every container in the stack must be running
+  ansible.builtin.assert:
+    that:
+      - litellm__states | reject('search', '=running$') | list | length == 0
+    fail_msg: >-
+      Not every container is running after deploy: {{ litellm__states | join(', ') }}
+      (ABSENT means the container does not exist at all — check `docker compose ps` and the
+      compose project's logs in {{ litellm_config_dir }}).
+    quiet: true
+
+# /health/liveliness, NOT /health. /health requires auth and issues a real billed API call to
+# every configured model per hit, so polling it costs money and rate-limits upstreams.
+#
+# It answers with a bare JSON string, so this asserts on the STATUS only: `uri` populates
+# `.json` only when the response declares a JSON content-type, and reading `.json.<key>` off a
+# scalar would turn "I could not parse it" into a confident wrong answer.
+- name: Verify the LiteLLM liveness endpoint answers
+  ansible.builtin.uri:
+    url: "http://localhost:{{ litellm_host_port }}/health/liveliness"
+    method: GET
+    status_code: [200]
+  register: litellm__live
+  retries: 12
+  delay: 5
+  until: litellm__live.status | default(0) == 200
+  changed_when: false
+
+- name: HARD GATE — LiteLLM must answer 200 on its liveness endpoint
+  ansible.builtin.assert:
+    that:
+      - litellm__live.status == 200
+    fail_msg: >-
+      LiteLLM did not answer 200 on /health/liveliness after deploy — got
+      {{ litellm__live.status | default('no response') }}.
+    quiet: true
+
+# Proves the config LiteLLM actually LOADED matches what was rendered. Without this, a
+# provider block that failed to parse presents as "the model is not there yet" rather than
+# "my config is wrong". /v1/models needs the master key, hence no_log.
+- name: Read back the model list LiteLLM actually loaded
+  ansible.builtin.uri:
+    url: "http://localhost:{{ litellm_host_port }}/v1/models"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ litellm_master_key }}"
+    status_code: [200]
+    return_content: true
+  register: litellm__models
+  retries: 6
+  delay: 5
+  until: litellm__models.status | default(0) == 200
+  changed_when: false
+  no_log: true
+
+- name: HARD GATE — the loaded model list must be non-empty and parseable
+  ansible.builtin.assert:
+    that:
+      - litellm__models.content | from_json is mapping
+      - (litellm__models.content | from_json).get('data', []) | length > 0
+    fail_msg: >-
+      LiteLLM answered /v1/models but advertised no models, so every client request would fail
+      to route. Expected entries for: {{ litellm__providers_present | join(', ') }}.
+      Parse the proxy's own startup log for a rejected model_list entry.
+    quiet: true
+
+# ---------------------------------------------------------------------------------------
+# The two capabilities that are NOT in model_list get their own read-backs, because neither
+# shows up in /v1/models and so neither is covered by the gate above. Both fail the same silent
+# way: a rejected `search_tools` or `mcp_servers` block leaves the proxy running and simply
+# serving nothing from it, which is indistinguishable from never having configured it.
+# ---------------------------------------------------------------------------------------
+- name: Read back the search tools LiteLLM actually loaded
+  ansible.builtin.uri:
+    url: "http://localhost:{{ litellm_host_port }}/search_tools/list"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ litellm_master_key }}"
+    status_code: [200]
+    return_content: true
+  register: litellm__search_tools
+  changed_when: false
+  no_log: true
+  when: litellm_brave_search_api_key | default('') | length > 0
+
+- name: HARD GATE — the configured search tool must be loaded
+  # Asserts the tool is PRESENT BY NAME, not merely that the endpoint answered: an empty list is
+  # a 200, and `search_tools` is exactly the kind of block that is accepted and ignored if its
+  # schema is wrong.
+  # Parsed with `content | from_json` rather than `.json` so an unparseable body cannot read as
+  # "no tools are configured".
+  ansible.builtin.assert:
+    that:
+      - litellm__search_tools.content | from_json is mapping
+      - >-
+        litellm_brave_search_tool_name in
+        ((litellm__search_tools.content | from_json).get('search_tools', [])
+         | map(attribute='search_tool_name') | list)
+    fail_msg: >-
+      The search tool '{{ litellm_brave_search_tool_name }}' is NOT loaded, although a Brave key
+      was rendered into search_tools. The proxy is up and will answer POST /v1/search with a
+      routing error — check its startup log for a rejected search_tools entry.
+    quiet: true
+  when: litellm_brave_search_api_key | default('') | length > 0
+
+- name: Read back the MCP servers LiteLLM actually registered
+  ansible.builtin.uri:
+    url: "http://localhost:{{ litellm_host_port }}/v1/mcp/server"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ litellm_master_key }}"
+    status_code: [200]
+    return_content: true
+  register: litellm__mcp_servers
+  changed_when: false
+  no_log: true
+  when: litellm_mcp_context7_enabled | bool
+
+- name: HARD GATE — the configured MCP server must be registered
+  # /v1/mcp/server returns a bare JSON ARRAY (the other admin surfaces return objects), so this
+  # reads it as a list rather than looking for a `data` key.
+  #
+  # This proves REGISTRATION ONLY. It does not prove a tool can be invoked: that needs an
+  # MCP session against the upstream, which the capability report does separately. Said plainly
+  # here so a passing deploy is not mistaken for proof of tool execution.
+  ansible.builtin.assert:
+    that:
+      - >-
+        'context7' in ((litellm__mcp_servers.content | from_json)
+                       | map(attribute='server_name') | list)
+    fail_msg: >-
+      The Context7 MCP server is NOT registered, although litellm_mcp_context7_enabled is true.
+      An mcp_servers block whose shape is wrong is accepted and ignored — note it must be a DICT
+      keyed by server name, never a list.
+    quiet: true
+  when: litellm_mcp_context7_enabled | bool
+
+- name: Verify the Open WebUI endpoint answers
+  ansible.builtin.uri:
+    url: "http://localhost:{{ litellm_open_webui_host_port }}/health"
+    method: GET
+    status_code: [200]
+  register: litellm__webui
+  retries: 12
+  delay: 5
+  until: litellm__webui.status | default(0) == 200
+  changed_when: false
+
+- name: HARD GATE — Open WebUI must answer 200
+  ansible.builtin.assert:
+    that:
+      - litellm__webui.status == 200
+    fail_msg: >-
+      Open WebUI did not answer 200 on /health after deploy — got
+      {{ litellm__webui.status | default('no response') }}.
+    quiet: true

@@ -1,0 +1,272 @@
+---
+# Asserts on the RENDERED artifacts, parsed as data, plus the gate outcomes written by converge.
+# Every assertion is about a property that would be SILENTLY wrong rather than loudly broken:
+# a gate that lets a bad input through, a credential in a world-readable file, a LAN bind whose
+# probe still targets loopback, a unit whose stop would take every live card down with it.
+- name: Verify — gates and rendered artifacts
+  hosts: localhost
+  gather_facts: false
+  vars:
+    render_root: /tmp/molecule-coding-worker
+  tasks:
+    - name: Read the gate outcomes
+      ansible.builtin.slurp:
+        src: "{{ item }}"
+      loop:
+        - "{{ render_root }}/good-outcome.json"
+        - "{{ render_root }}/gate-outcome.json"
+      register: _outcomes
+
+    - name: Parse them
+      ansible.builtin.set_fact:
+        _good_out: "{{ _outcomes.results[0].content | b64decode | from_json }}"
+        _gate_out: "{{ _outcomes.results[1].content | b64decode | from_json }}"
+
+    - name: ASSERT — the good input passed and EVERY bad input was refused by a gate
+      ansible.builtin.assert:
+        that:
+          - _good_out.passed
+          - _gate_out.survivors | length == 0
+          - >-
+            _gate_out.refused | sort == ['bad-node-checksum', 'default-not-in-catalogue',
+            'floating-claude', 'http-header-mixed-value', 'literal-mcp-secret', 'not-x86',
+            'path-traversal-repo-name', 'ssh-repo-url', 'stdio-env-other-name',
+            'subscription-login', 'unreviewed-mcp', 'accept-env-path', 'accept-env-lowercase', 'extra-key-private',
+            'runtime-runc', 'sysbox-checksum-short', 'sysbox-version-floating', 'memory-unitless', 'memory-zero',
+            'cpus-zero', 'reserve-too-small', 'claude-bypass-mode', 'claude-skip-prompt',
+            'claude-allow-all-bash', 'gh-unpinned', 'uv-unpinned', 'acpx-floating', 'acpx-mcp-token-short',
+            'acpx-mcp-token-is-sessiond-token', 'card-dns-loopback', 'card-dns-name'] | sort
+        fail_msg: >-
+          Gate outcomes: refused={{ _gate_out.refused }}, LET THROUGH={{ _gate_out.survivors }}.
+          A case in the second list is a gate that has never been shown to fire.
+        quiet: true
+
+    - name: Slurp each variant's rendered artifacts
+      ansible.builtin.slurp:
+        src: "{{ render_root }}/{{ item.0 }}/{{ item.1 }}"
+      loop: "{{ ['loopback', 'lan'] | product(['sessiond.json', 'codex_base.toml', 'worker-sessiond.service', 'worker-ttyd.service', 'worker-acpx-mcp.service', 'derived.json', 'tmux.conf', 'worker-metrics.service', 'worker-metrics.timer', 'sshd-worker-env.conf', 'docker-daemon.json', 'card-image.Dockerfile', 'card-firewall.nft']) | list }}"
+      register: _art
+      loop_control:
+        label: "{{ item.0 }}/{{ item.1 }}"
+
+    - name: Index them by variant and file
+      ansible.builtin.set_fact:
+        art: >-
+          {{ dict(_art.results | map(attribute='item') | map('join', '/') | zip(_art.results | map(attribute='content') | map('b64decode'))) }}
+
+    - name: Parse the JSON ones
+      ansible.builtin.set_fact:
+        cfg_lo: "{{ art['loopback/sessiond.json'] | from_json }}"
+        cfg_lan: "{{ art['lan/sessiond.json'] | from_json }}"
+        derived_lo: "{{ art['loopback/derived.json'] | from_json }}"
+        derived_lan: "{{ art['lan/derived.json'] | from_json }}"
+
+    - name: ASSERT — sessiond.json carries the catalogue and no credential
+      ansible.builtin.assert:
+        that:
+          - cfg_lo.mcp_catalogue | map(attribute='name') | list == ['grafana-ro', 'runner']
+          - cfg_lo.mcp_default_enabled == ['runner']
+          - cfg_lo.repos[0].name == 'lab'
+          - cfg_lo.agent_env_file == '/etc/worker/agent.env'
+          - cfg_lo.card_tail_enabled == false
+          - cfg_lan.card_tail_enabled == true
+          # The file is 0644: nothing from the credential inputs may be in it, in any variant.
+          - "'molecule-sessiond-token' not in art['loopback/sessiond.json'] and 'molecule-sessiond-token' not in art['lan/sessiond.json']"
+          - "'sk-molecule' not in art['lan/sessiond.json'] and 'molecule-NOT-A-REAL-GITHUB-TOKEN-0001' not in art['lan/sessiond.json']"
+          # An MCP header is a reference at rest, never a value.
+          - "'${GRAFANA_RO_TOKEN}' in art['loopback/sessiond.json']"
+          # The card policy reaches sessiond with its per-card token UNFILLED: sessiond fills it.
+          - "'Bash(git push origin {card_branch})' in cfg_lo.claude_settings.permissions.allow"
+          - "'Bash(gh pr merge *)' in cfg_lo.claude_settings.permissions.deny"
+        quiet: true
+
+    - name: ASSERT — protocol mode renders only when enabled, with pinned absolute binaries and no credential
+      ansible.builtin.assert:
+        that:
+          # OFF: no ACP key at all, so sessiond reports protocol mode unavailable (never half-on)
+          - cfg_lo.keys() | select('match', 'acp') | list == []
+          # ON: the adapters are the tools directory's pinned binaries, never `npx -y <package>`
+          - cfg_lan.acp_agents.claude == ['/opt/node-v22.23.4-linux-x64/bin/claude-agent-acp']
+          - cfg_lan.acp_agents.codex == ['/opt/node-v22.23.4-linux-x64/bin/codex-acp']
+          - cfg_lan.acpx_bin == '/opt/node-v22.23.4-linux-x64/bin/acpx'
+          - cfg_lan.acp_permissions == 'approve-all'
+          - cfg_lan.acp_pins.acpx_version == '0.21.1'
+          - cfg_lan.acp_pins.claude_agent_acp_version == '0.99.1'
+          - cfg_lan.acp_pins.codex_acp_version == '2.5.0'
+          - cfg_lan.acp_acceptance_file == '/etc/worker/acp-accepted.json'
+          - cfg_lan.acp_cancel_budget_seconds | float < 5.0
+          - "'acpx-mcp-token-for-molecule-only' not in art['lan/sessiond.json']"
+          # the unit reads its tokens from the 0600 env file, never from its command line
+          - "'acpx_mcp.py --bind 127.0.0.1 --port 7691 --sessiond-url http://127.0.0.1:7690' in art['lan/worker-acpx-mcp.service']"
+          - "'EnvironmentFile=/etc/worker/acpx-mcp.env' in art['lan/worker-acpx-mcp.service']"
+          - "'token' not in (art['lan/worker-acpx-mcp.service'] | regex_findall('(?m)^ExecStart=.*$') | join | lower)"
+        quiet: true
+
+    - name: ASSERT — the role's own derivation targets the right address per bind
+      ansible.builtin.assert:
+        that:
+          - derived_lo.sessiond == '127.0.0.1' and derived_lo.ttyd == '127.0.0.1'
+          # LAN variant: sessiond 0.0.0.0 still answers on loopback, but an INTERFACE-NAME bind
+          # (eth0) does not, so the ttyd probe must go to the guest address.
+          - derived_lan.sessiond == '127.0.0.1'
+          - derived_lan.ttyd == '192.0.2.9'
+          - derived_lo.node_bin == '/opt/node-v22.23.4-linux-x64/bin'
+        quiet: true
+
+    - name: Parse the Docker daemon config
+      ansible.builtin.set_fact:
+        docker_cfg: "{{ art['lan/docker-daemon.json'] | from_json }}"
+        docker_cfg_lo: "{{ art['loopback/docker-daemon.json'] | from_json }}"
+
+    - name: ASSERT — sessiond is told to run every card under sysbox, with limits, and never to publish
+      ansible.builtin.assert:
+        that:
+          - cfg_lo.container_runtime == 'sysbox-runc'
+          - cfg_lo.card_cpus == 2.0
+          - cfg_lo.card_memory == '2g'
+          - cfg_lo.vm_reserve_mb == 1024
+          - cfg_lo.container_tools_dir == '/opt/node-v22.23.4-linux-x64'
+          - cfg_lo.container_tools_dir == derived_lo.node_dir
+          # the image tag is the Dockerfile's hash, not "latest"
+          # the image is named worker_card_image_name (default, or set) and tagged with the hash
+          - cfg_lo.container_image is match('\Acoding-worker-card:[0-9a-f]{12}\Z')
+          - cfg_lan.container_image is match('\Aexample-card:[0-9a-f]{12}\Z')
+          - cfg_lan.container_image == derived_lan.card_image
+          - cfg_lo.container_image == derived_lo.card_image
+          - cfg_lo.pr_allow_no_checks == false
+          - cfg_lo.pr_ignore_bots == true
+          # sessiond's own PR poller: on by default, as an INT (a string would make the sleep raise)
+          - cfg_lo.pr_poll_seconds == 300
+          - cfg_lo.pr_poll_seconds is integer
+          # the default runtime stays runc (the VM's own containers are not sandboxed by accident),
+          # and sysbox is REGISTERED under the name the card launch asks for
+          - docker_cfg['default-runtime'] == 'runc'
+          # the VM dockerd's networks are written when set, and left to docker when not
+          - docker_cfg.bip == '198.51.100.1/24'
+          - "docker_cfg['default-address-pools'] == [{'base': '203.0.113.0/24', 'size': 28}]"
+          - "'bip' not in docker_cfg_lo and 'default-address-pools' not in docker_cfg_lo"
+          - docker_cfg_lo['default-runtime'] == 'runc'
+          # ttyd's window title: the option, defaulted when unset
+          - "'titleFixed=example-worker ' in art['lan/worker-ttyd.service']"
+          - "'titleFixed=coding-worker ' in art['loopback/worker-ttyd.service']"
+          # card bridges are dropped at INPUT; the firewall is a table of its own, not a rewrite of
+          # the VM's ruleset, and it does not touch FORWARD (egress)
+          - "'iifname { \"docker0\", \"br-*\" }' in art['lan/card-firewall.nft']"
+          - "'hook input' in art['lan/card-firewall.nft']"
+          - "'hook forward' not in art['lan/card-firewall.nft']"
+          - docker_cfg.runtimes['sysbox-runc'].path == '/usr/bin/sysbox-runc'
+          - "'live-restore' not in docker_cfg"
+        quiet: true
+
+    - name: ASSERT — the default card image is a sandbox base with Docker and no baked-in agent or credential
+      ansible.builtin.assert:
+        that:
+          - art['lan/card-image.Dockerfile'] is search('(?m)^FROM ubuntu:24\.04$')
+          - art['lan/card-image.Dockerfile'] is search('docker\.io')
+          - art['lan/card-image.Dockerfile'] is search('(?m)^# The agent runs as root INSIDE')
+          - "'claude-code' not in art['lan/card-image.Dockerfile'] and 'npm' not in art['lan/card-image.Dockerfile']"
+          - "'molecule' not in art['lan/card-image.Dockerfile']"
+          - "'sk-' not in art['lan/card-image.Dockerfile']"
+          # the inner dockerd is told the resolver the firewall allows (else nested DNS falls back
+          # to docker's public resolvers and is dropped): the JSON, written to its daemon.json
+          - "'{\"dns\": [\"192.0.2.53\"]}' in art['lan/card-image.Dockerfile']"
+          - "'> /etc/docker/daemon.json' in art['lan/card-image.Dockerfile']"
+        quiet: true
+
+    - name: ASSERT — the card image can bootstrap a repo (python3-venv, and uv from a digest-checked tarball)
+      # A repo's bootstrap needs `python3 -m venv` or uv. The tarball is COPIED from the
+      # build context (the role fetched it against the pin) and its digest checked AGAIN in the
+      # build; no installer script, no `curl | sh`, and the version is asserted before the layer ends.
+      ansible.builtin.assert:
+        that:
+          - "' python3-venv ' in art['lan/card-image.Dockerfile']"
+          - "'COPY uv-0.13.6-x86_64-unknown-linux-gnu.tar.gz /tmp/uv.tar.gz' in art['lan/card-image.Dockerfile']"
+          - "'f29c3e94ffabd7e6f3ba521dba169a9b7ec12100bf3257087f0f24f6123f3645  /tmp/uv.tar.gz\" | sha256sum -c -' in art['lan/card-image.Dockerfile']"
+          - "'test \"$(uv --version | cut -d \" \" -f1-2)\" = \"uv 0.13.6\"' in art['lan/card-image.Dockerfile']"
+          - "'astral.sh/uv/install.sh' not in art['lan/card-image.Dockerfile']"
+          # a pipe into a shell, as a whole word: `| sha256sum -c -` above is the near-miss this must pass
+          - not (art['lan/card-image.Dockerfile'] is search('\|\s*(ba)?sh(\s|\Z)'))
+        quiet: true
+
+    - name: ASSERT — sessiond waits for Docker
+      ansible.builtin.assert:
+        that:
+          - art['lan/worker-sessiond.service'] is search('(?m)^After=network-online\.target docker\.service$')
+        quiet: true
+
+    - name: ASSERT — Codex's base config routes through LiteLLM and holds no key
+      ansible.builtin.assert:
+        that:
+          - art['lan/codex_base.toml'] is search('base_url = "http://litellm.example:4000/v1"')
+          - art['lan/codex_base.toml'] is search('wire_api = "responses"')
+          - art['lan/codex_base.toml'] is search('env_key = "OPENAI_API_KEY"')
+          - "'sk-molecule' not in art['lan/codex_base.toml']"
+        quiet: true
+
+    - name: ASSERT — the units keep live cards alive across a sessiond restart and bind as configured
+      ansible.builtin.assert:
+        that:
+          - art['lan/worker-sessiond.service'] is search('(?m)^KillMode=process$')
+          - art['lan/worker-sessiond.service'] is search('--bind 0\.0\.0\.0 --port 7690')
+          - art['lan/worker-ttyd.service'] is search('-i eth0 -p 7681 -W -a ')
+          - art['lan/worker-ttyd.service'] is search('-c \$\{TTYD_CREDENTIAL\} /usr/local/bin/worker-attach')
+          - art['loopback/worker-ttyd.service'] is search('-i 127\.0\.0\.1 -p 7681')
+          # no credential value in either unit file (0644)
+          - "'molecule-ttyd-credential' not in art['lan/worker-ttyd.service']"
+          - "'molecule-sessiond-token' not in art['lan/worker-sessiond.service']"
+        quiet: true
+
+    - name: ASSERT — the stuck-card metrics path is wired, root-run, and the token stays out of the unit
+      ansible.builtin.assert:
+        that:
+          # sessiond.json carries the threshold the metric uses, as an int
+          - cfg_lo.stuck_after_seconds == 1800
+          # the puller runs as root (no User=), reads the token from sessiond's own 0600 file, and
+          # writes the file the collector reads; the probe address is the role-derived one
+          - "art['lan/worker-metrics.service'] is not search('(?m)^User=')"
+          - "art['lan/worker-metrics.service'] is search('(?m)^EnvironmentFile=/etc/worker/sessiond.env$')"
+          - "art['lan/worker-metrics.service'] is search('--url http://127\\.0\\.0\\.1:7690/v1/metrics --out /var/lib/node_exporter/textfile_collector/hermes_worker\\.prom')"
+          - "'molecule-sessiond-token' not in art['lan/worker-metrics.service']"
+          # a timer must exist for the unit to ever run, and it must be shorter than the 600 s the
+          # staleness alert allows
+          - "art['lan/worker-metrics.timer'] is search('(?m)^OnUnitActiveSec=30s$')"
+          - "art['lan/worker-metrics.timer'] is search('(?m)^WantedBy=timers.target$')"
+          # the sessiond.json (0644) names no path of the collector: the agents' user has no
+          # business knowing where host metrics are filed
+          - "'textfile' not in art['loopback/sessiond.json']"
+        quiet: true
+
+    - name: ASSERT — the sshd drop-in accepts exactly the declared names and carries no value
+      ansible.builtin.assert:
+        that:
+          - "art['lan/sshd-worker-env.conf'] is search('(?m)^AcceptEnv WORKER_SESSIOND_URL WORKER_SESSIOND_TOKEN WORKER_TERM_URL$')"
+          - "'molecule-sessiond-token' not in art['lan/sshd-worker-env.conf']"
+          # one AcceptEnv line, so a name cannot be added by a second hand-edited line unnoticed
+          - art['lan/sshd-worker-env.conf'] | regex_findall('(?m)^AcceptEnv ') | length == 1
+        quiet: true
+
+    - name: Syntax-check the attach wrapper
+      ansible.builtin.command: bash -n {{ playbook_dir }}/../../files/worker-attach
+      changed_when: false
+
+    - name: The attach wrapper refuses a hostile card id, with no tmux and no sleep
+      ansible.builtin.command: bash {{ playbook_dir }}/../../files/worker-attach 'x;touch /tmp/molecule-pwned'
+      register: _bad
+      changed_when: false
+      failed_when: _bad.rc != 1 or 'not a valid card id' not in _bad.stderr
+      environment:
+        WORKER_ATTACH_REFUSE_SLEEP: "0"
+
+    - name: Near-miss — a well-formed id gets the DIFFERENT refusal (no session), so the check above is not refusing everything
+      ansible.builtin.command: bash {{ playbook_dir }}/../../files/worker-attach card-nosuchcard123
+      register: _none
+      changed_when: false
+      failed_when: _none.rc != 1 or ('no live session for nosuchcard123' not in _none.stderr)
+      environment:
+        WORKER_ATTACH_REFUSE_SLEEP: "0"
+
+    - name: Prove the hostile id created nothing
+      ansible.builtin.stat:
+        path: /tmp/molecule-pwned
+      register: _pwned
+      failed_when: _pwned.stat.exists

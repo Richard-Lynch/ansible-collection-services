@@ -1,0 +1,58 @@
+---
+# GENERATED from roles/config_hermes_learning/meta/argument_specs.py — DO NOT EDIT.
+# Regenerate with: venv/bin/python tools/argspec/cli.py x generate config_hermes_learning
+#
+# These are the constraints Ansible's role-argspec validator CANNOT enforce. It handles
+# type/required/choices/no_log, but has no numeric-range, length or pattern checking, so
+# without this file those declarations would be decorative.
+#
+# Include from the role's entrypoints:  - ansible.builtin.include_tasks: _argspec_guards.yml
+
+- name: "GUARD (generated) — hermes_learning_claims_window_s must be >= 0"
+  ansible.builtin.assert:
+    that:
+      - "hermes_learning_claims_window_s | int >= 0"
+    fail_msg: "hermes_learning_claims_window_s violates a constraint declared in meta/argument_specs.py: must be >= 0. Got: {{ hermes_learning_claims_window_s | default('(unset)') }}"
+    quiet: true
+  when: hermes_learning_claims_window_s is defined
+
+- name: "GUARD (generated) — hermes_learning_consolidate_max_loss must be >= 0.0; <= 1.0"
+  ansible.builtin.assert:
+    that:
+      - "hermes_learning_consolidate_max_loss | int >= 0.0"
+      - "hermes_learning_consolidate_max_loss | int <= 1.0"
+    fail_msg: "hermes_learning_consolidate_max_loss violates a constraint declared in meta/argument_specs.py: must be >= 0.0; <= 1.0. Got: {{ hermes_learning_consolidate_max_loss | default('(unset)') }}"
+    quiet: true
+  when: hermes_learning_consolidate_max_loss is defined
+
+- name: "GUARD (generated) — hermes_learning_consolidate_min_entries must be >= 1"
+  ansible.builtin.assert:
+    that:
+      - "hermes_learning_consolidate_min_entries | int >= 1"
+    fail_msg: "hermes_learning_consolidate_min_entries violates a constraint declared in meta/argument_specs.py: must be >= 1. Got: {{ hermes_learning_consolidate_min_entries | default('(unset)') }}"
+    quiet: true
+  when: hermes_learning_consolidate_min_entries is defined
+
+- name: "GUARD (generated) — hermes_learning_ping_age_s must be >= 60"
+  ansible.builtin.assert:
+    that:
+      - "hermes_learning_ping_age_s | int >= 60"
+    fail_msg: "hermes_learning_ping_age_s violates a constraint declared in meta/argument_specs.py: must be >= 60. Got: {{ hermes_learning_ping_age_s | default('(unset)') }}"
+    quiet: true
+  when: hermes_learning_ping_age_s is defined
+
+- name: "GUARD (generated) — hermes_learning_ping_repeat_s must be >= 60"
+  ansible.builtin.assert:
+    that:
+      - "hermes_learning_ping_repeat_s | int >= 60"
+    fail_msg: "hermes_learning_ping_repeat_s violates a constraint declared in meta/argument_specs.py: must be >= 60. Got: {{ hermes_learning_ping_repeat_s | default('(unset)') }}"
+    quiet: true
+  when: hermes_learning_ping_repeat_s is defined
+
+- name: "GUARD (generated) — hermes_learning_probe_timeout_s must be >= 10"
+  ansible.builtin.assert:
+    that:
+      - "hermes_learning_probe_timeout_s | int >= 10"
+    fail_msg: "hermes_learning_probe_timeout_s violates a constraint declared in meta/argument_specs.py: must be >= 10. Got: {{ hermes_learning_probe_timeout_s | default('(unset)') }}"
+    quiet: true
+  when: hermes_learning_probe_timeout_s is defined

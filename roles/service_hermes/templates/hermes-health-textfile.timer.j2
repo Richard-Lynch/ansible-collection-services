@@ -1,0 +1,11 @@
+# Rendered by roles/service_hermes. Every minute, so an alert with `for: 5m` sees five reads.
+[Unit]
+Description=Hermes gateway health every minute
+
+[Timer]
+OnBootSec=60
+OnUnitActiveSec=60
+AccuracySec=5
+
+[Install]
+WantedBy=timers.target
