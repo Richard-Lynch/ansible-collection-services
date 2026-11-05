@@ -97,6 +97,8 @@
   register: _hosting_resolved_stat
 
 - name: Read the guest's upstream nameservers
+  # A read (or a refused probe): it runs under --check too, or the gate after it reads nothing (#388).
+  check_mode: false
   # Containers query these directly from their own network namespace, so the egress block has to
   # let exactly these through on port 53 or every container loses DNS.
   ansible.builtin.command:
@@ -219,6 +221,8 @@
     label: "{{ item.item.key }}"
 
 - name: Probe each tier's entrypoint from the guest
+  # A read (or a refused probe): it runs under --check too, or the gate after it reads nothing (#388).
+  check_mode: false
   # Traefik's own 404 page proves the entrypoint is bound and is Traefik answering (no router
   # exists for this Host). A different status, or no answer, means the tier is not served.
   ansible.builtin.uri:
@@ -235,6 +239,8 @@
   changed_when: false
 
 - name: NEGATIVE — the socket proxy refuses a write call
+  # A read (or a refused probe): it runs under --check too, or the gate after it reads nothing (#388).
+  check_mode: false
   # The point of the proxy: a compromised Traefik (or a label-injection) must not be able to
   # create, start or exec containers. A 403 from the proxy on POST /containers/create is the proof;
   # a 2xx here means the proxy is configured read-write and the whole hop is decoration.
@@ -262,6 +268,8 @@
     quiet: true
 
 - name: Read the firewall back from the kernel
+  # A read (or a refused probe): it runs under --check too, or the gate after it reads nothing (#388).
+  check_mode: false
   ansible.builtin.command:
     argv: [iptables, -S, "{{ item }}"]
   register: _hosting_fw_rules
@@ -313,6 +321,8 @@
       {{ out | to_json }}
 
 - name: NEGATIVE — a tier's Traefik cannot reach another tier's Traefik
+  # A read (or a refused probe): it runs under --check too, or the gate after it reads nothing (#388).
+  check_mode: false
   # With one Traefik on both networks, DEV could request the PROD entrypoint with a
   # PROD Host and be routed with no Access in the path. Now each Traefik sits on its own network
   # only, so the other tier's name must not even resolve from it.
@@ -383,6 +393,8 @@
   changed_when: false
 
 - name: Read the reaper back (timer active, last run succeeded, metrics fresh)
+  # A read (or a refused probe): it runs under --check too, or the gate after it reads nothing (#388).
+  check_mode: false
   ansible.builtin.shell:
     cmd: |
       set -u
@@ -402,7 +414,9 @@
       - "'timer=active enabled=enabled' in _hosting_reaper_state.stdout_lines"
       - "'result=success' in _hosting_reaper_state.stdout_lines"
       - "'status=0' in _hosting_reaper_state.stdout_lines"
-      - (_hosting_reaper_state.stdout_lines | select('match', '^age=') | first | default('age=999999') | regex_replace('^age=', '') | int) < 300
+      # Freshness is what the run above produced, and under --check that run is a write that was
+      # skipped, so the age says only when the timer last fired: checked on a real run alone (#388).
+      - ansible_check_mode or ((_hosting_reaper_state.stdout_lines | select('match', '^age=') | first | default('age=999999') | regex_replace('^age=', '') | int) < 300)
       - _hosting_reaper_state.stdout_lines | last | default('0') | int == 1
     fail_msg: "The reaper is not healthy: {{ _hosting_reaper_state.stdout_lines }} (journalctl -u hosting-reaper.service)."
     quiet: true

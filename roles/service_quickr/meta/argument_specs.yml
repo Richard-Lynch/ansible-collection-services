@@ -1,0 +1,166 @@
+---
+# AUTO-GENERATED argument spec — DO NOT EDIT.
+#
+# Source of truth: roles/service_quickr/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate service_quickr
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+argument_specs:
+  main:
+    short_description: Deploy quickR (Postgres, FastAPI backend, nginx web origin)
+    description:
+      - 'Deploys quickR as one compose project of three containers: Postgres, the'
+      - FastAPI backend, and the nginx web origin that serves the PWA and proxies
+      - /api/ and /mcp to the backend. Only the web origin is published on the host;
+      - Postgres and the API port stay on the compose network.
+      - Images are PULLED, pinned by tag -- the role never builds. APNs is optional
+      - 'and all-or-nothing: the team id, key id and .p8 key must all be set, or none.'
+      - Also installs a nightly pg_dump timer, so a whole-machine backup of the host
+      - carries a logically consistent dump and not only a live data directory.
+    version_added: '1.0'
+    author: Collection maintainers
+    options:
+      quickr_backend_image:
+        description:
+          - Fully-qualified backend image pinned by tag AND digest,
+          - "name:<tag>@sha256:<digest>: the tag (the quickR build's full git sha) names"
+          - the build, the digest is what is pulled. A floating tag (latest, main,
+          - stable, edge) or a missing digest is rejected by the role's own gate.
+        type: str
+        required: true
+      quickr_frontend_image:
+        description:
+          - Fully-qualified web-origin image (nginx serving the PWA), pinned the same
+          - way (name:<tag>@sha256:<digest>). Its tag must equal quickr_backend_image's.
+        type: str
+        required: true
+      quickr_postgres_image:
+        description:
+          - Postgres image. Pinned. Changing the MAJOR version needs a dump and
+          - restore -- Postgres will not start on another major's data directory.
+        type: str
+        required: false
+        default: postgres:18.6-alpine
+      quickr_project_name:
+        description:
+          - Compose project name, and the prefix of every container and of the
+          - Postgres volume (named explicitly, so it is never project-prefixed).
+        type: str
+        required: false
+        default: quickr
+      quickr_config_dir:
+        description:
+          - Host directory holding the rendered compose project.
+        type: str
+        required: false
+        default: /opt/quickr
+      quickr_web_host_port:
+        description:
+          - Host port published for the web origin (container port 80). The ONLY
+          - port the project publishes.
+        type: int
+        required: false
+        default: 8080
+      quickr_timezone:
+        description:
+          - TZ passed to the containers.
+        type: str
+        required: false
+        default: Etc/UTC
+      quickr_postgres_password:
+        description:
+          - Password for the quickr database role. Rendered into 0600 env files,
+          - never into the compose file.
+        type: str
+        required: true
+        no_log: true
+      quickr_scheduler_enabled:
+        description:
+          - Run the backend's reminder scheduler (QUICKR_SCHEDULER_ENABLED).
+        type: bool
+        required: false
+        default: true
+      quickr_apns_team_id:
+        description:
+          - Apple Developer Team ID. Empty turns APNs off.
+        type: str
+        required: false
+        default: ''
+      quickr_apns_key_id:
+        description:
+          - Key ID of the APNs .p8 key. Empty turns APNs off.
+        type: str
+        required: false
+        default: ''
+      quickr_apns_private_key:
+        description:
+          - The APNs .p8 key itself (PEM text). Written to a 0440 file in a
+          - directory mounted read-only into the backend; never into an
+          - environment variable, the image or the compose file.
+        type: str
+        required: false
+        default: ''
+        no_log: true
+      quickr_apns_topic:
+        description:
+          - APNs topic (the app's bundle id). Empty leaves the backend's own
+          - default in force.
+        type: str
+        required: false
+        default: ''
+      quickr_app_gid:
+        description:
+          - Numeric gid the backend container runs as. The APNs key is
+          - group-owned by it, so the container can read a file that is not
+          - world-readable.
+        type: int
+        required: false
+        default: 10001
+      quickr_registry:
+        description:
+          - Registry the images are pulled from.
+        type: str
+        required: false
+        default: ghcr.io
+      quickr_registry_username:
+        description:
+          - Registry login. Empty skips the login, for public images.
+        type: str
+        required: false
+        default: ''
+      quickr_registry_password:
+        description:
+          - Registry token, e.g. a GitHub PAT with read:packages only.
+        type: str
+        required: false
+        default: ''
+        no_log: true
+      quickr_backup_dir:
+        description:
+          - Where the nightly pg_dump archives are written.
+        type: str
+        required: false
+        default: /opt/quickr/backups
+      quickr_backup_keep_days:
+        description:
+          - Dumps older than this many days are deleted.
+        type: int
+        required: false
+        default: 14
+      quickr_backup_on_calendar:
+        description:
+          - systemd OnCalendar for the dump. Schedule it before any whole-machine
+          - backup of the host, so that backup carries the night's dump.
+        type: str
+        required: false
+        default: '*-*-* 02:15:00'
+      quickr_backup_metrics_dir:
+        description:
+          - Where the dump writes quickr_pgdump.prom for a textfile collector.
+          - Must match the collector's directory, or alerts on the backup metrics
+          - see nothing. Skipped (with a warning) if it does not exist.
+        type: str
+        required: false
+        default: /var/lib/node_exporter/textfile_collector

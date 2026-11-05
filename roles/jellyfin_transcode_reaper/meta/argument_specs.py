@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from ansible_devkit.argspec.models import ArgumentSpec, ArgumentSpecs, OptionSpec
+
 DEFAULT_AUTHOR = "Collection maintainers"
 
 argument_specs = ArgumentSpecs(

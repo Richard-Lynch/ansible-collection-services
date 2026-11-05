@@ -1,0 +1,91 @@
+---
+# Rendered by roles/service_quickr. Do not edit on the host -- the next converge overwrites it.
+{#
+  A DEPLOYMENT compose, not quickR's own. quickR's docker-compose.yml is a DEVELOPMENT stack: it
+  builds from source, publishes Postgres (5433) and the API (8100) on the host, and hardcodes the
+  database password. This one pulls pinned images and publishes ONLY the web origin -- the nginx
+  container that serves the PWA and proxies /api/ and /mcp to the backend, which is the single
+  address the PWA, the iOS app and MCP clients all use.
+
+  No credentials in this file: it is rendered 0640 by deployment_config. The database password
+  lives in the 0600 `settings` file beside it, and the APNs key in a 0440 file under secrets/.
+
+  No traefik labels: routing to the web origin is the calling play's concern (a reverse proxy's
+  own router file, a tunnel), and Jinja in a YAML label KEY would not be templated anyway.
+#}
+name: {{ quickr_project_name }}
+
+services:
+  db:
+    image: {{ quickr_postgres_image }}
+    container_name: {{ quickr_project_name }}-db
+    restart: unless-stopped
+    env_file:
+      - {{ quickr_config_dir }}/settings
+    environment:
+      POSTGRES_USER: quickr
+      POSTGRES_DB: quickr
+      TZ: "{{ quickr_timezone }}"
+    volumes:
+      # Mounted at /var/lib/postgresql, not .../data: Postgres 18 images keep PGDATA in a
+      # per-major subdirectory, which is the layout quickR's own compose uses.
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U quickr -d quickr"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  backend:
+    image: {{ quickr_backend_image }}
+    container_name: {{ quickr_project_name }}-backend
+    restart: unless-stopped
+    # The entrypoint runs `alembic upgrade head` before uvicorn, so a new image migrates the
+    # schema on its first start. Migrations are forward-only: dump before an upgrade you might
+    # roll back.
+    env_file:
+      - {{ quickr_config_dir }}/settings
+    environment:
+      TZ: "{{ quickr_timezone }}"
+      QUICKR_SCHEDULER_ENABLED: "{{ quickr_scheduler_enabled | bool | lower }}"
+{% if _quickr_apns_enabled | bool %}
+    # A DIRECTORY mount, not a file mount. A file-level bind pins the inode, and Ansible writes
+    # atomically (new inode), so a rotated key would never reach a container started before it.
+    volumes:
+      - {{ quickr_config_dir }}/secrets:/run/secrets/quickr:ro
+{% endif %}
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request;urllib.request.urlopen('http://localhost:8000/api/v1/health')",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 20
+
+  web:
+    image: {{ quickr_frontend_image }}
+    container_name: {{ quickr_project_name }}-web
+    restart: unless-stopped
+    environment:
+      # The image's defaults, stated so the dependency on the service NAME `backend` is visible.
+      BACKEND_ORIGIN: http://backend:8000
+      NGINX_RESOLVER: 127.0.0.11
+      TZ: "{{ quickr_timezone }}"
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "{{ quickr_web_host_port }}:80"
+
+volumes:
+  pgdata:
+    # Named explicitly: an unnamed compose volume is created PROJECT-PREFIXED, and anything that
+    # refers to it by the bare name would address an orphan.
+    name: {{ quickr_project_name }}-pgdata

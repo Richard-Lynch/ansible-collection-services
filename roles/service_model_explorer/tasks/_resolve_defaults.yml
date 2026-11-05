@@ -26,9 +26,7 @@
 
 - name: Resolve declared options over their generated defaults
   ansible.builtin.set_fact:
-    model_explorer_dist_dir: "{{ model_explorer_dist_dir | default(model_explorer_dist_dir__default) if model_explorer_dist_dir__default is defined else model_explorer_dist_dir | default(omit) }}"
     model_explorer_container_name: "{{ model_explorer_container_name | default(model_explorer_container_name__default) if model_explorer_container_name__default is defined else model_explorer_container_name | default(omit) }}"
-    model_explorer_image: "{{ model_explorer_image | default(model_explorer_image__default) if model_explorer_image__default is defined else model_explorer_image | default(omit) }}"
     model_explorer_config_dir: "{{ model_explorer_config_dir | default(model_explorer_config_dir__default) if model_explorer_config_dir__default is defined else model_explorer_config_dir | default(omit) }}"
     model_explorer_network: "{{ model_explorer_network | default(model_explorer_network__default) if model_explorer_network__default is defined else model_explorer_network | default(omit) }}"
     model_explorer_host_port: "{{ model_explorer_host_port | default(model_explorer_host_port__default) if model_explorer_host_port__default is defined else model_explorer_host_port | default(omit) }}"
@@ -37,9 +35,7 @@
 
 - name: Rebind the defaults on a repeat call, ignoring this role's own leftover facts
   ansible.builtin.set_fact:
-    model_explorer_dist_dir: "{{ model_explorer_dist_dir__default if model_explorer_dist_dir__default is defined else model_explorer_dist_dir | default(omit) }}"
     model_explorer_container_name: "{{ model_explorer_container_name__default if model_explorer_container_name__default is defined else model_explorer_container_name | default(omit) }}"
-    model_explorer_image: "{{ model_explorer_image__default if model_explorer_image__default is defined else model_explorer_image | default(omit) }}"
     model_explorer_config_dir: "{{ model_explorer_config_dir__default if model_explorer_config_dir__default is defined else model_explorer_config_dir | default(omit) }}"
     model_explorer_network: "{{ model_explorer_network__default if model_explorer_network__default is defined else model_explorer_network | default(omit) }}"
     model_explorer_host_port: "{{ model_explorer_host_port__default if model_explorer_host_port__default is defined else model_explorer_host_port | default(omit) }}"

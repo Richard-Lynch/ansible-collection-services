@@ -1,0 +1,13 @@
+# Rendered by roles/service_quickr.
+[Unit]
+Description=Nightly pg_dump of the quickR database
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/quickr-pgdump
+# A oneshot defaults to TimeoutStartSec=infinity: a pg_dump that hangs (a stuck lock, a wedged
+# container) would then run forever and record nothing. After an hour systemd TERMs it, the
+# script records a failed run, which the backup metrics report.
+TimeoutStartSec=1h

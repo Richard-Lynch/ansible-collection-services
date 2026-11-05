@@ -86,6 +86,8 @@
         daemon_reload: true
 
     - name: Ask systemd when it will next run
+      # A read: it runs under --check too, or the gate after it reads nothing (#388).
+      check_mode: false
       # A read-back. `systemctl enable` succeeding says the symlink was made, not that the timer is
       # armed with a future trigger — a bad OnCalendar leaves an enabled timer that never fires.
       ansible.builtin.command:
@@ -113,6 +115,8 @@
       changed_when: true
 
     - name: Read what that run did
+      # A read: it runs under --check too, or the gate after it reads nothing (#388).
+      check_mode: false
       ansible.builtin.command:
         argv: [journalctl, -u, jellyfin-reap-transcodes.service, -n, "5", --no-pager, -o, cat]
       register: _jtr_log

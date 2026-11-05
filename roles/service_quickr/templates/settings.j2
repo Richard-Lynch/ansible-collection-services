@@ -1,0 +1,19 @@
+# Rendered by roles/service_quickr at 0600: the env_file of BOTH the db and the backend service.
+# Holds the database password, so it never goes into the compose file (rendered 0640).
+#
+# ONE file for both, because the password must be the same on each side and two files rendered
+# from one variable are still two things to keep in step. The extra variables are inert where
+# they are not read: Postgres ignores QUICKR_*, and the backend's settings ignore unknown keys.
+POSTGRES_PASSWORD={{ quickr_postgres_password }}
+
+# URL-encoded, and `/` explicitly too: Jinja's urlencode leaves `/` alone, and a raw `/` or `@`
+# in the userinfo would make the URL parse as a different host.
+QUICKR_DATABASE_URL=postgresql+asyncpg://quickr:{{ quickr_postgres_password | urlencode | replace('/', '%2F') }}@db:5432/quickr
+{% if _quickr_apns_enabled | bool %}
+QUICKR_APNS_TEAM_ID={{ quickr_apns_team_id }}
+QUICKR_APNS_KEY_ID={{ quickr_apns_key_id }}
+QUICKR_APNS_PRIVATE_KEY_FILE=/run/secrets/quickr/apns.p8
+{% if quickr_apns_topic | length > 0 %}
+QUICKR_APNS_TOPIC={{ quickr_apns_topic }}
+{% endif %}
+{% endif %}

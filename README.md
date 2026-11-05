@@ -22,8 +22,9 @@ Application, media, messaging and AI-agent roles: PostgreSQL with an exporter, a
 | `service_hermes` | Deploy the Hermes Agent gateway and its web dashboard |
 | `service_hosting` | Traefik (docker provider) and the per-tier networks for app hosting |
 | `service_litellm` | Deploy the LiteLLM gateway, Open WebUI and Postgres as one stack |
-| `service_model_explorer` | Serve the model-discovery app as static files behind nginx |
+| `service_model_explorer` | Run the model-discovery app's container image, pinned by digest |
 | `service_postgres` | Deploy Postgres (+exporter) on the shared network with per-service DBs |
+| `service_quickr` | Deploy quickR (Postgres, FastAPI backend, nginx web origin) |
 | `slack_channels` | Reconcile a declared list of Slack public channels, as a bot |
 | `slack_message` | Send a Slack message, optionally with a file, as a bot |
 | `stack_arr_jellystat` | Write jellystat + jellystat-db compose (compose layer only) |
@@ -40,7 +41,7 @@ or pin it in `requirements.yml`:
 ```yaml
 collections:
   - name: richard_lynch.services
-    version: "1.1.1"
+    version: "2.0.0"
 ```
 
 Requires ansible-core >=2.19.0.
@@ -58,7 +59,7 @@ devkit check all                # the static checks, configured by devkit.toml
 
 CI, the disclosure gate and releases are the shared workflows of
 [ansible-devkit](https://github.com/Richard-Lynch/ansible-devkit), called from
-`.github/workflows/` at tag `v0.2.3`. A release is a merged pull
+`.github/workflows/` at tag `v0.4.1`. A release is a merged pull
 request that bumps `version` in `galaxy.yml` and adds the matching
 `CHANGELOG.md` section. `export.manifest` lists every tracked path; update it in
 the same commit as any file added or removed.

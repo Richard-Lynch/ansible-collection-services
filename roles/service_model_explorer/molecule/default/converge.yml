@@ -1,23 +1,22 @@
 ---
-# Render-only scenario. This role's real converge needs a Docker daemon and a built Vite bundle,
-# neither reproducible on a GitHub-hosted runner — so coverage here is honestly PARTIAL: it
-# proves the templates render correct, parseable artifacts for more than one variable
-# combination, not that the container runs. (render-only coverage.) The live
-# behaviour is asserted by the role's own read-backs, which check that the served page is the
-# APP and that the served catalogue parses and carries models.
+# Two halves.
 #
-# Two variants are rendered because the values that vary are the ones a second caller would
-# change, and a single render cannot distinguish a template that uses its variables from one
-# that hardcodes a particular installation's values.
-- name: Converge — render the model explorer templates (no docker)
+# 1. RENDER the compose template for two different callers (no docker). A single render cannot
+#    tell a template that uses its variables from one that hardcodes one installation's values.
+# 2. REFUSE: include the REAL role with no image reference, and with a tag instead of a digest.
+#    Both must fail before any task touches the host, and verify asserts each failed for the
+#    right reason (a refusal for the wrong reason, such as a role that cannot be found, would
+#    otherwise pass).
+- name: Converge — render the model explorer compose project, and prove the image gates refuse
   hosts: localhost
   gather_facts: false
   vars:
-    # DELIBERATELY NOT /tmp/molecule-model-explorer. The render root is interpolated into the
-    # compose file as the volume source path, so a root CONTAINING the first variant's container
-    # name would make verify's "nothing is hardcoded" assert match its own scaffolding and fail a
-    # correct template. Keep this path free of any value the second variant asserts is absent.
+    # DELIBERATELY NOT /tmp/molecule-model-explorer: the render root is interpolated into the
+    # compose file, so a root CONTAINING the first variant's container name would make verify's
+    # "nothing is hardcoded" assert match its own scaffolding.
     render_root: /tmp/molecule-mx
+    digest_a: "sha256:{{ 'a' * 64 }}"
+    digest_b: "sha256:{{ 'b' * 64 }}"
   tasks:
     - name: Ensure a clean render root
       ansible.builtin.file:
@@ -31,39 +30,73 @@
         mode: "0755"
       loop: [first, second]
 
-    # ---- variant: the role's defaults, on a shared network -----------------------------
     - name: Render the FIRST variant
       ansible.builtin.template:
-        src: "{{ playbook_dir }}/../../files/compose/{{ item.src }}"
-        dest: "{{ render_root }}/first/{{ item.dest }}"
+        src: "{{ playbook_dir }}/../../files/compose/docker-compose.yml.j2"
+        dest: "{{ render_root }}/first/docker-compose.yml"
         mode: "0644"
-      loop:
-        - { src: "docker-compose.yml.j2", dest: "docker-compose.yml" }
-        - { src: "nginx.conf.j2", dest: "nginx.conf" }
       vars:
         model_explorer_container_name: model-explorer
-        model_explorer_image: "nginx:1.29.3-alpine"
+        model_explorer_image: "ghcr.io/example/model-explorer@{{ digest_a }}"
         model_explorer_config_dir: "{{ render_root }}/first"
         model_explorer_network: explorer-net
         model_explorer_host_port: 8092
         model_explorer_timezone: "Etc/UTC"
 
-    # ---- variant: a DIFFERENT caller, to prove nothing is hardcoded --------------------
-    # Every value differs from the first variant. verify.yml then asserts that none of the first
-    # variant's values appears in this render — which is what proves the role would work on a
-    # second machine with only inventory changes, rather than being right by coincidence.
+    # Every value differs from the first variant; verify asserts none of the first variant's
+    # values appears in this render.
     - name: Render the SECOND-CALLER variant
       ansible.builtin.template:
-        src: "{{ playbook_dir }}/../../files/compose/{{ item.src }}"
-        dest: "{{ render_root }}/second/{{ item.dest }}"
+        src: "{{ playbook_dir }}/../../files/compose/docker-compose.yml.j2"
+        dest: "{{ render_root }}/second/docker-compose.yml"
         mode: "0644"
-      loop:
-        - { src: "docker-compose.yml.j2", dest: "docker-compose.yml" }
-        - { src: "nginx.conf.j2", dest: "nginx.conf" }
       vars:
         model_explorer_container_name: other-explorer
-        model_explorer_image: "nginx:1.28.0-alpine"
+        model_explorer_image: "registry.example.org/mirror/explorer@{{ digest_b }}"
         model_explorer_config_dir: "{{ render_root }}/second"
         model_explorer_network: othernet
         model_explorer_host_port: 9191
         model_explorer_timezone: "Etc/GMT+5"
+
+    - name: Write a catalogue snapshot for the refusal cases (so only the image can refuse)
+      ansible.builtin.copy:
+        dest: "{{ render_root }}/catalogue.json"
+        content: '{"enumerated": ["a/b"], "openrouter": [{"id": "a/b"}]}'
+        mode: "0644"
+
+    - name: REFUSE — the role with NO image reference
+      block:
+        - name: Include the role without model_explorer_image
+          ansible.builtin.include_role:
+            name: service_model_explorer
+          vars:
+            model_explorer_catalogue_src: "{{ render_root }}/catalogue.json"
+        - name: Record that it was NOT refused
+          ansible.builtin.set_fact:
+            _refused_missing: { failed: false, msg: "" }
+      rescue:
+        - name: Record the refusal
+          ansible.builtin.set_fact:
+            _refused_missing: { failed: true, msg: "{{ ansible_failed_result.msg | default('') }}" }
+
+    - name: REFUSE — the role with a TAG instead of a digest
+      block:
+        - name: Include the role with a tag
+          ansible.builtin.include_role:
+            name: service_model_explorer
+          vars:
+            model_explorer_image: ghcr.io/example/model-explorer:1.0.0
+            model_explorer_catalogue_src: "{{ render_root }}/catalogue.json"
+        - name: Record that it was NOT refused
+          ansible.builtin.set_fact:
+            _refused_tag: { failed: false, msg: "" }
+      rescue:
+        - name: Record the refusal
+          ansible.builtin.set_fact:
+            _refused_tag: { failed: true, msg: "{{ ansible_failed_result.msg | default('') }}" }
+
+    - name: Keep the refusal results for verify
+      ansible.builtin.copy:
+        dest: "{{ render_root }}/refusals.json"
+        content: "{{ {'missing': _refused_missing, 'tag': _refused_tag} | to_json }}"
+        mode: "0644"

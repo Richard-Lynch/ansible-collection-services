@@ -1,0 +1,247 @@
+---
+# Asserts on the ARTIFACTS the role's own templates produced (rendered by converge.yml), never on
+# a hand-typed copy of the role's logic.
+- name: Verify — the rendered quickR artifacts
+  hosts: localhost
+  gather_facts: false
+  vars:
+    render_root: /tmp/molecule-qr
+    _names: [docker-compose.yml, settings, quickr-pgdump, quickr-pgdump.timer]
+  tasks:
+    - name: Read every rendered file
+      ansible.builtin.slurp:
+        src: "{{ render_root }}/{{ item.0 }}/{{ item.1 }}"
+      register: _read
+      loop: "{{ ['first', 'second'] | product(_names) | list }}"
+      loop_control:
+        label: "{{ item.0 }}/{{ item.1 }}"
+
+    - name: Index the renders by variant and file
+      ansible.builtin.set_fact:
+        _r: >-
+          {{ _r | default({}) | combine({item.item.0: {item.item.1: item.content | b64decode}},
+                                         recursive=true) }}
+      loop: "{{ _read.results }}"
+      loop_control:
+        label: "{{ item.item.0 }}/{{ item.item.1 }}"
+
+    - name: Parse both compose files, so a template that renders INVALID yaml fails here
+      ansible.builtin.set_fact:
+        _first: "{{ _r.first['docker-compose.yml'] | from_yaml }}"
+        _second: "{{ _r.second['docker-compose.yml'] | from_yaml }}"
+
+    - name: The project has exactly db, backend and web, named from the project name
+      ansible.builtin.assert:
+        that:
+          - _first.services.keys() | sort == ['backend', 'db', 'web']
+          - _first.name == 'quickr'
+          - _first.services.backend.container_name == 'quickr-backend'
+          - _second.name == 'habits'
+          - _second.services.db.container_name == 'habits-db'
+          - _second.volumes.pgdata.name == 'habits-pgdata'
+        quiet: true
+
+    - name: ONLY the web origin is published — never Postgres or the API port
+      # quickR's development compose publishes 5433 and 8100. Neither may reach the host's
+      # network here: the database has a password but no other protection, and the API port
+      # would bypass nginx.
+      ansible.builtin.assert:
+        that:
+          - _first.services.web.ports == ['8080:80']
+          - _second.services.web.ports == ['9180:80']
+          - _first.services.db.ports is not defined
+          - _first.services.backend.ports is not defined
+          - _second.services.db.ports is not defined
+          - _second.services.backend.ports is not defined
+        quiet: true
+
+    - name: The database password is in the 0600 settings file and NOT in the compose file
+      ansible.builtin.assert:
+        that:
+          - "'molecule/Pass@word+1234567' not in _r.first['docker-compose.yml']"
+          - "'SecondCallerPassword42' not in _r.second['docker-compose.yml']"
+          - "'POSTGRES_PASSWORD=molecule/Pass@word+1234567' in _r.first.settings"
+          - _first.services.db.env_file == ['/opt/quickr/settings']
+          - _first.services.backend.env_file == ['/opt/quickr/settings']
+        quiet: true
+
+    - name: The password is URL-encoded in the database URL, including `/`, `@` and `+`
+      ansible.builtin.assert:
+        that:
+          - >-
+            'QUICKR_DATABASE_URL=postgresql+asyncpg://quickr:molecule%2FPass%40word%2B1234567@db:5432/quickr'
+            in _r.first.settings
+        fail_msg: >-
+          The rendered URL is not the encoded one. A raw `/` or `@` in the password makes the
+          URL point at a different host. Got:
+          {{ _r.first.settings | regex_findall('QUICKR_DATABASE_URL=.*') }}
+        quiet: true
+
+    - name: APNs — on in the first variant (key mounted as a directory, ids in settings)
+      ansible.builtin.assert:
+        that:
+          - _first.services.backend.volumes == ['/opt/quickr/secrets:/run/secrets/quickr:ro']
+          - "'QUICKR_APNS_TEAM_ID=TEAMID0001' in _r.first.settings"
+          - "'QUICKR_APNS_KEY_ID=KEYID00001' in _r.first.settings"
+          - "'QUICKR_APNS_PRIVATE_KEY_FILE=/run/secrets/quickr/apns.p8' in _r.first.settings"
+          - "'QUICKR_APNS_TOPIC=com.example.topic' in _r.first.settings"
+        quiet: true
+
+    - name: APNs — absent entirely in the second variant
+      ansible.builtin.assert:
+        that:
+          - _second.services.backend.volumes is not defined
+          - "'QUICKR_APNS' not in _r.second.settings"
+        quiet: true
+
+    - name: The scheduler flag renders as the string compose expects
+      ansible.builtin.assert:
+        that:
+          - _first.services.backend.environment.QUICKR_SCHEDULER_ENABLED == 'true'
+          - _second.services.backend.environment.QUICKR_SCHEDULER_ENABLED == 'false'
+        quiet: true
+
+    - name: The dump script and timer use the caller's values
+      ansible.builtin.assert:
+        that:
+          - "'docker exec quickr-db pg_dump' in _r.first['quickr-pgdump']"
+          - '''dir="/opt/quickr/backups"'' in _r.first[''quickr-pgdump'']'
+          - "'-mtime +14 ' in _r.first['quickr-pgdump']"
+          - "'docker exec habits-db pg_dump' in _r.second['quickr-pgdump']"
+          - "'-mtime +3 ' in _r.second['quickr-pgdump']"
+          - "'pg_restore --list' in _r.second['quickr-pgdump']"
+          - "'OnCalendar=*-*-* 04:00:00' in _r.second['quickr-pgdump.timer']"
+          - "'metrics_dir=\"/var/lib/node_exporter/textfile_collector\"' in _r.first['quickr-pgdump']"
+          - "'metrics_dir=\"/srv/habits-metrics\"' in _r.second['quickr-pgdump']"
+        quiet: true
+
+    # ---- the dump script RUN, against a stub docker: what backup alerts would read --------------
+    # Each run's outcome is the script's own: exit code, the .prom it leaves for a textfile
+    # collector, and the dump directory. The stub answers pg_dump with $STUB_DUMP (ok: bytes,
+    # empty: nothing, fail: exit 1, hang: sleep) and pg_restore --list with $STUB_RESTORE (ok | fail).
+    - name: Run the rendered dump script through pass, fail, empty, unreadable, partial write, TERM and no-metrics-dir
+      ansible.builtin.shell:
+        cmd: |
+          set -u
+          r={{ render_root }}/exec
+          bin=$(mktemp -d)
+          printf '%s\n' '#!/bin/sh' 'case "$*" in' \
+            '  *pg_dump*) case "$STUB_DUMP" in ok) printf PGDMP-fake ;; empty) : ;; hang) sleep 5 ;; *) exit 1 ;; esac ;;' \
+            '  *pg_restore*) cat > /dev/null; [ "$STUB_RESTORE" = ok ] || exit 1 ;;' \
+            'esac' > "$bin/docker"
+          chmod +x "$bin/docker"
+          # Debian's /bin/sh is dash, whose EXIT trap does NOT run on a fatal TERM (bash's does, so
+          # macOS's sh would pass a script that is broken under dash). Use dash where it exists.
+          shell=$(command -v dash || echo sh)
+          echo "shell=$(basename "$shell")"
+          run() { PATH="$bin:$PATH" STUB_DUMP=$1 STUB_RESTORE=$2 "$shell" "$r/quickr-pgdump" > /dev/null 2>&1; echo $?; }
+          m() { awk -v k="$1" '$1 == k {print $2}' "$r/metrics/quickr_pgdump.prom" 2>/dev/null; }
+          dumps() { find "$r/dumps" -maxdepth 1 -name 'quickr-*.dump' | wc -l | tr -d ' '; }
+          partials() { find "$r/dumps" -maxdepth 1 -name '.*partial' | wc -l | tr -d ' '; }
+          echo "ok_rc=$(run ok ok)"
+          echo "ok_success=$(m quickr_pgdump_last_run_success)"
+          ok_ts=$(m quickr_pgdump_last_success_timestamp_seconds); echo "ok_ts=$ok_ts"
+          echo "ok_size=$(m quickr_pgdump_last_success_size_bytes)"
+          echo "ok_dumps=$(dumps)"
+          # The exposition format a textfile collector parses: every sample line is `name value`, and each metric
+          # has exactly one HELP and one TYPE line (a duplicate makes the collector drop the file).
+          p="$r/metrics/quickr_pgdump.prom"
+          echo "format_lines_ok=$(grep -v '^# ' "$p" | grep -cvE '^quickr_pgdump_[a-z_]+ [0-9]+$')"
+          echo "format_help_ok=$(awk '$1 == "#" {print $2, $3}' "$p" | sort | uniq -c | awk '$1 != 1' | wc -l | tr -d ' ')"
+          echo "format_typed=$(for n in $(grep -v '^#' "$p" | cut -d' ' -f1); do grep -c "^# TYPE $n gauge$" "$p"; done | sort -u | tr -d '\n')"
+          sleep 1
+          echo "fail_rc=$(run fail ok)"
+          echo "fail_success=$(m quickr_pgdump_last_run_success)"
+          echo "fail_ts_kept=$([ "$(m quickr_pgdump_last_success_timestamp_seconds)" = "$ok_ts" ] && echo yes || echo no)"
+          echo "fail_run_ts_newer=$([ "$(m quickr_pgdump_last_run_timestamp_seconds)" -gt "$ok_ts" ] && echo yes || echo no)"
+          echo "fail_size_kept=$(m quickr_pgdump_last_success_size_bytes)"
+          echo "empty_rc=$(run empty ok)"
+          echo "empty_success=$(m quickr_pgdump_last_run_success)"
+          echo "unreadable_rc=$(run ok fail)"
+          echo "unreadable_success=$(m quickr_pgdump_last_run_success)"
+          echo "after_failures_dumps=$(dumps)"
+          echo "partials=$(partials)"
+          echo "temp_files=$(find "$r/metrics" -name '.*' -type f | wc -l | tr -d ' ')"
+          # A metric write that fails PART-WAY (a full disk): files may not grow at all, and the
+          # write gets EFBIG rather than a fatal SIGXFSZ. The good file must survive untouched.
+          cp "$p" "$bin/before.prom"
+          echo "partial_rc=$( (trap '' XFSZ; ulimit -f 0; run fail ok) )"
+          echo "partial_kept=$(cmp -s "$p" "$bin/before.prom" && echo yes || echo no)"
+          echo "partial_temp=$(find "$r/metrics" -name '.*' -type f | wc -l | tr -d ' ')"
+          # A hung pg_dump TERMed (TimeoutStartSec): the run still records a failure.
+          run ok ok > /dev/null
+          PATH="$bin:$PATH" STUB_DUMP=hang STUB_RESTORE=ok "$shell" "$r/quickr-pgdump" > /dev/null 2>&1 &
+          pid=$!
+          sleep 1
+          kill -TERM "$pid"
+          wait "$pid"; echo "term_rc=$?"
+          echo "term_success=$(m quickr_pgdump_last_run_success)"
+          echo "term_partials=$(partials)"
+          rm -rf "$r/metrics"
+          echo "nodir_rc=$(run ok ok)"
+          echo "nodir_prom=$([ -e "$r/metrics/quickr_pgdump.prom" ] && echo yes || echo no)"
+          rm -rf "$bin"
+      register: _dumprun
+      changed_when: false
+
+    - name: The backup metric tells a good dump from every kind of bad one
+      vars:
+        _d: "{{ dict(_dumprun.stdout_lines | map('split', '=', 1)) }}"
+      ansible.builtin.assert:
+        that:
+          # a verified dump: success, its time and size, the archive kept
+          - _d.ok_rc == '0'
+          - _d.ok_success == '1'
+          - _d.ok_ts is match('^[0-9]{10}$')
+          - _d.ok_size == '10'
+          - _d.ok_dumps == '1'
+          # every failure exits non-zero, records 0, and KEEPS the last good dump's time
+          - _d.fail_rc != '0' and _d.fail_success == '0'
+          - _d.fail_ts_kept == 'yes' and _d.fail_run_ts_newer == 'yes'
+          - _d.empty_rc != '0' and _d.empty_success == '0'
+          - _d.unreadable_rc != '0' and _d.unreadable_success == '0'
+          # a failed run neither adds an archive nor leaves a partial or a temp metric behind
+          - _d.after_failures_dumps == '1'
+          - _d.partials == '0'
+          - _d.temp_files == '0'
+          # a failed run carries the last good dump's size, as it does its time
+          - _d.fail_size_kept == '10'
+          # the .prom is well-formed: sample lines only `name value`, one HELP/TYPE per metric
+          - _d.format_lines_ok == '0' and _d.format_help_ok == '0' and _d.format_typed == '1'
+          # a write that fails part-way keeps the previous file and leaves no temp behind
+          - _d.partial_rc != '0' and _d.partial_kept == 'yes' and _d.partial_temp == '0'
+          # a TERMed (timed-out) run exits through the trap and records the failure
+          - _d.term_rc == '143' and _d.term_success == '0' and _d.term_partials == '0'
+          # no textfile directory: the dump still succeeds, no metric
+          - _d.nodir_rc == '0' and _d.nodir_prom == 'no'
+        fail_msg: "dump script runs: {{ _d }}"
+        quiet: true
+
+    - name: Nothing from the first variant leaks into the second caller's render
+      ansible.builtin.assert:
+        that:
+          - "'/opt/quickr' not in (_r.second.values() | join(' '))"
+          - "'quickr-' not in _r.second['docker-compose.yml']"
+          - "'ghcr.io' not in _r.second['docker-compose.yml']"
+          - "'8080' not in _r.second['docker-compose.yml']"
+        fail_msg: >-
+          A first-variant value appears in the second caller's render, so a template hardcodes it
+          instead of reading its variable.
+        quiet: true
+
+    - name: Read the image-gate refusals
+      ansible.builtin.slurp:
+        src: "{{ render_root }}/refusals.json"
+      register: _refusals_raw
+
+    - name: Every bad image reference is refused by the image gate that names it
+      vars:
+        _ref: "{{ _refusals_raw.content | b64decode | from_json }}"
+      ansible.builtin.assert:
+        that:
+          - _ref.tag_only.failed and 'pinned as name:<tag>@sha256:<digest>' in _ref.tag_only.msg
+          - _ref.digest_only.failed and 'pinned as name:<tag>@sha256:<digest>' in _ref.digest_only.msg
+          - _ref.floating.failed and 'carries a floating tag' in _ref.floating.msg
+          - _ref.mismatched.failed and 'Pin both to the same' in _ref.mismatched.msg
+        fail_msg: "An image reference was not refused for the right reason: {{ _ref }}"
+        quiet: true
