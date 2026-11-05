@@ -100,3 +100,22 @@
         dest: "{{ render_root }}/refusals.json"
         content: "{{ {'missing': _refused_missing, 'tag': _refused_tag} | to_json }}"
         mode: "0644"
+
+    # ---- the REAL compose render, through deployment_config ---------------------------------
+    # The rest of the role needs Docker and root; this entrypoint is the part that decides what
+    # compose will run. Run for real against a scratch destination, so a source path that resolves
+    # to the wrong role (and silently renders nothing) fails verify.
+    - name: Render the compose project through the role's own _compose entrypoint
+      ansible.builtin.include_role:
+        name: service_model_explorer
+        tasks_from: _compose
+      vars:
+        model_explorer_container_name: model-explorer
+        model_explorer_image: "ghcr.io/example/model-explorer@{{ digest_a }}"
+        model_explorer_config_dir: "{{ render_root }}/deploy"
+        model_explorer_network: explorer-net
+        model_explorer_host_port: 8092
+        model_explorer_timezone: "Etc/UTC"
+        # deployment_config chowns to root by default; the scenario runs unprivileged.
+        deployment_config_file_owner: "{{ lookup('ansible.builtin.env', 'USER') | default(lookup('ansible.builtin.pipe', 'id -un'), true) }}"
+        deployment_config_file_group: "{{ lookup('ansible.builtin.pipe', 'id -gn') }}"

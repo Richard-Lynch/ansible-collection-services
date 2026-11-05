@@ -49,13 +49,10 @@
 # ---------------------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------------------
-- name: Deploy the compose project
-  ansible.builtin.include_role:
-    name: richard_lynch.common.deployment_config
-  vars:
-    deployment_config_source: "{{ role_path }}/files/compose"
-    deployment_config_destination: "{{ model_explorer_config_dir }}"
-    deployment_config_file_mode: "0644"
+- name: Render the compose project
+  # _compose.yml resolves the source path in THIS role's context before including
+  # deployment_config; see there for why that matters.
+  ansible.builtin.include_tasks: _compose.yml
 
 - name: Ensure the catalogue directory exists
   # Mounted into the container as a DIRECTORY (/srv/catalogue). A file-level bind mount pins the
@@ -95,14 +92,6 @@
     state: present
     pull: missing
     recreate: auto
-
-- name: Remove what earlier versions of this role installed (a copied bundle and nginx config)
-  # Before 2.0.0 the role copied a built bundle into site/ and rendered nginx.conf; the image
-  # carries both now. Removed AFTER the converge, so the old container is replaced first.
-  ansible.builtin.file:
-    path: "{{ model_explorer_config_dir }}/{{ item }}"
-    state: absent
-  loop: [site, nginx.conf]
 
 # ---------------------------------------------------------------------------------------
 # Read-backs. A deploy that "succeeded" is not evidence the app works.
@@ -197,3 +186,16 @@
       The served catalogue.json is missing, unparseable, or carries no models. Check
       model_explorer_catalogue_src ({{ model_explorer_catalogue_src }}) and re-run.
     quiet: true
+
+# ---------------------------------------------------------------------------------------
+# Cleanup, LAST. Only once every gate above has passed: the new container runs the pinned
+# digest, is healthy and serves the app and the catalogue. Before that, the previous container may
+# still be the one serving, and it bind-mounts these paths.
+# ---------------------------------------------------------------------------------------
+- name: Remove what versions before 2.0.0 installed (a copied bundle and nginx config)
+  # Before 2.0.0 the role copied a built bundle into site/ and rendered nginx.conf; the image
+  # carries both now.
+  ansible.builtin.file:
+    path: "{{ model_explorer_config_dir }}/{{ item }}"
+    state: absent
+  loop: [site, nginx.conf]

@@ -391,6 +391,7 @@ roles/service_model_explorer/meta/main.yml
 roles/service_model_explorer/molecule/default/converge.yml
 roles/service_model_explorer/molecule/default/molecule.yml
 roles/service_model_explorer/molecule/default/verify.yml
+roles/service_model_explorer/tasks/_compose.yml
 roles/service_model_explorer/tasks/_resolve_defaults.yml
 roles/service_model_explorer/tasks/main.yml
 roles/service_postgres/README.md

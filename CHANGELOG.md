@@ -9,6 +9,13 @@ All notable changes to this collection are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the collection
 uses [Semantic Versioning](https://semver.org/).
 
+## [2.0.1] — 2026-11-05
+
+### Fixed
+
+- `service_model_explorer` deploys the image it is given. In 2.0.0 the compose project's source directory was passed to `richard_lynch.common.deployment_config` as a role_path expression, which Ansible evaluates inside the included role, so it named that role's directory: nothing was rendered, compose saw no change, and the previous container kept running. The path is now resolved in the role's own context (`tasks/_compose.yml`), and molecule runs that entrypoint for real and requires the rendered compose file to carry the caller's digest.
+- `service_model_explorer` removes the files that versions before 2.0.0 installed, and only after every read-back has passed, so a failed converge never strips a container that is still serving from them. A host converged with 2.0.0 is repaired by running 2.0.1; no manual cleanup is needed.
+
 ## [2.0.0] — 2026-11-05
 
 ### Added
