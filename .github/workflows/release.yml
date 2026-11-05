@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   release:
-    uses: Richard-Lynch/ansible-devkit/.github/workflows/reusable-release.yml@v0.4.0
+    uses: Richard-Lynch/ansible-devkit/.github/workflows/reusable-release.yml@v0.4.1
     with:
       kind: collection
     # The publish job's `release`-environment secrets (release App key, Galaxy API key) reach a

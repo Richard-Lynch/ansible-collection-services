@@ -1,0 +1,75 @@
+---
+# AUTO-GENERATED defaults file — DO NOT EDIT.
+#
+# Source of truth: roles/service_quickr/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate service_quickr
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+# Entrypoint:      main
+
+# Postgres image. Pinned. Changing the MAJOR version needs a dump and
+# restore -- Postgres will not start on another major's data directory.
+quickr_postgres_image__default: postgres:18.6-alpine
+
+# Compose project name, and the prefix of every container and of the
+# Postgres volume (named explicitly, so it is never project-prefixed).
+quickr_project_name__default: quickr
+
+# Host directory holding the rendered compose project.
+quickr_config_dir__default: /opt/quickr
+
+# Host port published for the web origin (container port 80). The ONLY
+# port the project publishes.
+quickr_web_host_port__default: 8080
+
+# TZ passed to the containers.
+quickr_timezone__default: Etc/UTC
+
+# Run the backend's reminder scheduler (QUICKR_SCHEDULER_ENABLED).
+quickr_scheduler_enabled__default: true
+
+# Apple Developer Team ID. Empty turns APNs off.
+quickr_apns_team_id__default: ''
+
+# Key ID of the APNs .p8 key. Empty turns APNs off.
+quickr_apns_key_id__default: ''
+
+# The APNs .p8 key itself (PEM text). Written to a 0440 file in a
+# directory mounted read-only into the backend; never into an
+# environment variable, the image or the compose file.
+quickr_apns_private_key__default: ''
+
+# APNs topic (the app's bundle id). Empty leaves the backend's own
+# default in force.
+quickr_apns_topic__default: ''
+
+# Numeric gid the backend container runs as. The APNs key is
+# group-owned by it, so the container can read a file that is not
+# world-readable.
+quickr_app_gid__default: 10001
+
+# Registry the images are pulled from.
+quickr_registry__default: ghcr.io
+
+# Registry login. Empty skips the login, for public images.
+quickr_registry_username__default: ''
+
+# Registry token, e.g. a GitHub PAT with read:packages only.
+quickr_registry_password__default: ''
+
+# Where the nightly pg_dump archives are written.
+quickr_backup_dir__default: /opt/quickr/backups
+
+# Dumps older than this many days are deleted.
+quickr_backup_keep_days__default: 14
+
+# systemd OnCalendar for the dump. Schedule it before any whole-machine
+# backup of the host, so that backup carries the night's dump.
+quickr_backup_on_calendar__default: '*-*-* 02:15:00'
+
+# Where the dump writes quickr_pgdump.prom for a textfile collector.
+# Must match the collector's directory, or alerts on the backup metrics
+# see nothing. Skipped (with a warning) if it does not exist.
+quickr_backup_metrics_dir__default: /var/lib/node_exporter/textfile_collector

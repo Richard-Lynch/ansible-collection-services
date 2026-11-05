@@ -1,0 +1,134 @@
+---
+# Render-only scenario. The role's real converge needs a Docker daemon, systemd and registry
+# credentials, none reproducible on a GitHub-hosted runner — so coverage here is honestly PARTIAL:
+# it proves the role's OWN templates render correct,
+# parseable artifacts for two variable combinations, not that the stack runs. The live behaviour
+# is asserted by the role's read-backs (the sync feed's X-QuickR-Server-Id, apns_enabled from the
+# running backend, the dump timer's unit state).
+#
+# Two variants, because the values that vary are the ones a second caller would change, and one
+# render cannot tell a template that uses its variables from one that hardcodes the first's.
+- name: Converge — render the quickR templates (no docker)
+  hosts: localhost
+  gather_facts: false
+  vars:
+    # Kept free of any value the second variant asserts is absent (`quickr`, `/opt/quickr`),
+    # or verify's "nothing is hardcoded" check would match the scaffolding.
+    render_root: /tmp/molecule-qr
+    _templates: "{{ playbook_dir }}/../../templates"
+    _files: "{{ playbook_dir }}/../../files"
+  tasks:
+    - name: Ensure a clean render root
+      ansible.builtin.file:
+        path: "{{ render_root }}"
+        state: absent
+
+    - name: Create the render directories
+      ansible.builtin.file:
+        path: "{{ render_root }}/{{ item }}"
+        state: directory
+        mode: "0755"
+      loop: [first, second, exec, exec/dumps, exec/metrics]
+
+    # Include-level `vars:` rather than set_fact, so nothing from one variant can leak into the
+    # next: set_fact would persist for the play and outrank the second include's values.
+    # `_quickr_apns_enabled` is the role's derived fact, given here as an INPUT per variant.
+    - name: Render the FIRST variant (a typical deployment's values, APNs on)
+      ansible.builtin.include_tasks: render_variant.yml
+      vars:
+        variant: first
+        quickr_project_name: quickr
+        quickr_config_dir: /opt/quickr
+        quickr_backup_dir: /opt/quickr/backups
+        quickr_backend_image: "ghcr.io/example/quickr-backend:0123456789abcdef0123456789abcdef01234567@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        quickr_frontend_image: "ghcr.io/example/quickr-frontend:0123456789abcdef0123456789abcdef01234567@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        quickr_postgres_image: "postgres:18.6-alpine"
+        quickr_web_host_port: 8080
+        quickr_timezone: "Etc/UTC"
+        quickr_scheduler_enabled: true
+        # Carries `/`, `@` and `+`: each one breaks the database URL if it is not encoded.
+        quickr_postgres_password: "molecule/Pass@word+1234567"
+        quickr_apns_team_id: TEAMID0001
+        quickr_apns_key_id: KEYID00001
+        quickr_apns_topic: com.example.topic
+        quickr_backup_keep_days: 14
+        quickr_backup_on_calendar: "*-*-* 02:15:00"
+        quickr_backup_metrics_dir: /var/lib/node_exporter/textfile_collector
+        _quickr_apns_enabled: true
+
+    # Every value differs from the first variant. verify.yml asserts none of the first variant's
+    # values appears in this render — which is what proves the role works on a second machine with
+    # only inventory changes.
+    - name: Render the SECOND-CALLER variant (different values, APNs off)
+      ansible.builtin.include_tasks: render_variant.yml
+      vars:
+        variant: second
+        quickr_project_name: habits
+        quickr_config_dir: /srv/habits
+        quickr_backup_dir: /srv/habits-dumps
+        quickr_backend_image: "registry.example.org/habits/api:v2.0.1@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        quickr_frontend_image: "registry.example.org/habits/web:v2.0.1@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        quickr_postgres_image: "postgres:18.4-alpine"
+        quickr_web_host_port: 9180
+        quickr_timezone: "Asia/Tokyo"
+        quickr_scheduler_enabled: false
+        quickr_postgres_password: "SecondCallerPassword42"
+        quickr_apns_team_id: ""
+        quickr_apns_key_id: ""
+        quickr_apns_topic: ""
+        quickr_backup_keep_days: 3
+        quickr_backup_on_calendar: "*-*-* 04:00:00"
+        quickr_backup_metrics_dir: /srv/habits-metrics
+        _quickr_apns_enabled: false
+
+    # Rendered to be RUN, not read: verify.yml executes this dump script against a stub `docker`
+    # (pass, fail, empty, unreadable), so the backup metric the QuickrBackup* alerts read is
+    # proven from the script's real behaviour. Its directories live under the render root.
+    - name: Render the EXEC variant (the dump script, pointed at scratch directories)
+      ansible.builtin.include_tasks: render_variant.yml
+      vars:
+        variant: exec
+        quickr_project_name: dumptest
+        quickr_config_dir: /srv/dumptest
+        quickr_backup_dir: "{{ render_root }}/exec/dumps"
+        quickr_backend_image: "registry.example.org/dumptest/api:v1"
+        quickr_frontend_image: "registry.example.org/dumptest/web:v1"
+        quickr_postgres_image: "postgres:18.4-alpine"
+        quickr_web_host_port: 9181
+        quickr_timezone: "Etc/UTC"
+        quickr_scheduler_enabled: false
+        quickr_postgres_password: "ExecVariantPassword42"
+        quickr_apns_team_id: ""
+        quickr_apns_key_id: ""
+        quickr_apns_topic: ""
+        quickr_backup_keep_days: 3
+        quickr_backup_on_calendar: "*-*-* 04:00:00"
+        quickr_backup_metrics_dir: "{{ render_root }}/exec/metrics"
+        _quickr_apns_enabled: false
+
+    # ---- the image gates, on the REAL role ------------------------------------------------
+    # Each include must be refused before any task touches the host. verify asserts each was
+    # refused BY THE INTENDED GATE (its message), so a refusal for another reason cannot pass.
+    - name: REFUSE — images pinned by tag only (no digest), a digest only (no tag), mismatched builds
+      ansible.builtin.include_tasks: refuse_case.yml
+      loop:
+        - name: tag_only
+          backend: "ghcr.io/example/quickr-backend:0123456789abcdef0123456789abcdef01234567"
+          frontend: "ghcr.io/example/quickr-frontend:0123456789abcdef0123456789abcdef01234567"
+        - name: digest_only
+          backend: "ghcr.io/example/quickr-backend@sha256:{{ 'a' * 64 }}"
+          frontend: "ghcr.io/example/quickr-frontend@sha256:{{ 'b' * 64 }}"
+        - name: floating
+          backend: "ghcr.io/example/quickr-backend:latest@sha256:{{ 'a' * 64 }}"
+          frontend: "ghcr.io/example/quickr-frontend:latest@sha256:{{ 'b' * 64 }}"
+        - name: mismatched
+          backend: "ghcr.io/example/quickr-backend:1111111@sha256:{{ 'a' * 64 }}"
+          frontend: "ghcr.io/example/quickr-frontend:2222222@sha256:{{ 'b' * 64 }}"
+      loop_control:
+        loop_var: case
+
+    - name: Keep the refusal results for verify
+      ansible.builtin.copy:
+        dest: "{{ render_root }}/refusals.json"
+        content: "{{ _refusals | default({}) | to_json }}"
+        mode: "0644"

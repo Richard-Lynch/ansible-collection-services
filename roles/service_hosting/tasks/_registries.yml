@@ -68,6 +68,8 @@
   when: hosting_registries | length > 0
 
 - name: Read each probe image's manifest WITH the stored login
+  # A read: it runs under --check too, or the gate after it reads nothing (#388).
+  check_mode: false
   ansible.builtin.command:
     argv:
       [
@@ -86,6 +88,8 @@
     label: "{{ item.host }} {{ item.probe_image }}"
 
 - name: Read each probe image's manifest with NO login (an empty config)
+  # A read: it runs under --check too, or the gate after it reads nothing (#388).
+  check_mode: false
   # A config directory that does not exist is an empty config to the docker CLI; against a private
   # image it answers rc=1, `unauthorized`.
   ansible.builtin.command:

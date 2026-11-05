@@ -1,0 +1,3 @@
+---
+# No handlers — tasks/main.yml converges and restarts the compose project directly, so the
+# read-backs that follow see the new state. A handler would fire at play end, after them.

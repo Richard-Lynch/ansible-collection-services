@@ -5,16 +5,19 @@ platforms: [{ name: localhost }]
 provisioner:
   name: ansible
   inventory: { host_vars: { localhost: { ansible_connection: local } } }
+  # Molecule runs from the scenario directory, so include_role of this very role needs the roles
+  # directory on the path (the refusal cases below include the real role).
+  env:
+    ANSIBLE_ROLES_PATH: "${MOLECULE_PROJECT_DIRECTORY}/../"
+    # The role's FQCN dependencies (richard_lynch.common, community.docker): the installed tree, and
+    # the tree holding this collection itself (molecule does not read ansible.cfg).
+    ANSIBLE_COLLECTIONS_PATH: "${MOLECULE_PROJECT_DIRECTORY}/../../collections.galaxy:${MOLECULE_PROJECT_DIRECTORY}/../../../../.."
   playbooks: { converge: converge.yml, verify: verify.yml }
 verifier: { name: ansible }
 scenario:
   # No idempotence step: converge starts by DELETING the render root so each run renders from a
-  # known-clean state, which makes a second converge "changed" by construction. That teardown is
-  # the point — a stale artifact from a previous run with different vars would otherwise satisfy
-  # verify's asserts and hide a template that had stopped rendering.
-  #
-  # This costs nothing real here, because this scenario renders templates and never converges the
-  # role: `tasks/main.yml`'s own idempotence (deployment_config's change detection, compose
-  # `recreate: auto`, and the restart gated on a genuine config change) is not exercised by a
-  # render-only scenario either way. It is asserted on the live host by the role's own read-backs.
+  # known-clean state, which makes a second converge "changed" by construction. A stale artifact
+  # from a previous run would otherwise satisfy verify's asserts and hide a template that had
+  # stopped rendering. The role's own converge needs a Docker daemon; its idempotence (compose
+  # `recreate: auto`) and its health/digest read-backs are exercised on a real host.
   test_sequence: [syntax, converge, verify]

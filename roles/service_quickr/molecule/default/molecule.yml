@@ -1,0 +1,19 @@
+---
+dependency: { name: galaxy }
+driver: { name: default }
+platforms: [{ name: localhost }]
+provisioner:
+  name: ansible
+  inventory: { host_vars: { localhost: { ansible_connection: local } } }
+  # include_role of this very role (the image-gate refusal cases) needs the roles directory, and
+  # its FQCN dependencies need the installed collections and this collection's own tree.
+  env:
+    ANSIBLE_ROLES_PATH: "${MOLECULE_PROJECT_DIRECTORY}/../"
+    ANSIBLE_COLLECTIONS_PATH: "${MOLECULE_PROJECT_DIRECTORY}/../../collections.galaxy:${MOLECULE_PROJECT_DIRECTORY}/../../../../.."
+  playbooks: { converge: converge.yml, verify: verify.yml }
+verifier: { name: ansible }
+scenario:
+  # No idempotence step: converge starts by DELETING the render root so each run renders from a
+  # known-clean state, which makes a second converge "changed" by construction. This is a
+  # render-only scenario; the role's own idempotence and read-backs are asserted on a live host.
+  test_sequence: [syntax, converge, verify]

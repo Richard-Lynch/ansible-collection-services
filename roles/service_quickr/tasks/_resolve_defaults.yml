@@ -1,0 +1,79 @@
+---
+# AUTO-GENERATED defaults resolver — DO NOT EDIT.
+#
+# Source of truth: roles/service_quickr/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate service_quickr
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+
+# Binds every declared option to its generated default, so a caller-supplied value
+# wins and an unsupplied one falls back rather than evaluating Undefined.
+#
+# Include this FIRST from every entrypoint:
+#   - ansible.builtin.include_tasks: _resolve_defaults.yml
+#
+# Role-specific setup logic belongs in tasks/setup_vars.yml, NOT here — this file is
+# overwritten on every generation.
+#
+# TWO BRANCHES, because `set_fact` persists for the whole play. A role invoked twice in
+# one play would otherwise see its OWN leftover facts on the second call, so a later
+# caller that omitted an option silently inherited the earlier caller's value instead of
+# the declared default. On a repeat call this ignores the role's own facts and rebinds
+# the defaults; an include-level `vars:` shadows the fact, so a value the caller DID
+# supply this time still wins. Roles called once per play only ever run the first branch.
+
+- name: Resolve declared options over their generated defaults
+  ansible.builtin.set_fact:
+    quickr_postgres_image: "{{ quickr_postgres_image | default(quickr_postgres_image__default) if quickr_postgres_image__default is defined else quickr_postgres_image | default(omit) }}"
+    quickr_project_name: "{{ quickr_project_name | default(quickr_project_name__default) if quickr_project_name__default is defined else quickr_project_name | default(omit) }}"
+    quickr_config_dir: "{{ quickr_config_dir | default(quickr_config_dir__default) if quickr_config_dir__default is defined else quickr_config_dir | default(omit) }}"
+    quickr_web_host_port: "{{ quickr_web_host_port | default(quickr_web_host_port__default) if quickr_web_host_port__default is defined else quickr_web_host_port | default(omit) }}"
+    quickr_timezone: "{{ quickr_timezone | default(quickr_timezone__default) if quickr_timezone__default is defined else quickr_timezone | default(omit) }}"
+    quickr_scheduler_enabled: "{{ quickr_scheduler_enabled | default(quickr_scheduler_enabled__default) if quickr_scheduler_enabled__default is defined else quickr_scheduler_enabled | default(omit) }}"
+    quickr_apns_team_id: "{{ quickr_apns_team_id | default(quickr_apns_team_id__default) if quickr_apns_team_id__default is defined else quickr_apns_team_id | default(omit) }}"
+    quickr_apns_key_id: "{{ quickr_apns_key_id | default(quickr_apns_key_id__default) if quickr_apns_key_id__default is defined else quickr_apns_key_id | default(omit) }}"
+    quickr_apns_private_key: "{{ quickr_apns_private_key | default(quickr_apns_private_key__default) if quickr_apns_private_key__default is defined else quickr_apns_private_key | default(omit) }}"
+    quickr_apns_topic: "{{ quickr_apns_topic | default(quickr_apns_topic__default) if quickr_apns_topic__default is defined else quickr_apns_topic | default(omit) }}"
+    quickr_app_gid: "{{ quickr_app_gid | default(quickr_app_gid__default) if quickr_app_gid__default is defined else quickr_app_gid | default(omit) }}"
+    quickr_registry: "{{ quickr_registry | default(quickr_registry__default) if quickr_registry__default is defined else quickr_registry | default(omit) }}"
+    quickr_registry_username: "{{ quickr_registry_username | default(quickr_registry_username__default) if quickr_registry_username__default is defined else quickr_registry_username | default(omit) }}"
+    quickr_registry_password: "{{ quickr_registry_password | default(quickr_registry_password__default) if quickr_registry_password__default is defined else quickr_registry_password | default(omit) }}"
+    quickr_backup_dir: "{{ quickr_backup_dir | default(quickr_backup_dir__default) if quickr_backup_dir__default is defined else quickr_backup_dir | default(omit) }}"
+    quickr_backup_keep_days: "{{ quickr_backup_keep_days | default(quickr_backup_keep_days__default) if quickr_backup_keep_days__default is defined else quickr_backup_keep_days | default(omit) }}"
+    quickr_backup_on_calendar: "{{ quickr_backup_on_calendar | default(quickr_backup_on_calendar__default) if quickr_backup_on_calendar__default is defined else quickr_backup_on_calendar | default(omit) }}"
+    quickr_backup_metrics_dir: "{{ quickr_backup_metrics_dir | default(quickr_backup_metrics_dir__default) if quickr_backup_metrics_dir__default is defined else quickr_backup_metrics_dir | default(omit) }}"
+  when: not (_service_quickr__argspec_resolved | default(false))
+  # At least one option carries no_log, and set_fact would otherwise print every
+  # resolved value — including that one — in the task result.
+  no_log: true
+
+- name: Rebind the defaults on a repeat call, ignoring this role's own leftover facts
+  ansible.builtin.set_fact:
+    quickr_postgres_image: "{{ quickr_postgres_image__default if quickr_postgres_image__default is defined else quickr_postgres_image | default(omit) }}"
+    quickr_project_name: "{{ quickr_project_name__default if quickr_project_name__default is defined else quickr_project_name | default(omit) }}"
+    quickr_config_dir: "{{ quickr_config_dir__default if quickr_config_dir__default is defined else quickr_config_dir | default(omit) }}"
+    quickr_web_host_port: "{{ quickr_web_host_port__default if quickr_web_host_port__default is defined else quickr_web_host_port | default(omit) }}"
+    quickr_timezone: "{{ quickr_timezone__default if quickr_timezone__default is defined else quickr_timezone | default(omit) }}"
+    quickr_scheduler_enabled: "{{ quickr_scheduler_enabled__default if quickr_scheduler_enabled__default is defined else quickr_scheduler_enabled | default(omit) }}"
+    quickr_apns_team_id: "{{ quickr_apns_team_id__default if quickr_apns_team_id__default is defined else quickr_apns_team_id | default(omit) }}"
+    quickr_apns_key_id: "{{ quickr_apns_key_id__default if quickr_apns_key_id__default is defined else quickr_apns_key_id | default(omit) }}"
+    quickr_apns_private_key: "{{ quickr_apns_private_key__default if quickr_apns_private_key__default is defined else quickr_apns_private_key | default(omit) }}"
+    quickr_apns_topic: "{{ quickr_apns_topic__default if quickr_apns_topic__default is defined else quickr_apns_topic | default(omit) }}"
+    quickr_app_gid: "{{ quickr_app_gid__default if quickr_app_gid__default is defined else quickr_app_gid | default(omit) }}"
+    quickr_registry: "{{ quickr_registry__default if quickr_registry__default is defined else quickr_registry | default(omit) }}"
+    quickr_registry_username: "{{ quickr_registry_username__default if quickr_registry_username__default is defined else quickr_registry_username | default(omit) }}"
+    quickr_registry_password: "{{ quickr_registry_password__default if quickr_registry_password__default is defined else quickr_registry_password | default(omit) }}"
+    quickr_backup_dir: "{{ quickr_backup_dir__default if quickr_backup_dir__default is defined else quickr_backup_dir | default(omit) }}"
+    quickr_backup_keep_days: "{{ quickr_backup_keep_days__default if quickr_backup_keep_days__default is defined else quickr_backup_keep_days | default(omit) }}"
+    quickr_backup_on_calendar: "{{ quickr_backup_on_calendar__default if quickr_backup_on_calendar__default is defined else quickr_backup_on_calendar | default(omit) }}"
+    quickr_backup_metrics_dir: "{{ quickr_backup_metrics_dir__default if quickr_backup_metrics_dir__default is defined else quickr_backup_metrics_dir | default(omit) }}"
+  when: _service_quickr__argspec_resolved | default(false)
+  # At least one option carries no_log, and set_fact would otherwise print every
+  # resolved value — including that one — in the task result.
+  no_log: true
+
+- name: Record that this role has resolved its options in this play
+  ansible.builtin.set_fact:
+    _service_quickr__argspec_resolved: true

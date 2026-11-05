@@ -1,0 +1,17 @@
+---
+# Renders the role's own templates for one variant, whose values arrive as the include's vars
+# (see converge.yml). Each source path is the one the role itself uses: the compose file from
+# files/ (deployment_config's sweep), everything else from templates/.
+- name: "Render the {{ variant }} variant"
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ render_root }}/{{ variant }}/{{ item.dest }}"
+    mode: "0644"
+  loop:
+    - { src: "{{ _files }}/docker-compose.yml.j2", dest: docker-compose.yml }
+    - { src: "{{ _templates }}/settings.j2", dest: settings }
+    - { src: "{{ _templates }}/quickr-pgdump.sh.j2", dest: quickr-pgdump }
+    - { src: "{{ _templates }}/quickr-pgdump.service.j2", dest: quickr-pgdump.service }
+    - { src: "{{ _templates }}/quickr-pgdump.timer.j2", dest: quickr-pgdump.timer }
+  loop_control:
+    label: "{{ item.dest }}"

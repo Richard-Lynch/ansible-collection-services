@@ -9,6 +9,23 @@ All notable changes to this collection are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the collection
 uses [Semantic Versioning](https://semver.org/).
 
+## [2.0.0] — 2026-11-05
+
+### Added
+
+- `service_quickr`: deploys the quickR habit tracker (backend, web origin, Postgres) with Docker Compose from its public images on ghcr.io, pinned by tag AND digest (`name:<tag>@sha256:<digest>`, both images from the same build), with optional APNs push and a nightly pg_dump timer whose result is exported as textfile metrics.
+
+### Changed
+
+- BREAKING: `service_model_explorer` deploys the model-explorer container image (`ghcr.io/richard-lynch/model-explorer`, source at Richard-Lynch/model-explorer) by DIGEST: `model_explorer_image` is now required, must be `name@sha256:<64 hex>`, and has no default. The role no longer ships the app's source or copies a built bundle, so nothing is built and no node toolchain is needed. The catalogue snapshot is mounted as a read-only directory at `/srv/catalogue`, the container runs with a read-only root filesystem, and the read-back requires the image's own healthcheck to report healthy on the pinned digest. `model_explorer_dist_dir` is removed. On upgrade the role removes the `site/` and `nginx.conf` that earlier versions installed.
+- Migrating from 1.x: set `model_explorer_image` in inventory to a released image DIGEST (`ghcr.io/richard-lynch/model-explorer@sha256:...`, from the model-explorer release's notes or its `image-digest.txt`), and delete `model_explorer_dist_dir` (and any bundle build step) from the caller. Nothing else changes for a caller; the role removes the files earlier versions installed on the host.
+- The CI, release and disclose callers use ansible-devkit `v0.4.1`.
+
+### Fixed
+
+- `service_hosting` and `jellyfin_transcode_reaper` run to the end under `--check` on a correct host. Their read-backs (resolver nameservers, entrypoint probes, socket-proxy and cross-tier refusals, firewall rules, registry manifests, the reaper's state, the transcode timer and its log) were skipped in check mode, so the gates after them read nothing and failed. They now run under `--check` as well. The hosting reaper's metrics-freshness check is skipped under `--check`, because the run that refreshes the metrics is a write.
+- The model explorer's healthcheck probes `127.0.0.1`, not `localhost`, so it cannot fail against a working server when `localhost` resolves to IPv6 first.
+
 ## [1.1.1] — 2026-11-04
 
 ### Added

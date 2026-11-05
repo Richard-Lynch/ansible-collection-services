@@ -1,0 +1,82 @@
+#!/bin/sh
+# Rendered by roles/service_quickr. Nightly logical dump of the quickR database.
+#
+# Written to a .partial name and renamed only after pg_restore has read the archive back, so a
+# dump that was cut short (container restarting, disk full) never takes the place of a good one
+# and never counts towards retention.
+#
+# Every run, good or bad, also writes quickr_pgdump.prom for a textfile collector, which is what
+# backup alerts read: a dump that fails, or stops running at all, is otherwise silent. The last SUCCESS time and size are carried over from the previous file on a
+# failed run, so "how old is the newest good dump" survives any number of failures.
+set -eu
+
+dir="{{ quickr_backup_dir }}"
+ts="$(date -u +%Y%m%dT%H%M%SZ)"
+tmp="$dir/.quickr-$ts.dump.partial"
+out="$dir/quickr-$ts.dump"
+
+metrics_dir="{{ quickr_backup_metrics_dir }}"
+prom="$metrics_dir/quickr_pgdump.prom"
+last_ok="$(awk '$1 == "quickr_pgdump_last_success_timestamp_seconds" {print $2}' "$prom" 2>/dev/null || true)"
+size="$(awk '$1 == "quickr_pgdump_last_success_size_bytes" {print $2}' "$prom" 2>/dev/null || true)"
+ok=0
+
+# $1: 1 if this run produced a verified dump, else 0. Written to a hidden temp name (the collector
+# reads only *.prom) and renamed ONLY if the whole write succeeded: a write that fails part-way
+# (a full disk) must not replace the good file with a truncated or empty one.
+write_metrics() {
+    if [ ! -d "$metrics_dir" ]; then
+        echo "quickr-pgdump: $metrics_dir does not exist; no backup metric written" >&2
+        return 0
+    fi
+    m="$metrics_dir/.quickr_pgdump.prom.$$"
+    {
+        echo "# HELP quickr_pgdump_last_run_success 1 if the last dump run produced a verified archive, else 0."
+        echo "# TYPE quickr_pgdump_last_run_success gauge"
+        echo "quickr_pgdump_last_run_success $1"
+        echo "# HELP quickr_pgdump_last_run_timestamp_seconds When the last dump run ended, good or bad."
+        echo "# TYPE quickr_pgdump_last_run_timestamp_seconds gauge"
+        echo "quickr_pgdump_last_run_timestamp_seconds $(date +%s)"
+        if [ -n "$last_ok" ]; then
+            echo "# HELP quickr_pgdump_last_success_timestamp_seconds When the newest verified dump was written."
+            echo "# TYPE quickr_pgdump_last_success_timestamp_seconds gauge"
+            echo "quickr_pgdump_last_success_timestamp_seconds $last_ok"
+        fi
+        if [ -n "$size" ]; then
+            echo "# HELP quickr_pgdump_last_success_size_bytes Size of the newest verified dump."
+            echo "# TYPE quickr_pgdump_last_success_size_bytes gauge"
+            echo "quickr_pgdump_last_success_size_bytes $size"
+        fi
+    } > "$m" && chmod 0644 "$m" && mv -f "$m" "$prom" || {
+        rm -f "$m"
+        echo "quickr-pgdump: could not write $prom; the previous one is kept" >&2
+        return 1
+    }
+}
+
+# On ANY exit: drop the partial dump, and record a failed run unless this one succeeded. A TERM
+# (systemd's TimeoutStartSec on a hung pg_dump) must END the script through that trap, so it is
+# turned into an ordinary exit; sh does not run an EXIT trap for a fatal signal on its own.
+trap 'rm -f "$tmp"; if [ "$ok" != 1 ]; then write_metrics 0 || true; fi' EXIT
+trap 'exit 143' TERM INT
+
+docker exec {{ quickr_project_name }}-db pg_dump -U quickr -d quickr -Fc > "$tmp"
+
+# A zero-byte file is what a dump that wrote nothing looks like; pg_dump can exit 0 on some of
+# those paths when stdout is redirected.
+if [ ! -s "$tmp" ]; then
+    echo "quickr-pgdump: dump is empty" >&2
+    exit 1
+fi
+
+# The archive must be READABLE, not merely present: list its table of contents.
+docker exec -i {{ quickr_project_name }}-db pg_restore --list < "$tmp" > /dev/null
+
+mv "$tmp" "$out"
+
+find "$dir" -maxdepth 1 -name 'quickr-*.dump' -type f -mtime +{{ quickr_backup_keep_days }} -delete
+size="$(wc -c < "$out" | tr -d ' ')"
+last_ok="$(date +%s)"
+ok=1
+write_metrics 1
+echo "quickr-pgdump: wrote $out ($size bytes)"

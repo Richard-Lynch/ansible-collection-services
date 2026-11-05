@@ -9,28 +9,19 @@
 # are emitted as the comments in this file.
 # Entrypoint:      main
 
-# Path ON THE CONTROLLER of the built bundle (the output of
-# npm ci and npm run build in the role's files/app). Empty means the
-# role's own files/app/dist.
-model_explorer_dist_dir__default: ''
-
 # Container name.
 model_explorer_container_name__default: model-explorer
 
-# nginx image serving the built bundle. Pinned -- never a floating tag:
-# a minor-only tag such as 1.27-alpine floats and would silently change
-# what is deployed.
-model_explorer_image__default: nginx:1.29.3-alpine
-
-# Host directory holding the compose project and the served bundle.
+# Host directory holding the compose project and the catalogue directory.
 model_explorer_config_dir__default: /opt/model-explorer
 
 # External Docker network the container joins (for example one shared
 # with a reverse proxy). Created by the role if absent.
 model_explorer_network__default: model-explorer
 
-# Host port mapped to the container's 80. A reverse proxy in front of it
-# is the caller's to configure.
+# Host port mapped to the container's 8080 (the image runs nginx as a
+# non-root user). A reverse proxy in front of it is the caller's to
+# configure.
 model_explorer_host_port__default: 8092
 
 # Container timezone.

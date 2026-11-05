@@ -11,6 +11,7 @@ service_hosting
 service_litellm
 service_model_explorer
 service_postgres
+service_quickr
 slack_channels
 slack_message
 stack_arr_jellystat

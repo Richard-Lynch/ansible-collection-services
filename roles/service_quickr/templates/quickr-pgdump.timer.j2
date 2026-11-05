@@ -1,0 +1,11 @@
+# Rendered by roles/service_quickr.
+[Unit]
+Description=Nightly pg_dump of the quickR database
+
+[Timer]
+OnCalendar={{ quickr_backup_on_calendar }}
+# A guest that was off at the scheduled time dumps on its next boot instead of skipping a night.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

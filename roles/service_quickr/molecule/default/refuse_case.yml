@@ -1,0 +1,22 @@
+---
+# One refusal case: include the real role with the case's images and record whether, and why, it
+# failed. The other options are valid, so only an image gate can refuse.
+- name: "Include the role ({{ case.name }})"
+  block:
+    - name: "Include service_quickr with the {{ case.name }} images"
+      ansible.builtin.include_role:
+        name: service_quickr
+      vars:
+        quickr_backend_image: "{{ case.backend }}"
+        quickr_frontend_image: "{{ case.frontend }}"
+        quickr_postgres_password: "RefusalCasePassword42"
+    - name: "Record that {{ case.name }} was NOT refused"
+      ansible.builtin.set_fact:
+        _refusals: "{{ _refusals | default({}) | combine({case.name: {'failed': false, 'msg': ''}}) }}"
+  rescue:
+    # The whole result, as text: a looped assert puts each item's fail_msg in results[], not msg.
+    - name: "Record the refusal of {{ case.name }}"
+      ansible.builtin.set_fact:
+        _refusals: >-
+          {{ _refusals | default({}) | combine({case.name: {'failed': true,
+             'msg': ansible_failed_result | to_json}}) }}

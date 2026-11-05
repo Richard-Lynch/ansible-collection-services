@@ -11,11 +11,12 @@ from ansible_devkit.argspec.models import ArgumentSpec, ArgumentSpecs, OptionSpe
 argument_specs = ArgumentSpecs(
     argument_specs={
         "main": ArgumentSpec(
-            short_description="Serve the model-discovery app as static files behind nginx",
+            short_description="Run the model-discovery app's container image, pinned by digest",
             description=[
-                "Builds nothing at converge time: the app is a Vite bundle built on the",
-                "controller from files/app; the built output and the caller's catalogue",
-                "snapshot are copied to the host and served by a pinned nginx image.",
+                "Deploys the model-explorer image (nginx serving the built app; source and",
+                "releases at github.com/Richard-Lynch/model-explorer) with Docker Compose, by",
+                "DIGEST, and mounts the caller's catalogue snapshot read-only beside it.",
+                "Nothing is built here and no node toolchain is needed anywhere.",
                 "The app is READ-ONLY and holds NO credential. It reads one JSON snapshot",
                 "of the gateway's models; adding a model to Open WebUI's picker is staged",
                 "in the UI and applied by an Ansible play, never by the browser.",
@@ -23,6 +24,16 @@ argument_specs = ArgumentSpecs(
             version_added="1.0",
             author=DEFAULT_AUTHOR,
             options={
+                "model_explorer_image": OptionSpec(
+                    type="str",
+                    required=True,
+                    description=[
+                        "The image to run, as name@sha256:<64 hex>: a DIGEST, never a tag, so",
+                        "what runs is exactly the image a release recorded. Each model-explorer",
+                        "release names its digest in its notes and in image-digest.txt. There is",
+                        "no default: which release a host runs is the caller's decision.",
+                    ],
+                ),
                 "model_explorer_catalogue_src": OptionSpec(
                     type="str",
                     required=True,
@@ -30,17 +41,7 @@ argument_specs = ArgumentSpecs(
                         "Path ON THE CONTROLLER of the catalogue snapshot (catalogue.json) the",
                         "app serves. It is the caller's data — produced by reading the",
                         "gateway's GET /v1/models and OpenRouter's public catalogue — and is",
-                        "copied to the host on its own, so refreshing it needs no rebuild.",
-                    ],
-                ),
-                "model_explorer_dist_dir": OptionSpec(
-                    type="str",
-                    required=False,
-                    default="",
-                    description=[
-                        "Path ON THE CONTROLLER of the built bundle (the output of",
-                        "npm ci and npm run build in the role's files/app). Empty means the",
-                        "role's own files/app/dist.",
+                        "copied to the host on its own, so refreshing it needs no new image.",
                     ],
                 ),
                 "model_explorer_container_name": OptionSpec(
@@ -49,21 +50,11 @@ argument_specs = ArgumentSpecs(
                     default="model-explorer",
                     description=["Container name."],
                 ),
-                "model_explorer_image": OptionSpec(
-                    type="str",
-                    required=False,
-                    description=[
-                        "nginx image serving the built bundle. Pinned -- never a floating tag:",
-                        "a minor-only tag such as 1.27-alpine floats and would silently change",
-                        "what is deployed.",
-                    ],
-                    default="nginx:1.29.3-alpine",
-                ),
                 "model_explorer_config_dir": OptionSpec(
                     type="str",
                     required=False,
                     description=[
-                        "Host directory holding the compose project and the served bundle."
+                        "Host directory holding the compose project and the catalogue directory."
                     ],
                     default="/opt/model-explorer",
                 ),
@@ -80,8 +71,9 @@ argument_specs = ArgumentSpecs(
                     type="int",
                     required=False,
                     description=[
-                        "Host port mapped to the container's 80. A reverse proxy in front of it",
-                        "is the caller's to configure.",
+                        "Host port mapped to the container's 8080 (the image runs nginx as a",
+                        "non-root user). A reverse proxy in front of it is the caller's to",
+                        "configure.",
                     ],
                     default=8092,
                 ),

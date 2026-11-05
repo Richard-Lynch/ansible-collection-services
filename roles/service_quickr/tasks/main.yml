@@ -1,0 +1,378 @@
+---
+# service_quickr — quickR (Postgres + FastAPI backend + nginx web origin) as one compose project.
+#
+# Shape: resolve defaults, gate on
+# what fails silently, render config, converge, restart only on a real change, then PROVE the
+# result with read-backs — including the one property the iOS app depends on, which a reachable
+# port does not show.
+
+- name: Resolve declared options over their generated defaults
+  ansible.builtin.include_tasks: _resolve_defaults.yml
+
+- name: Apply the generated argspec guards
+  ansible.builtin.include_tasks: _argspec_guards.yml
+
+- name: Store vars
+  ansible.builtin.set_fact:
+    quickr_files: "{{ role_path }}/files"
+    # APNs is on only when ALL THREE are set. A partial set is refused by a gate below rather
+    # than silently treated as "off": the backend would start with apns_enabled false, devices
+    # would still register, and no reminder would ever reach the phone.
+    _quickr_apns_enabled: >-
+      {{ (quickr_apns_team_id | length > 0)
+         and (quickr_apns_key_id | length > 0)
+         and (quickr_apns_private_key | length > 0) }}
+
+# ---------------------------------------------------------------------------------------
+# Preflight
+# ---------------------------------------------------------------------------------------
+- name: HARD GATE — both quickR images must be pinned by tag AND digest, never floating
+  # name:<tag>@sha256:<digest>. The DIGEST is what is pulled, so what runs cannot change with no
+  # change here even if a tag is moved; the TAG (quickR's release workflow publishes every main
+  # build as `<full git sha>`) names the build, and the next gate compares the two images' tags.
+  ansible.builtin.assert:
+    that:
+      # End of string is \Z (written \\Z because the Jinja string literal unescapes it once), not
+      # `$`, which in Python also matches before a trailing newline that compose then rejects.
+      - item is match('^[a-z0-9][a-z0-9._/:-]*:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}@sha256:[0-9a-f]{64}\\Z')
+    fail_msg: >-
+      '{{ item }}' must be pinned as name:<tag>@sha256:<digest>, the tag being the full git sha
+      that quickR's "Publish images" workflow tagged and the digest the registry serves for it.
+      A floating or digest-less reference makes the deployed image depend on when the play ran.
+    quiet: true
+  loop:
+    - "{{ quickr_backend_image }}"
+    - "{{ quickr_frontend_image }}"
+
+- name: HARD GATE — neither tag is a floating one, even with a digest beside it
+  # A digest pins what is pulled, but a floating tag names no build, so the same-build gate below
+  # would compare nothing. Its own message, so a test can tell which gate refused.
+  ansible.builtin.assert:
+    that:
+      - item.split('@')[0].split(':')[-1] not in ['latest', 'stable', 'main', 'edge', 'canary']
+    fail_msg: >-
+      '{{ item }}' carries a floating tag. Pin the full git sha of the quickR build.
+    quiet: true
+  loop:
+    - "{{ quickr_backend_image }}"
+    - "{{ quickr_frontend_image }}"
+
+- name: HARD GATE — the backend and the web origin must come from the same build
+  # The PWA bundle in the web image calls the API in the backend image. Mixed builds load fine
+  # and fail per request, wherever the client and the API disagree — which reads as a bug in
+  # quickR rather than in the deploy.
+  ansible.builtin.assert:
+    that:
+      - quickr_backend_image.split('@')[0].split(':')[-1] == quickr_frontend_image.split('@')[0].split(':')[-1]
+    fail_msg: >-
+      Backend tag '{{ quickr_backend_image.split('@')[0].split(':')[-1] }}' and frontend tag
+      '{{ quickr_frontend_image.split('@')[0].split(':')[-1] }}' differ. Pin both to the same
+      quickR build.
+    quiet: true
+
+# Credentials are reduced to facts in no_log tasks, and the gates assert on those facts WITHOUT
+# no_log — a no_log assert hides its own fail_msg, which is the part that says what to fix.
+- name: Reduce the credentials to the facts the gates need
+  ansible.builtin.set_fact:
+    _quickr_password_len: "{{ quickr_postgres_password | length }}"
+    _quickr_apns_key_is_pem: >-
+      {{ (quickr_apns_private_key | trim).startswith('-----BEGIN ' ~ 'PRIVATE KEY-----')
+         and (quickr_apns_private_key | trim).endswith('-----END ' ~ 'PRIVATE KEY-----') }}
+  no_log: true
+
+- name: HARD GATE — the database password must be set and not trivial
+  ansible.builtin.assert:
+    that:
+      - _quickr_password_len | int >= 16
+    fail_msg: >-
+      quickr_postgres_password is shorter than 16 characters (empty, most likely). The likeliest
+      cause, when it is read from a secret store, is the WRONG FIELD: a store that keeps a
+      password and a credential in different fields returns an EMPTY STRING for the wrong one.
+    quiet: true
+
+- name: HARD GATE — APNs is all or nothing
+  ansible.builtin.assert:
+    that:
+      - >-
+        (_quickr_apns_enabled | bool)
+        or (quickr_apns_team_id | length == 0
+            and quickr_apns_key_id | length == 0
+            and quickr_apns_private_key | length == 0)
+    fail_msg: >-
+      APNs is half-configured (team id set: {{ quickr_apns_team_id | length > 0 }}, key id set:
+      {{ quickr_apns_key_id | length > 0 }}, key set: {{ quickr_apns_private_key | length > 0 }}).
+      The backend would start with APNs OFF and say nothing; devices would register and never
+      receive a reminder. Set all three, or none.
+    quiet: true
+
+- name: HARD GATE — the APNs key must be a PEM private key
+  # Checked on the HEADER, never by printing the key. An empty or quote-wrapped value (what
+  # `op item get --fields` returns for a multi-line field) would otherwise reach the container,
+  # which logs a key-load failure and runs with APNs off.
+  ansible.builtin.assert:
+    that:
+      - _quickr_apns_key_is_pem | bool
+    fail_msg: >-
+      quickr_apns_private_key does not look like an APNs .p8 key (PKCS#8 PEM). If it starts with
+      a double quote, the value was read with its surrounding quotes; strip them where it is read.
+    quiet: true
+  when: _quickr_apns_enabled | bool
+
+# ---------------------------------------------------------------------------------------
+# Registry
+# ---------------------------------------------------------------------------------------
+- name: Log in to the image registry
+  # quickR's packages may be private, so the host may need a read-only token. no_log because the
+  # module's arguments carry it, and a failure dumps them.
+  community.docker.docker_login:
+    registry_url: "{{ quickr_registry }}"
+    username: "{{ quickr_registry_username }}"
+    password: "{{ quickr_registry_password }}"
+  no_log: true
+  when:
+    - quickr_registry_username | length > 0
+    - quickr_registry_password | length > 0
+
+# ---------------------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------------------
+# deployment_config OWNS the project directory (it creates it with its own mode). Declaring a
+# different mode for it here made the two fight and report `changed` on every run — measured on
+# the second converge — so only the backup directory is declared, after it.
+- name: Deploy the compose project
+  ansible.builtin.include_role:
+    name: richard_lynch.common.deployment_config
+  vars:
+    deployment_config_source: "{{ quickr_files }}"
+    deployment_config_destination: "{{ quickr_config_dir }}"
+    deployment_config_file_mode: "0640"
+
+- name: Ensure the backup directory exists
+  ansible.builtin.file:
+    path: "{{ quickr_backup_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+# In templates/, NOT files/: deployment_config renders EVERY .j2 under its source directory, so a
+# credential template in files/ would be written twice per run, the first time group-readable.
+- name: Render the settings file (0600; holds the database password)
+  ansible.builtin.template:
+    src: settings.j2
+    dest: "{{ quickr_config_dir }}/settings"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+# The secrets directory is GROUP-owned by the backend's uid, so the key can be 0440 rather than
+# the world-readable 0644 quickR's own docs suggest for a bind-mounted file.
+- name: Ensure the secrets directory exists
+  ansible.builtin.file:
+    path: "{{ quickr_config_dir }}/secrets"
+    state: directory
+    owner: root
+    group: "{{ quickr_app_gid }}"
+    mode: "0750"
+  when: _quickr_apns_enabled | bool
+
+- name: Write the APNs key
+  ansible.builtin.copy:
+    content: "{{ quickr_apns_private_key | trim }}\n"
+    dest: "{{ quickr_config_dir }}/secrets/apns.p8"
+    owner: root
+    group: "{{ quickr_app_gid }}"
+    mode: "0440"
+  register: quickr__apns_key
+  no_log: true
+  when: _quickr_apns_enabled | bool
+
+# Turning APNs off must take the key away too, or a disabled config leaves a credential on disk.
+- name: Remove the APNs key when APNs is off
+  ansible.builtin.file:
+    path: "{{ quickr_config_dir }}/secrets"
+    state: absent
+  when: not (_quickr_apns_enabled | bool)
+
+# ---------------------------------------------------------------------------------------
+# Converge
+# ---------------------------------------------------------------------------------------
+# compose resolves env_file contents into the service config it hashes, so a changed `settings`
+# file is a changed config and `recreate: auto` recreates the services that read it. A restart
+# would NOT do — a restarted container keeps the environment it was created with.
+- name: Deploy the quickR stack
+  community.docker.docker_compose_v2:
+    project_src: "{{ quickr_config_dir }}"
+    state: present
+    recreate: auto
+    # Deliberately NO `wait:`: the read-backs below retry, and they prove more than "healthy".
+
+# The APNs key is not part of the compose config (it is a file in a mounted directory), so a
+# rotated key changes nothing compose can see. The backend loads it at startup: restart it.
+- name: Restart the backend when the APNs key changed
+  community.docker.docker_compose_v2:
+    project_src: "{{ quickr_config_dir }}"
+    services: [backend]
+    state: restarted
+  # Inline, not a handler: a handler runs at play end, AFTER the read-back of apns_enabled below,
+  # which would then assert against a backend still holding the old key.
+  when: quickr__apns_key.changed | default(false) # noqa: no-handler
+
+# ---------------------------------------------------------------------------------------
+# Backups: nightly pg_dump, so a whole-machine backup carries a consistent logical dump
+# ---------------------------------------------------------------------------------------
+- name: Install the dump script
+  ansible.builtin.template:
+    src: quickr-pgdump.sh.j2
+    dest: /usr/local/sbin/quickr-pgdump
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Install the dump service and timer
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - quickr-pgdump.service
+    - quickr-pgdump.timer
+
+- name: Enable the dump timer
+  ansible.builtin.systemd_service:
+    name: quickr-pgdump.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+
+# Read the unit's state AFTER the change, in its own task. The systemd_service result's `status`
+# is the unit as the module found it BEFORE acting — measured on the first deploy: it reported
+# "inactive / disabled" for a timer the same task had just enabled and started.
+- name: Read the dump timer's live state
+  ansible.builtin.command:
+    argv:
+      [
+        systemctl,
+        show,
+        quickr-pgdump.timer,
+        --property=ActiveState,
+        --property=UnitFileState,
+      ]
+  register: quickr__timer_state
+  changed_when: false
+
+- name: HARD GATE — the dump timer must be active and enabled
+  # From the unit's own state, not from the task having run: a timer can be enabled and still
+  # inactive if its unit file failed to parse.
+  ansible.builtin.assert:
+    that:
+      - "'ActiveState=active' in quickr__timer_state.stdout_lines"
+      - "'UnitFileState=enabled' in quickr__timer_state.stdout_lines"
+    fail_msg: >-
+      quickr-pgdump.timer reports {{ quickr__timer_state.stdout_lines }}, so no nightly dump will
+      be made. Check `systemctl status quickr-pgdump.timer`.
+    quiet: true
+
+# ---------------------------------------------------------------------------------------
+# Read-backs. A deploy that "succeeded" is not evidence the service works.
+# ---------------------------------------------------------------------------------------
+- name: Read back the containers' state
+  no_log: true # a container inspect result carries every Env VALUE
+  community.docker.docker_container_info:
+    name: "{{ quickr_project_name }}-{{ item }}"
+  register: quickr__containers
+  loop: [db, backend, web]
+
+# `docker_container_info` returns {"exists": false} with NO `container` key for a missing
+# container, so ABSENT stands in for that rather than an UndefinedError naming nothing.
+- name: HARD GATE — all three containers must be running
+  ansible.builtin.assert:
+    that:
+      - item.container.State.Status | default('ABSENT') == 'running'
+    fail_msg: >-
+      {{ quickr_project_name }}-{{ item.item }} is
+      '{{ item.container.State.Status | default('ABSENT') }}' after deploy. Check
+      `docker compose ps` and the logs in {{ quickr_config_dir }}.
+    quiet: true
+  loop: "{{ quickr__containers.results }}"
+  loop_control:
+    label: "{{ quickr_project_name }}-{{ item.item }}"
+
+- name: HARD GATE — backend and web run the pinned tag@digest references
+  # Compose records the service's `image:` string as the container's Config.Image, so equality
+  # here means each container was created from the pinned digest, not from an image left behind
+  # under the same name. (Which digest belongs to which build is the caller's pin.) Under --check
+  # the converge that would recreate them is skipped, so this is checked on a real run only.
+  ansible.builtin.assert:
+    that:
+      - ansible_check_mode or (item.container.Config.Image | default('')) == _want
+    fail_msg: >-
+      {{ quickr_project_name }}-{{ item.item }} runs '{{ item.container.Config.Image | default('ABSENT') }}',
+      not the pinned '{{ _want }}'.
+    quiet: true
+  vars:
+    _want: "{{ quickr_backend_image if item.item == 'backend' else quickr_frontend_image }}"
+  loop: "{{ quickr__containers.results | selectattr('item', 'in', ['backend', 'web']) | list }}"
+  loop_control:
+    label: "{{ quickr_project_name }}-{{ item.item }}"
+
+# Through the PUBLISHED port, so this exercises the same path a reverse proxy uses: nginx -> backend ->
+# Postgres. The backend's /health touches the database, so a 200 means all three answer.
+- name: Verify the web origin serves the API
+  ansible.builtin.uri:
+    url: "http://localhost:{{ quickr_web_host_port }}/api/v1/health"
+    status_code: [200]
+  register: quickr__health
+  retries: 24
+  delay: 5
+  until: quickr__health.status | default(0) == 200
+  changed_when: false
+
+- name: Read the sync feed the iOS app connects to
+  ansible.builtin.uri:
+    url: "http://localhost:{{ quickr_web_host_port }}/api/v1/changes?after=0&limit=1"
+    status_code: [200, 404]
+  register: quickr__changes
+  changed_when: false
+
+- name: HARD GATE — the server must identify itself the way the iOS app requires
+  # THE PROPERTY THE APP DEPENDS ON. The app keys its local store on X-QuickR-Server-Id and reads
+  # it from the sync feed; a backend without the feed answers /health perfectly and is useless to
+  # the app. quickR builds before the iOS work (published from main up to be86290) are exactly
+  # that, so a healthy stack is NOT evidence the right build is deployed.
+  ansible.builtin.assert:
+    that:
+      - quickr__changes.status == 200
+      - quickr__changes.x_quickr_server_id | default('') | length > 0
+    fail_msg: >-
+      GET /api/v1/changes answered {{ quickr__changes.status }} with
+      X-QuickR-Server-Id='{{ quickr__changes.x_quickr_server_id | default('') }}'. The deployed
+      backend ({{ quickr_backend_image }}) predates the iOS sync API, so the app cannot connect
+      to it. Pin a build that contains it.
+    success_msg: "server id {{ quickr__changes.x_quickr_server_id | default('') }}"
+    quiet: true
+
+- name: Read the push configuration back from the backend
+  ansible.builtin.uri:
+    url: "http://localhost:{{ quickr_web_host_port }}/api/v1/push/config"
+    return_content: true
+    status_code: [200]
+  register: quickr__push
+  changed_when: false
+
+- name: HARD GATE — APNs must be on exactly when it was configured
+  # From the RUNNING backend's own answer, not from the files on disk: the backend reads the key
+  # at startup and turns APNs off — quietly — if it cannot load it.
+  ansible.builtin.assert:
+    that:
+      - (quickr__push.content | from_json).apns_enabled | bool == _quickr_apns_enabled | bool
+    fail_msg: >-
+      The backend reports apns_enabled={{ (quickr__push.content | from_json).apns_enabled }}
+      but the role configured APNs {{ 'ON' if _quickr_apns_enabled | bool else 'OFF' }}.
+      If it should be on, the key could not be loaded — check
+      `docker logs {{ quickr_project_name }}-backend` and that
+      {{ quickr_config_dir }}/secrets/apns.p8 is readable by gid {{ quickr_app_gid }}.
+    quiet: true
