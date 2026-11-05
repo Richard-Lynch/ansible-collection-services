@@ -1,0 +1,31 @@
+---
+# Render the compose project into model_explorer_config_dir. Its own entrypoint so the molecule
+# scenario can run it for real (the rest of the role needs Docker and root).
+#
+# The source path is resolved HERE, with set_fact, in this role's context. Passed straight into
+# include_role `vars:` as "{{ role_path }}/files/compose" it would be templated lazily INSIDE
+# deployment_config, where role_path is deployment_config's own directory: it would find no
+# source files, copy nothing, report no change, and compose would never see a new digest
+# (services 2.0.0 shipped exactly that).
+#
+# PRIVATE: called by main.yml after _resolve_defaults.yml, and by the molecule scenario with every
+# value it needs; it has no argspec of its own.
+- name: ASSERT — the values this entrypoint renders with are resolved
+  ansible.builtin.assert:
+    that:
+      - model_explorer_config_dir is defined
+      - model_explorer_image is defined
+    fail_msg: _compose.yml is private; include the role's main entrypoint.
+    quiet: true
+
+- name: Resolve the compose source directory in this role's own context
+  ansible.builtin.set_fact:
+    model_explorer__compose_src: "{{ role_path }}/files/compose"
+
+- name: Deploy the compose project
+  ansible.builtin.include_role:
+    name: richard_lynch.common.deployment_config
+  vars:
+    deployment_config_source: "{{ model_explorer__compose_src }}"
+    deployment_config_destination: "{{ model_explorer_config_dir }}"
+    deployment_config_file_mode: "0644"

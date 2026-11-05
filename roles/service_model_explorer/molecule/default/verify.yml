@@ -77,6 +77,21 @@
       ansible.builtin.set_fact:
         _refusals: "{{ _refusals_raw.content | b64decode | from_json }}"
 
+    - name: Read the compose file the real _compose entrypoint rendered
+      ansible.builtin.slurp:
+        src: "{{ render_root }}/deploy/docker-compose.yml"
+      register: _deployed
+
+    - name: The real render landed in the destination and runs the caller's digest
+      # Fails when the compose source resolves to the wrong role (nothing is rendered, so the slurp
+      # above fails first) or the template ignores model_explorer_image.
+      ansible.builtin.assert:
+        that:
+          - (_deployed.content | b64decode | from_yaml).services['model-explorer'].image == 'ghcr.io/example/model-explorer@sha256:' ~ ('a' * 64)
+          - (_deployed.content | b64decode | from_yaml).services['model-explorer'].volumes == [render_root ~ '/deploy/catalogue:/srv/catalogue:ro']
+        fail_msg: "The deployed compose file does not run the caller's digest."
+        quiet: true
+
     - name: The role REFUSES a missing image reference, at argspec validation
       ansible.builtin.assert:
         that:
