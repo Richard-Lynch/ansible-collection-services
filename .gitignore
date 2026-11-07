@@ -14,3 +14,4 @@ dist/
 .claude/worktrees/
 # collections installed for molecule (ansible-galaxy collection install -p collections.galaxy)
 collections.galaxy/
+roles.galaxy/

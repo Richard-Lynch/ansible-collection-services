@@ -10,6 +10,7 @@
 .python-version
 CHANGELOG.md
 LICENSE
+Makefile
 README.md
 ci/affected-scenarios.sh
 configured_roles.txt
@@ -52,6 +53,7 @@ plugins/filter/mcp_catalogue_document.yml
 plugins/lookup/hosting_definition.py
 plugins/modules/slack_channels.py
 renovate.json
+requirements.yml
 roles/config_agent_state/README.md
 roles/config_agent_state/defaults/backup.yml
 roles/config_agent_state/defaults/drill.yml
