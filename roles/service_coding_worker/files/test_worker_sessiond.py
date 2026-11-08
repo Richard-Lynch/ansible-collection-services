@@ -2723,6 +2723,10 @@ class TestReviewRegressions(unittest.TestCase):
 
     def test_molecule_declares_required_exclusions(self):
         root = Path(__file__).resolve().parent.parent / "molecule" / "default"
+        if not root.is_dir():
+            # The Galaxy artifact omits molecule/ (build_ignore), so an installed release has no
+            # scenario to check; the source checkout's CI still runs this test.
+            self.skipTest("molecule/ is not shipped in the built collection")
         self.assertIn("worker_repos_exclude: []", (root / "converge.yml").read_text())
         self.assertIn("worker_repos_exclude:", (root / "_render_variant.yml").read_text())
 
