@@ -9,6 +9,12 @@ All notable changes to this collection are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the collection
 uses [Semantic Versioning](https://semver.org/).
 
+## [2.1.1] — 2026-11-08
+
+### Fixed
+
+- `service_coding_worker`'s session-daemon suite passes when run from the installed collection: the check that the molecule scenario declares the exclude list skips when `molecule/` is not present (the built collection does not ship it), instead of failing with a missing file.
+
 ## [2.1.0] — 2026-11-08
 
 ### Added
