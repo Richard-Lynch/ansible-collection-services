@@ -30,6 +30,7 @@ roles/service_code_reader/files/test_code_reader.py pylint:disallowed-name
 roles/service_code_reader/files/test_code_reader.py shebang
 roles/service_coding_worker/files/acpx_mcp.py pylint:raising-format-tuple
 roles/service_coding_worker/files/acpx_mcp.py shebang
+roles/service_coding_worker/files/coder_token_broker.py shebang
 roles/service_coding_worker/files/test_acpx_mcp.py shebang
 roles/service_coding_worker/files/test_worker_sessiond.py pep8:E501
 roles/service_coding_worker/files/test_worker_sessiond.py pep8:E731

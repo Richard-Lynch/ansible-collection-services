@@ -42,17 +42,21 @@
       command. Widening what an unattended agent may run is a narrow allow rule in inventory.
     quiet: true
 
-- name: HARD GATE — every repo entry carries name, url and base_branch
+- name: HARD GATE — select a GitHub credential path
   ansible.builtin.assert:
     that:
-      - item.name is defined and item.name is match('\A[A-Za-z0-9][A-Za-z0-9._-]*\Z')
-      - item.url is defined and item.url is match('\Ahttps://')
-      - item.base_branch is defined and item.base_branch | length > 0
-    fail_msg: "worker_repos entry {{ item.name | default('(no name)') }} needs a safe name, an https url and base_branch."
+      - worker_token_broker_url | length > 0 or worker_github_token | length > 0
+    fail_msg: "set worker_token_broker_url (per-card tokens) or worker_github_token (legacy)"
     quiet: true
-  loop: "{{ worker_repos }}"
-  loop_control:
-    label: "{{ item.name | default('?') }}"
+
+- name: HARD GATE — broker URL and bearer are valid
+  ansible.builtin.assert:
+    that:
+      - worker_token_broker_url is match('\Ahttps?://[^/\s]+')
+      - worker_token_broker_bearer | length > 0
+    fail_msg: "worker_token_broker_url must be http(s) and worker_token_broker_bearer must be non-empty"
+    quiet: true
+  when: worker_token_broker_url | length > 0
 
 - name: HARD GATE — the MCP catalogue holds only reviewed entries with no literal credential
   # The catalogue is rendered into per-card MCP files, so a literal token here would be written

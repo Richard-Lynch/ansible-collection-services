@@ -73,22 +73,32 @@ argument_specs = ArgumentSpecs(
                         "play ran.",
                     ],
                 ),
-                "worker_repos": OptionSpec(
-                    type="list",
-                    elements="dict",
+                "worker_repo_owner": OptionSpec(
+                    type="str",
                     required=True,
-                    min_length=1,
-                    description=[
-                        "Repositories the supervisor may create worktrees for. Each item: name,",
-                        "url, base_branch. A card naming any other repo is refused, so a card can",
-                        "never point the supervisor at an arbitrary path.",
-                    ],
+                    description=["GitHub owner namespace allowed for cards."],
+                ),
+                "worker_repos_exclude": OptionSpec(
+                    type="list",
+                    elements="str",
+                    required=True,
+                    description=["Repositories excluded from the namespace."],
+                ),
+                "worker_repo_base_branches": OptionSpec(
+                    type="dict",
+                    default={},
+                    description=["Optional repository base branch overrides."],
+                ),
+                "worker_github_host": OptionSpec(
+                    type="str",
+                    default="github.com",
+                    description=["GitHub host for repository URLs."],
                 ),
                 "worker_work_root": OptionSpec(
                     type="str",
                     default="/srv/work",
                     description=[
-                        "Repos live at work_root/name; worktrees at work_root/worktrees/card."
+                        "Repos live at work_root/repos/name; worktrees at work_root/worktrees/card."
                     ],
                 ),
                 # ---- model route ------------------------------------------------------------
@@ -153,11 +163,20 @@ argument_specs = ArgumentSpecs(
                 ),
                 "worker_github_token": OptionSpec(
                     type="str",
-                    required=True,
+                    default="",
                     no_log=True,
-                    description=[
-                        "PR-scoped GitHub token (clone, push a branch, open a PR; no merge)."
-                    ],
+                    description=["Legacy GitHub token, used only without a broker."],
+                ),
+                "worker_token_broker_url": OptionSpec(
+                    type="str",
+                    default="",
+                    description=["Token broker URL; empty selects legacy mode."],
+                ),
+                "worker_token_broker_bearer": OptionSpec(
+                    type="str",
+                    default="",
+                    no_log=True,
+                    description=["Bearer credential for the token broker."],
                 ),
                 "worker_extra_env": OptionSpec(
                     type="dict",
@@ -510,6 +529,45 @@ argument_specs = ArgumentSpecs(
                         "Skip comments by Bot-typed GitHub accounts when feeding PR feedback to the",
                         "agent; the CI verdict already carries what the integrations know.",
                     ],
+                ),
+            },
+        ),
+        "token_broker": ArgumentSpec(
+            short_description="Install the per-card token broker",
+            description=[
+                "Tokens request contents and pull requests write, checks and statuses read, plus implicit metadata read."
+            ],
+            version_added="2.1",
+            author=DEFAULT_AUTHOR,
+            options={
+                "coder_token_broker_app_id": OptionSpec(
+                    type="str", required=True, description=["GitHub App ID."]
+                ),
+                "coder_token_broker_private_key": OptionSpec(
+                    type="str", required=True, no_log=True, description=["GitHub App private key."]
+                ),
+                "coder_token_broker_bearer_token": OptionSpec(
+                    type="str",
+                    required=True,
+                    no_log=True,
+                    description=["Bearer credential for broker clients."],
+                ),
+                "coder_token_broker_listen_host": OptionSpec(
+                    type="str", required=True, description=["Broker listen address."]
+                ),
+                "coder_token_broker_listen_port": OptionSpec(
+                    type="int", default=7693, description=["Broker listen port."]
+                ),
+                "worker_repo_owner": OptionSpec(
+                    type="str",
+                    required=True,
+                    description=["GitHub owner namespace allowed for cards."],
+                ),
+                "worker_repos_exclude": OptionSpec(
+                    type="list",
+                    elements="str",
+                    required=True,
+                    description=["Repositories excluded from the namespace."],
                 ),
             },
         ),

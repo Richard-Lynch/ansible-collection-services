@@ -1,0 +1,19 @@
+[Unit]
+Description=Per-card GitHub token broker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=coder-token-broker
+Group=coder-token-broker
+ExecStart=/usr/bin/python3 /usr/local/lib/coder-token-broker/coder_token_broker.py /etc/coder-token-broker/config.json
+Restart=on-failure
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

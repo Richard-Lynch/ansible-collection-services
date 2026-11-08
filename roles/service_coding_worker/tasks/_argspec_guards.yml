@@ -34,14 +34,6 @@
     quiet: true
   when: worker_pr_poll_seconds is defined
 
-- name: "GUARD (generated) — worker_repos must be at least 1 long"
-  ansible.builtin.assert:
-    that:
-      - "worker_repos | default('') | length >= 1"
-    fail_msg: "worker_repos violates a constraint declared in meta/argument_specs.py: must be at least 1 long. Got: {{ worker_repos | default('(unset)') }}"
-    quiet: true
-  when: worker_repos is defined
-
 - name: "GUARD (generated) — worker_sessiond_port must be >= 1024; <= 65535"
   ansible.builtin.assert:
     that:

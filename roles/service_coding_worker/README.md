@@ -26,7 +26,7 @@ run its own inner dockerd without `--privileged`.
 | **It is bounded**                          | `--cpus`, `--memory` and an equal `--memory-swap` (`worker_card_cpus`/`_memory`), plus `--pids-limit`. sessiond **refuses to start a card** whose limit does not fit beside the running ones in the VM minus `worker_vm_reserve_mb` (limits, not usage).                                                                                                                                                                                                                                                                                                                                                                            |
 | **Its image**                              | the repo's `.devcontainer` **`image:` pinned by digest** (`name@sha256:...`) when present, else the default image built from `templates/card-image.Dockerfile.j2`, named `worker_card_image_name` and tagged with the Dockerfile's hash. **`build:`/`dockerFile` is refused (422)**: `docker build` would run card-supplied steps (`RUN --network=host`, a `# syntax=` frontend) on the HOST daemon, outside sysbox. **Ignored on purpose:** devcontainer `features`, `mounts`, `forwardPorts`, lifecycle commands.                                                                                                                 |
 | **The agent tools**                        | Node, Claude Code and Codex are installed once on the VM and mounted read-only at the same path, `PATH` points there. A bump is a converge, not an image rebuild. A devcontainer image must be glibc-based (the mounted Node is).                                                                                                                                                                                                                                                                                                                                                                                                   |
-| **Credentials**                            | the container gets the variable NAMES listed in `agent.env` via `docker exec -e NAME` (values come from the sourced environment, never a command line). `~/.gitconfig` uses `gh auth git-credential`; no token is written to a file in the card.                                                                                                                                                                                                                                                                                                                                                                                    |
+| **Credentials**                            | the container gets the variable NAMES listed in `agent.env` via `docker exec -e NAME` (values come from the sourced environment, never a command line). `~/.gitconfig` uses `gh auth git-credential`; broker mode writes a scoped token to the card's gh configuration.                                                                                                                                                                                                                                                                                                                                                                                    |
 
 Card lifecycle, as sessiond implements it:
 
@@ -75,7 +75,7 @@ not support `live-restore`); `resume` brings them back.
 
 **Stated limits.**
 
-- **The PR gate is cooperative.** `GH_TOKEN` is forwarded into every card (it
+- **The PR gate is cooperative.** A GitHub credential is available to every card (it
   must push its own branch), so a card CAN run `gh pr ready`/`merge` itself.
   `pr-ready` binds an agent that uses it, nothing more. The real gate is a
   repository ruleset (required checks and a required review on the default
@@ -109,7 +109,7 @@ terminal backend does not move them, so the worktree is made here.
 
 | call                                                              | behaviour                                                                                                                                                                                                      |
 | ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `POST /v1/sessions {card_id, repo, branch?}`                      | worktree at `work_root/worktrees/<card>`; **one session per card** (409 on a duplicate); `repo` must be configured; card id is a whitelist                                                                     |
+| `POST /v1/sessions {card_id, repo, branch?}`                      | worktree at `work_root/worktrees/<card>`; **one session per card** (409 on a duplicate); `repo` must belong to the configured namespace and not be excluded; card id is a whitelist                                                                     |
 | `POST /v1/sessions/<card>/launch {agent, prompt, mcp?, resume?}`  | per-card MCP file rendered from the **catalogue only**, the card's container, then a tmux session `card-<id>` whose job is `docker exec -it` into it                                                           |
 | `POST /v1/sessions/<card>/send {text}`                            | typed into the pane literally, then Enter                                                                                                                                                                      |
 | `POST /v1/sessions/<card>/stop`                                   | removes the container, kills the session **and confirms**: `stopped: true` only if the container is gone, no process of the pane's tree survives and tmux no longer lists it; otherwise 500 with the survivors |
@@ -180,12 +180,9 @@ provide.
           uv_version: "0.5.0"
           uv_sha256_linux_x64: "<64 hex>"
         worker_sysbox: { version: "0.7.1", sha256_linux_amd64: "<64 hex>" }
-        worker_repos:
-          - {
-              name: example-repo,
-              url: "https://github.com/example-org/example-repo.git",
-              base_branch: main,
-            }
+        worker_repo_owner: example-org
+        worker_repos_exclude: [archived-repo]
+        worker_repo_base_branches: {example-repo: main}
         worker_litellm_url: "http://gateway.example.com:4000"
         worker_litellm_api_key: "{{ vault_worker_litellm_key }}"
         worker_claude_model: coder
@@ -195,7 +192,53 @@ provide.
         worker_ttyd_credential: "operator:{{ vault_worker_ttyd_password }}"
 ```
 
-In practice set these in the worker's host_vars rather than inline.
+In practice set these in the worker's host_vars rather than inline. The worker accepts
+any repository in `worker_repo_owner`, except names in `worker_repos_exclude`. This is a deliberate
+installation choice: namespace plus explicit exclude list, declared in inventory. The exclude list
+is required; an empty list explicitly excludes nothing. It clones a
+repository on demand, fetches it for later cards, and uses the remote default branch unless
+`worker_repo_base_branches` supplies an override.
+
+Shared full repository caches live at `work_root/repos/<name>`; card copies live at
+`work_root/worktrees/<card>`. Earlier caches at `work_root/<name>` are no longer used
+and may be removed after checking they are not needed.
+
+## Per-card tokens from a broker
+
+Run the broker on a different host from the worker. That host holds the GitHub App private
+key; the worker holds only the broker bearer. The App needs contents and pull requests
+write, checks and statuses read, and implicit metadata read. Each card receives a one-hour token scoped to
+its one repository in its gh configuration, refreshed before expiry. Sessiond's own GitHub
+calls use the same per-repository tokens. Without a broker URL, the legacy `worker_github_token`
+is forwarded to cards instead. A compromised worker host can use its broker bearer to request
+any repository in the namespace; the broker logs every mint with the card and repository.
+
+The broker entry point accepts the App ID, private key, bearer, listen host and optional
+port, plus the same owner and exclusions as the worker:
+
+```yaml
+- name: Deploy a token broker
+  hosts: broker
+  become: true
+  tasks:
+    - name: Install the broker
+      ansible.builtin.include_role:
+        name: richard_lynch.services.service_coding_worker
+        tasks_from: token_broker
+      vars:
+        coder_token_broker_app_id: "{{ vault_app_id }}"
+        coder_token_broker_private_key: "{{ vault_app_private_key }}"
+        coder_token_broker_bearer_token: "{{ vault_broker_bearer }}"
+        coder_token_broker_listen_host: "<listen-address>"
+        coder_token_broker_listen_port: 7693
+        worker_repo_owner: example-org
+        worker_repos_exclude: [archived-repo]
+```
+
+Set `worker_token_broker_url` to the broker's HTTP(S) URL and
+`worker_token_broker_bearer` to the same bearer on the worker. `worker_github_host`
+defaults to `github.com`.
+
 
 ## What a card's agent may run (the Bash allowlist)
 

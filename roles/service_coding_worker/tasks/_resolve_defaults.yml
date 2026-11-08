@@ -26,10 +26,15 @@
 
 - name: Resolve declared options over their generated defaults
   ansible.builtin.set_fact:
+    worker_repo_base_branches: "{{ worker_repo_base_branches | default(worker_repo_base_branches__default) if worker_repo_base_branches__default is defined else worker_repo_base_branches | default(omit) }}"
+    worker_github_host: "{{ worker_github_host | default(worker_github_host__default) if worker_github_host__default is defined else worker_github_host | default(omit) }}"
     worker_work_root: "{{ worker_work_root | default(worker_work_root__default) if worker_work_root__default is defined else worker_work_root | default(omit) }}"
     worker_claude_permission_mode: "{{ worker_claude_permission_mode | default(worker_claude_permission_mode__default) if worker_claude_permission_mode__default is defined else worker_claude_permission_mode | default(omit) }}"
     worker_claude_settings: "{{ worker_claude_settings | default(worker_claude_settings__default) if worker_claude_settings__default is defined else worker_claude_settings | default(omit) }}"
     worker_subscription_login: "{{ worker_subscription_login | default(worker_subscription_login__default) if worker_subscription_login__default is defined else worker_subscription_login | default(omit) }}"
+    worker_github_token: "{{ worker_github_token | default(worker_github_token__default) if worker_github_token__default is defined else worker_github_token | default(omit) }}"
+    worker_token_broker_url: "{{ worker_token_broker_url | default(worker_token_broker_url__default) if worker_token_broker_url__default is defined else worker_token_broker_url | default(omit) }}"
+    worker_token_broker_bearer: "{{ worker_token_broker_bearer | default(worker_token_broker_bearer__default) if worker_token_broker_bearer__default is defined else worker_token_broker_bearer | default(omit) }}"
     worker_extra_env: "{{ worker_extra_env | default(worker_extra_env__default) if worker_extra_env__default is defined else worker_extra_env | default(omit) }}"
     worker_mcp_catalogue: "{{ worker_mcp_catalogue | default(worker_mcp_catalogue__default) if worker_mcp_catalogue__default is defined else worker_mcp_catalogue | default(omit) }}"
     worker_mcp_default_enabled: "{{ worker_mcp_default_enabled | default(worker_mcp_default_enabled__default) if worker_mcp_default_enabled__default is defined else worker_mcp_default_enabled | default(omit) }}"
@@ -65,6 +70,7 @@
     worker_acpx_mcp_port: "{{ worker_acpx_mcp_port | default(worker_acpx_mcp_port__default) if worker_acpx_mcp_port__default is defined else worker_acpx_mcp_port | default(omit) }}"
     worker_acpx_mcp_token: "{{ worker_acpx_mcp_token | default(worker_acpx_mcp_token__default) if worker_acpx_mcp_token__default is defined else worker_acpx_mcp_token | default(omit) }}"
     worker_pr_ignore_bots: "{{ worker_pr_ignore_bots | default(worker_pr_ignore_bots__default) if worker_pr_ignore_bots__default is defined else worker_pr_ignore_bots | default(omit) }}"
+    coder_token_broker_listen_port: "{{ coder_token_broker_listen_port | default(coder_token_broker_listen_port__default) if coder_token_broker_listen_port__default is defined else coder_token_broker_listen_port | default(omit) }}"
   when: not (_service_coding_worker__argspec_resolved | default(false))
   # At least one option carries no_log, and set_fact would otherwise print every
   # resolved value — including that one — in the task result.
@@ -72,10 +78,15 @@
 
 - name: Rebind the defaults on a repeat call, ignoring this role's own leftover facts
   ansible.builtin.set_fact:
+    worker_repo_base_branches: "{{ worker_repo_base_branches__default if worker_repo_base_branches__default is defined else worker_repo_base_branches | default(omit) }}"
+    worker_github_host: "{{ worker_github_host__default if worker_github_host__default is defined else worker_github_host | default(omit) }}"
     worker_work_root: "{{ worker_work_root__default if worker_work_root__default is defined else worker_work_root | default(omit) }}"
     worker_claude_permission_mode: "{{ worker_claude_permission_mode__default if worker_claude_permission_mode__default is defined else worker_claude_permission_mode | default(omit) }}"
     worker_claude_settings: "{{ worker_claude_settings__default if worker_claude_settings__default is defined else worker_claude_settings | default(omit) }}"
     worker_subscription_login: "{{ worker_subscription_login__default if worker_subscription_login__default is defined else worker_subscription_login | default(omit) }}"
+    worker_github_token: "{{ worker_github_token__default if worker_github_token__default is defined else worker_github_token | default(omit) }}"
+    worker_token_broker_url: "{{ worker_token_broker_url__default if worker_token_broker_url__default is defined else worker_token_broker_url | default(omit) }}"
+    worker_token_broker_bearer: "{{ worker_token_broker_bearer__default if worker_token_broker_bearer__default is defined else worker_token_broker_bearer | default(omit) }}"
     worker_extra_env: "{{ worker_extra_env__default if worker_extra_env__default is defined else worker_extra_env | default(omit) }}"
     worker_mcp_catalogue: "{{ worker_mcp_catalogue__default if worker_mcp_catalogue__default is defined else worker_mcp_catalogue | default(omit) }}"
     worker_mcp_default_enabled: "{{ worker_mcp_default_enabled__default if worker_mcp_default_enabled__default is defined else worker_mcp_default_enabled | default(omit) }}"
@@ -111,6 +122,7 @@
     worker_acpx_mcp_port: "{{ worker_acpx_mcp_port__default if worker_acpx_mcp_port__default is defined else worker_acpx_mcp_port | default(omit) }}"
     worker_acpx_mcp_token: "{{ worker_acpx_mcp_token__default if worker_acpx_mcp_token__default is defined else worker_acpx_mcp_token | default(omit) }}"
     worker_pr_ignore_bots: "{{ worker_pr_ignore_bots__default if worker_pr_ignore_bots__default is defined else worker_pr_ignore_bots | default(omit) }}"
+    coder_token_broker_listen_port: "{{ coder_token_broker_listen_port__default if coder_token_broker_listen_port__default is defined else coder_token_broker_listen_port | default(omit) }}"
   when: _service_coding_worker__argspec_resolved | default(false)
   # At least one option carries no_log, and set_fact would otherwise print every
   # resolved value — including that one — in the task result.

@@ -62,17 +62,32 @@ argument_specs:
           - play ran.
         type: dict
         required: true
-      worker_repos:
+      worker_repo_owner:
         description:
-          - 'Repositories the supervisor may create worktrees for. Each item: name,'
-          - url, base_branch. A card naming any other repo is refused, so a card can
-          - never point the supervisor at an arbitrary path.
+          - GitHub owner namespace allowed for cards.
+        type: str
+        required: true
+      worker_repos_exclude:
+        description:
+          - Repositories excluded from the namespace.
         type: list
         required: true
-        elements: dict
+        elements: str
+      worker_repo_base_branches:
+        description:
+          - Optional repository base branch overrides.
+        type: dict
+        required: false
+        default: {}
+      worker_github_host:
+        description:
+          - GitHub host for repository URLs.
+        type: str
+        required: false
+        default: github.com
       worker_work_root:
         description:
-          - Repos live at work_root/name; worktrees at work_root/worktrees/card.
+          - Repos live at work_root/repos/name; worktrees at work_root/worktrees/card.
         type: str
         required: false
         default: /srv/work
@@ -133,9 +148,23 @@ argument_specs:
         default: false
       worker_github_token:
         description:
-          - PR-scoped GitHub token (clone, push a branch, open a PR; no merge).
+          - Legacy GitHub token, used only without a broker.
         type: str
-        required: true
+        required: false
+        default: ''
+        no_log: true
+      worker_token_broker_url:
+        description:
+          - Token broker URL; empty selects legacy mode.
+        type: str
+        required: false
+        default: ''
+      worker_token_broker_bearer:
+        description:
+          - Bearer credential for the token broker.
+        type: str
+        required: false
+        default: ''
         no_log: true
       worker_extra_env:
         description:
@@ -451,3 +480,49 @@ argument_specs:
         type: bool
         required: false
         default: true
+  token_broker:
+    short_description: Install the per-card token broker
+    description:
+      - Tokens request contents and pull requests write, checks and statuses read, plus implicit metadata read.
+    version_added: '2.1'
+    author: Collection maintainers
+    options:
+      coder_token_broker_app_id:
+        description:
+          - GitHub App ID.
+        type: str
+        required: true
+      coder_token_broker_private_key:
+        description:
+          - GitHub App private key.
+        type: str
+        required: true
+        no_log: true
+      coder_token_broker_bearer_token:
+        description:
+          - Bearer credential for broker clients.
+        type: str
+        required: true
+        no_log: true
+      coder_token_broker_listen_host:
+        description:
+          - Broker listen address.
+        type: str
+        required: true
+      coder_token_broker_listen_port:
+        description:
+          - Broker listen port.
+        type: int
+        required: false
+        default: 7693
+      worker_repo_owner:
+        description:
+          - GitHub owner namespace allowed for cards.
+        type: str
+        required: true
+      worker_repos_exclude:
+        description:
+          - Repositories excluded from the namespace.
+        type: list
+        required: true
+        elements: str

@@ -68,6 +68,200 @@ POLICY = {
 }
 
 
+class TestRepoScope(unittest.TestCase):
+    def test_repo_validation(self):
+        cfg = {"repo_owner": "example-org", "repos_exclude": ["SeCrEt", "example-org/blocked"]}
+        for repo in (
+            "other-org/x",
+            "example-org-evil/x",
+            "example-orgx/x",
+            "../x",
+            ".hidden",
+            "x/y/z",
+            "x.git",
+            "secret",
+            "EXAMPLE-ORG/SECRET",
+            "BLOCKED",
+            "example-org/blocked",
+            "",
+            None,
+            123,
+            "-x",
+            ".",
+            "..",
+        ):
+            with self.subTest(repo=repo), self.assertRaises(ws.RefusedError) as cm:
+                ws.resolve_repo(cfg, repo)
+            self.assertEqual(cm.exception.status, 422)
+            self.assertIn("example-org", str(cm.exception))
+        for repo, name in (
+            ("x", "x"),
+            ("example-org/x", "x"),
+            ("EXAMPLE-ORG/x", "x"),
+            ("my.repo-name_2", "my.repo-name_2"),
+        ):
+            with self.subTest(repo=repo):
+                self.assertEqual(
+                    ws.resolve_repo(cfg, repo), (name, f"https://github.com/example-org/{name}.git")
+                )
+
+    def test_create_repo_clone_fetch_and_credentials(self):
+        for existing, override in ((False, False), (True, True)):
+            with self.subTest(existing=existing), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                if existing:
+                    (root / "work" / "repos" / "project").mkdir(parents=True)
+                env_file = root / "agent.env"
+                env_file.write_text("GH_TOKEN='a-private-token'\n")
+                calls = []
+                sha = "a" * 40
+
+                def runner(cmd, **kwargs):
+                    calls.append((cmd, kwargs))
+                    if cmd[0] == "bash":
+                        return subprocess.CompletedProcess(cmd, 0, "a-private-token", "")
+                    if "ls-remote" in cmd:
+                        return subprocess.CompletedProcess(
+                            cmd, 0, "ref: refs/heads/main\tHEAD\n", ""
+                        )
+                    if "rev-parse" in cmd:
+                        return subprocess.CompletedProcess(cmd, 0, sha + "\n", "")
+                    return subprocess.CompletedProcess(cmd, 0, "", "")
+
+                cfg = {
+                    "state_dir": str(root / "state"),
+                    "work_root": str(root / "work"),
+                    "repo_owner": "example-org",
+                    "agent_env_file": str(env_file),
+                    "repo_base_branches": {"project": "develop"} if override else {},
+                }
+                rec = ws.Supervisor(cfg, runner).create("c1", "EXAMPLE-ORG/project")
+                self.assertEqual(
+                    (rec["repo"], rec["repo_full"]), ("project", "example-org/project")
+                )
+                cmds = [cmd for cmd, _ in calls if cmd[0] == "git"]
+                self.assertFalse(any("--filter=blob:none" in c for c in cmds))
+                self.assertTrue(any(str(root / "work" / "repos" / "project") in c for c in cmds))
+                self.assertTrue(any("status" in c and "--porcelain" in c for c in cmds))
+                self.assertEqual(any("fetch" in c and "--prune" in c for c in cmds), existing)
+                self.assertEqual(any("ls-remote" in c for c in cmds), not override)
+                self.assertTrue(
+                    any(
+                        f"refs/remotes/origin/{'develop' if override else 'main'}^{{commit}}" in c
+                        for c in cmds
+                    )
+                )
+                self.assertTrue(any("--no-hardlinks" in c for c in cmds))
+                self.assertTrue(any("checkout" in c and sha in c for c in cmds))
+                self.assertTrue(all("a-private-token" not in str(cmd) for cmd, _ in calls))
+                auth_calls = [(cmd, kw) for cmd, kw in calls if "env" in kw]
+                self.assertTrue(auth_calls)
+                self.assertTrue(
+                    all(kw["env"]["WORKER_GIT_TOKEN"] == "a-private-token" for _, kw in auth_calls)
+                )
+
+    def test_create_card_branch_scope(self):
+        for branch, base, allowed in [
+            ("main", "develop", False),
+            ("develop", "develop", False),
+            ("card/other/x", "develop", False),
+            ("card/c1x", "develop", False),
+            ("card/c1", "card/c1", False),
+            ("card/c1", "develop", True),
+            ("card/c1/x", "develop", True),
+            (None, "develop", True),
+        ]:
+            with self.subTest(branch=branch, base=base), tempfile.TemporaryDirectory() as tmp:
+
+                def runner(cmd, **kwargs):
+                    output = (
+                        "ref: refs/heads/" + base + "\tHEAD\n"
+                        if "ls-remote" in cmd
+                        else ("a" * 40 if "rev-parse" in cmd else "")
+                    )
+                    return subprocess.CompletedProcess(cmd, 0, output, "")
+
+                sup = ws.Supervisor(
+                    {
+                        "state_dir": tmp + "/state",
+                        "work_root": tmp + "/work",
+                        "repo_owner": "example",
+                        "repo_base_branches": {"other": "main"},
+                    },
+                    runner,
+                )
+                if allowed:
+                    self.assertEqual(
+                        sup.create("c1", "repo", branch)["branch"], branch or "card/c1"
+                    )
+                else:
+                    with self.assertRaises(ws.RefusedError) as error:
+                        sup.create("c1", "repo", branch)
+                    self.assertEqual(error.exception.status, 422)
+
+    def test_repo_slug_uses_record_and_legacy_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = {"state_dir": tmp, "work_root": tmp, "repo_owner": "example-org"}
+            sup = ws.Supervisor(cfg)
+            calls = []
+
+            def gh_json(args, what):
+                calls.append(args)
+                branch = args[args.index("--head") + 1]
+                return [
+                    {
+                        "number": 1,
+                        "headRefName": branch,
+                        "headRefOid": "a" * 40,
+                        "headRepositoryOwner": {"login": "example-org"},
+                        "isCrossRepository": False,
+                    }
+                ]
+
+            sup.run = lambda cmd: subprocess.CompletedProcess(cmd, 0, "a" * 40, "")
+            sup._gh_json = gh_json
+            sup._find_pr({"repo": "old", "branch": "card/a", "path": tmp}, "a")
+            sup._find_pr(
+                {"repo": "new", "repo_full": "Other/New", "branch": "card/b", "path": tmp}, "b"
+            )
+            self.assertIn("example-org/old", calls[0])
+            self.assertIn("Other/New", calls[1])
+
+    def test_repo_git_env_without_token(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sup = ws.Supervisor({"state_dir": tmp, "work_root": tmp})
+            args, env = sup._git_env("example-org/project")
+            self.assertEqual(args, [])
+            self.assertNotIn("WORKER_GIT_TOKEN", env)
+
+    def test_create_repo_failure_removes_card_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src = root / "work" / "repos" / "project"
+            src.mkdir(parents=True)
+            dest = root / "work" / "worktrees" / "c1"
+
+            def runner(cmd, **kwargs):
+                if "rev-parse" in cmd:
+                    return subprocess.CompletedProcess(cmd, 0, "b" * 40, "")
+                if "--no-hardlinks" in cmd:
+                    dest.mkdir(parents=True)
+                    return subprocess.CompletedProcess(cmd, 1, "", "clone failed")
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+
+            cfg = {
+                "state_dir": str(root / "state"),
+                "work_root": str(root / "work"),
+                "repo_owner": "example-org",
+                "repo_base_branches": {"project": "main"},
+            }
+            with self.assertRaises(ws.RefusedError) as cm:
+                ws.Supervisor(cfg, runner).create("c1", "project")
+            self.assertEqual(cm.exception.status, 500)
+            self.assertFalse(dest.exists())
+            self.assertTrue(src.exists())
+
+
 class TestCardPolicy(unittest.TestCase):
     def test_tokens_become_this_cards_branch_and_worktree(self):
         out = ws.card_claude_settings(POLICY, "card/x1", "/srv/work/worktrees/x1")
@@ -452,18 +646,21 @@ class TestLive(unittest.TestCase):
             GIT_COMMITTER_NAME="t",
             GIT_COMMITTER_EMAIL="t@t",
         )
-        repo = cls.tmp / "work" / "lab"
+        repo = cls.tmp / "work" / "repos" / "lab"
         repo.mkdir(parents=True)
         for c in (
             ["git", "init", "-q", "-b", "main"],
             ["git", "commit", "-q", "--allow-empty", "-m", "i"],
+            ["git", "remote", "add", "origin", str(repo)],
         ):
             subprocess.run(c, cwd=repo, check=True, env=env)
         cls.cfg = {
             "state_dir": str(cls.tmp / "state"),
             "work_root": str(cls.tmp / "work"),
             "tmux_prefix": "card-",
-            "repos": [{"name": "lab", "base_branch": "main"}],
+            "repo_owner": "o",
+            "repos_exclude": ["not-a-repo"],
+            "repo_base_branches": {"lab": "main"},
             "mcp_catalogue": CAT,
             "mcp_default_enabled": [],
             "card_tail_enabled": True,
@@ -843,7 +1040,7 @@ sys.exit(2)
 '''
 
 FAKE_GH = r"""#!__PY__
-import json, os, sys
+import json, os, sys, subprocess
 fx_path = os.environ["FAKE_GH_FIXTURE"]
 fx = json.load(open(fx_path))
 argv = sys.argv[1:]
@@ -852,6 +1049,13 @@ with open(os.environ["FAKE_GH_LOG"], "a") as f:
 if fx.get("fail"):
     sys.stderr.write("HTTP 502\n"); sys.exit(1)
 if argv[:2] == ["pr", "list"]:
+    branch = argv[argv.index("--head") + 1]
+    card = branch.split("/")[1]
+    root = os.path.dirname(fx_path)
+    path = os.path.join(root, "work", "worktrees", card)
+    sha = subprocess.check_output(["git", "-C", path, "rev-parse", branch], text=True).strip()
+    for pr in fx["pr_list"]:
+        pr.update(headRefName=branch, headRefOid=sha, headRepositoryOwner={"login": "o"}, isCrossRepository=False)
     print(json.dumps(fx["pr_list"])); sys.exit(0)
 if argv[:1] == ["api"]:
     # gh 2.45 (Ubuntu 24.04, the worker's) has no --slurp and refuses it, as here
@@ -1231,11 +1435,12 @@ class TestContainerMode(unittest.TestCase):
             GIT_COMMITTER_NAME="t",
             GIT_COMMITTER_EMAIL="t@t",
         )
-        repo = cls.tmp / "work" / "lab"
+        repo = cls.tmp / "work" / "repos" / "lab"
         repo.mkdir(parents=True)
         for c in (
             ["git", "init", "-q", "-b", "main"],
             ["git", "commit", "-q", "--allow-empty", "-m", "i"],
+            ["git", "remote", "add", "origin", str(repo)],
         ):
             subprocess.run(c, cwd=repo, check=True, env=env)
         (cls.tmp / "agent.env").write_text(
@@ -1245,9 +1450,8 @@ class TestContainerMode(unittest.TestCase):
             "state_dir": str(cls.tmp / "state"),
             "work_root": str(cls.tmp / "work"),
             "tmux_prefix": "card-",
-            "repos": [
-                {"name": "lab", "base_branch": "main", "url": "https://github.com/o/lab.git"}
-            ],
+            "repo_owner": "o",
+            "repo_base_branches": {"lab": "main"},
             "mcp_catalogue": [],
             "mcp_default_enabled": [],
             "claude_permission_mode": "dontAsk",
@@ -1526,14 +1730,14 @@ class TestContainerMode(unittest.TestCase):
             s.get("c9")
         self.assertEqual(c.exception.status, 404)
         branches = subprocess.run(
-            ["git", "-C", str(self.tmp / "work/lab"), "branch", "--list", "card/c9"],
+            ["git", "-C", str(self.tmp / "work/repos/lab"), "branch", "--list", "card/c9"],
             capture_output=True,
             text=True,
         ).stdout
         # the host repo never knew about the card (own clone): no branch, no worktree entry in it
         self.assertNotIn("card/c9", branches)
         wl = subprocess.run(
-            ["git", "-C", str(self.tmp / "work/lab"), "worktree", "list"],
+            ["git", "-C", str(self.tmp / "work/repos/lab"), "worktree", "list"],
             capture_output=True,
             text=True,
         ).stdout
@@ -1692,9 +1896,28 @@ class TestContainerMode(unittest.TestCase):
         ).stdout
         self.assertIn("CI is RED", pane)
         self.assertFalse(s.poll_pr("p2")["delivered"])  # same head, still red: not repeated
-        self.gh(
-            checks=red, pr_list=[{"number": 7, "url": "u", "isDraft": True, "headRefOid": "b" * 40}]
+        env = dict(
+            os.environ,
+            GIT_AUTHOR_NAME="t",
+            GIT_AUTHOR_EMAIL="t@t",
+            GIT_COMMITTER_NAME="t",
+            GIT_COMMITTER_EMAIL="t@t",
         )
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(self.tmp / "work/worktrees/p2"),
+                "commit",
+                "--allow-empty",
+                "-m",
+                "next",
+            ],
+            check=True,
+            env=env,
+            capture_output=True,
+        )
+        self.gh(checks=red)
         self.assertTrue(
             s.poll_pr("p2")["delivered"]
         )  # the agent pushed and it is still red: told again
@@ -1781,7 +2004,7 @@ class TestContainerMode(unittest.TestCase):
     # ------------------------------------------------------------ security review fixes
     def test_30_the_card_has_its_own_clone_and_the_host_repo_is_untouched(self):
         s = self.sup
-        host = self.tmp / "work/lab"
+        host = self.tmp / "work/repos/lab"
         before = (host / ".git/config").read_text()
         rec = s.create("s1", "lab")
         wt = Path(rec["path"])
@@ -2206,6 +2429,380 @@ class TestReviewLoopPure(unittest.TestCase):
             trusted_logins={"reviewer"},
         )
         self.assertEqual([i["text"] for i in ok], ["go"])
+
+
+class TestBrokerClientIntegration(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.bearer = self.root / "bearer"
+        self.bearer.write_text("bearer-secret\n")
+        self.calls = []
+        self.response = {
+            "token": "sensitive-token",
+            "repo": "Example/repo",
+            "expires_at": "2035-01-01T00:00:00Z",
+        }
+        self.client = ws.BrokerClient("https://broker/", str(self.bearer), self.open)
+
+    def open(self, request, timeout):
+        import io
+
+        self.calls.append((request, timeout))
+        return io.BytesIO(json.dumps(self.response).encode())
+
+    def supervisor(self, runtime="sysbox"):
+        cfg = {
+            "state_dir": str(self.root / "state"),
+            "work_root": str(self.root / "work"),
+            "repo_owner": "Example",
+            "container_runtime": runtime,
+            "token_broker_url": "https://broker",
+            "token_broker_bearer_file": str(self.bearer),
+        }
+        sup = ws.Supervisor(
+            cfg, runner=lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, "", "")
+        )
+        sup.broker = self.client
+        return sup
+
+    def test_broker_client_request_and_invalid_response(self):
+        token, exp = self.client.mint("example/repo", "card-1")
+        self.assertEqual(token, "sensitive-token")
+        self.assertGreater(exp, time.time())
+        req, timeout = self.calls[0]
+        self.assertEqual(req.full_url, "https://broker/v1/token")
+        self.assertEqual(req.get_method(), "POST")
+        self.assertEqual(req.get_header("Authorization"), "Bearer bearer-secret")
+        self.assertEqual(json.loads(req.data), {"repo": "example/repo", "card": "card-1"})
+        self.assertEqual(timeout, 15)
+        for patch in (
+            {"token": ""},
+            {"repo": "wrong"},
+            {"expires_at": "invalid"},
+            {"expires_at": "2030-01-01T00:00:00+00:00"},
+        ):
+            old = self.response.copy()
+            self.response.update(patch)
+            with self.assertRaises(ws.RefusedError) as err:
+                self.client.mint("Example/repo", "card-1")
+            self.assertEqual(err.exception.status, 502)
+            self.assertNotIn("sensitive-token", str(err.exception))
+            self.assertNotIn("bearer-secret", str(err.exception))
+            self.response = old
+
+    def test_broker_cache_and_gh_environment(self):
+        sup = self.supervisor()
+        self.assertEqual(sup._token_for("Example/repo", "card"), "sensitive-token")
+        sup._token_for("example/REPO")
+        self.assertEqual(len(self.calls), 1)
+        sup.token_cache["example/repo"] = ("old", time.time() + 900)
+        calls = []
+        sup.run = lambda cmd, **kw: calls.append((cmd, kw)) or subprocess.CompletedProcess(
+            cmd, 0, "", ""
+        )
+        sup._gh(["pr", "list"], "Example/repo")
+        self.assertEqual(len(self.calls), 2)
+        self.assertEqual(calls[0][1]["env"]["GH_TOKEN"], "sensitive-token")
+        self.assertNotIn("sensitive-token", str(calls[0][0]))
+
+    def test_broker_launch_and_refresh(self):
+        sup = self.supervisor()
+        rec = {
+            "repo": "repo",
+            "repo_full": "Example/repo",
+            "path": str(self.root),
+            "branch": "card/c",
+            "tmux": "card-c",
+            "state": "created",
+            "container": "card-c",
+        }
+        sup._save({"c": rec})
+        sup.tmux_live = lambda: {}
+        sup._ensure_container = lambda *args: None
+        envfile = self.root / "agent.env"
+        envfile.write_text("GH_TOKEN=legacy\nGITHUB_TOKEN=legacy\nOTHER=yes\n")
+        sup.cfg["agent_env_file"] = str(envfile)
+        result = sup.launch("c", "codex", "work")
+        hosts = sup.state_dir / "homes/c/.config/gh/hosts.yml"
+        self.assertIn("sensitive-token", hosts.read_text())
+        self.assertEqual(stat.S_IMODE(hosts.stat().st_mode), 0o600)
+        self.assertGreater(result["token_expires_at"], time.time())
+        self.assertNotIn("sensitive-token", sup.sessions_file.read_text())
+        prefix = sup._exec_prefix(result)
+        self.assertNotIn("GH_TOKEN", prefix)
+        self.assertNotIn("GITHUB_TOKEN", prefix)
+        sup.container_status = lambda name: "running"
+        sup.refresh_tokens()
+        self.assertEqual(len(self.calls), 1)
+        rec = sup._load()["c"]
+        rec["token_expires_at"] = 0
+        sup._save({"c": rec})
+        sup.token_cache.clear()
+        self.response["token"] = "replacement-token"
+        sup.refresh_tokens()
+        self.assertIn("replacement-token", hosts.read_text())
+        rec = sup._load()["c"]
+        rec["token_expires_at"] = 0
+        sup._save({"c": rec})
+        sup.token_cache.clear()
+        self.response["repo"] = "wrong"
+        sup.refresh_tokens()
+        self.assertEqual(sup._load()["c"]["token_expires_at"], 0)
+        sup.broker = None
+        self.assertIn("GH_TOKEN", sup._exec_prefix(rec))
+
+    def test_broker_refuses_launch_and_symlink(self):
+        sup = self.supervisor()
+        rec = {
+            "repo": "repo",
+            "repo_full": "Example/repo",
+            "path": str(self.root),
+            "branch": "card/c",
+            "tmux": "card-c",
+            "state": "created",
+            "container": "card-c",
+        }
+        sup._save({"c": rec})
+        sup.tmux_live = lambda: {}
+        started = []
+        sup._ensure_container = lambda *args: started.append(True)
+        self.response["repo"] = "wrong"
+        with self.assertRaises(ws.RefusedError) as err:
+            sup.launch("c", "codex", "work")
+        self.assertEqual(err.exception.status, 502)
+        self.assertFalse(started)
+        self.response["repo"] = "Example/repo"
+        home = sup.state_dir / "homes/c"
+        home.mkdir(parents=True)
+        (home / ".config").symlink_to(self.root, target_is_directory=True)
+        with self.assertRaises(ws.RefusedError):
+            sup.launch("c", "codex", "work")
+        self.assertFalse(started)
+
+    def test_broker_acp_excludes_github_environment(self):
+        sup = self.supervisor()
+        envfile = self.root / "agent.env"
+        envfile.write_text("GH_TOKEN=legacy\nGITHUB_TOKEN=legacy\nOTHER=yes\n")
+        sup.cfg["agent_env_file"] = str(envfile)
+        calls = []
+        sup.run = lambda cmd, **kw: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", "")
+        sup._acp_exec({"path": str(self.root), "container": "card-c"}, "c", ["true"])
+        self.assertNotIn("GH_TOKEN", calls[0])
+        self.assertNotIn("GITHUB_TOKEN", calls[0])
+        self.assertIn("OTHER", calls[0])
+
+
+class TestReviewRegressions(unittest.TestCase):
+    def test_pr_matches_local_sha_and_rejects_forks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sha = "a" * 40
+            sup = ws.Supervisor(
+                {"state_dir": tmp, "work_root": tmp, "repo_owner": "Example"},
+                lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, sha, ""),
+            )
+            rec = {"repo": "repo", "branch": "card/c1", "path": tmp}
+            base = {
+                "headRefName": "card/c1",
+                "headRefOid": sha,
+                "headRepositoryOwner": {"login": "Example"},
+                "isCrossRepository": False,
+            }
+            fork = dict(base, number=1, isCrossRepository=True)
+            other = dict(base, number=2, headRefOid="b" * 40)
+            good = dict(base, number=3)
+            sup._gh_json = lambda *args, **kw: [fork, other, good]
+            self.assertEqual(sup._find_pr(rec, "c1")[1]["number"], 3)
+            sup._gh_json = lambda *args, **kw: [fork, other]
+            with self.assertRaises(ws.RefusedError):
+                sup._find_pr(rec, "c1")
+
+    def test_refresh_interval_is_bounded(self):
+        self.assertEqual(ws.token_refresh_interval(86400), 300)
+
+        class FakeClock:
+            now = 0
+
+            def sleep(self, seconds):
+                self.now += seconds
+                if self.now > 3600:
+                    raise StopIteration
+
+        clock = FakeClock()
+        times = []
+
+        class Sup:
+            cfg = {"pr_poll_seconds": 86400}
+
+            def refresh_tokens(self):
+                times.append(clock.now)
+
+        with self.assertRaises(StopIteration):
+            ws.token_refresh_loop(Sup(), clock.sleep)
+        self.assertEqual(times, list(range(300, 3601, 300)))
+
+    @unittest.skipUnless(shutil.which("git"), "needs git")
+    def test_advanced_base_copies_all_blobs(self):
+        for base in ("main", "develop"):
+            with self.subTest(base=base), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                origin = root / "origin"
+                origin.mkdir()
+                env = dict(
+                    os.environ,
+                    GIT_AUTHOR_NAME="t",
+                    GIT_AUTHOR_EMAIL="t@t",
+                    GIT_COMMITTER_NAME="t",
+                    GIT_COMMITTER_EMAIL="t@t",
+                )
+
+                def git(*args):
+                    return subprocess.run(
+                        ["git", *args], check=True, capture_output=True, text=True, env=env
+                    ).stdout.strip()
+
+                git("init", "-q", "-b", "main", str(origin))
+                (origin / "old").write_text("old")
+                git("-C", str(origin), "add", "old")
+                git("-C", str(origin), "commit", "-qm", "initial")
+                if base != "main":
+                    git("-C", str(origin), "branch", base)
+                cache = root / "work/repos/worktrees"
+                cache.parent.mkdir(parents=True)
+                git("clone", "-q", str(origin), str(cache))
+                git("-C", str(origin), "checkout", "-q", base)
+                (origin / "new").write_text("new content")
+                git("-C", str(origin), "add", "new")
+                git("-C", str(origin), "commit", "-qm", "advance")
+                expected = git("-C", str(origin), "rev-parse", "HEAD")
+                sup = ws.Supervisor(
+                    {
+                        "state_dir": str(root / "state"),
+                        "work_root": str(root / "work"),
+                        "repo_owner": "Example",
+                        "repo_base_branches": {"worktrees": base},
+                    }
+                )
+                rec = sup.create("c1", "worktrees")
+                self.assertEqual((Path(rec["path"]) / "new").read_text(), "new content")
+                self.assertEqual(git("-C", rec["path"], "rev-parse", "HEAD"), expected)
+                self.assertEqual(git("-C", rec["path"], "rev-parse", f"origin/{base}"), expected)
+                self.assertEqual(git("-C", rec["path"], "status", "--porcelain"), "")
+
+    def test_bad_checkout_is_removed(self):
+        for failure in ("dirty", "wrong_head"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as tmp:
+                dest = Path(tmp) / "work" / "worktrees" / "c1"
+
+                def runner(cmd, **kwargs):
+                    if "--no-hardlinks" in cmd:
+                        dest.mkdir(parents=True)
+                    if "status" in cmd:
+                        return subprocess.CompletedProcess(
+                            cmd, 0, " D missing\n" if failure == "dirty" else "", ""
+                        )
+                    if "rev-parse" in cmd:
+                        sha = "b" if failure == "wrong_head" and "HEAD" in cmd else "a"
+                        return subprocess.CompletedProcess(cmd, 0, sha * 40, "")
+                    return subprocess.CompletedProcess(cmd, 0, "", "")
+
+                sup = ws.Supervisor(
+                    {
+                        "state_dir": tmp + "/state",
+                        "work_root": tmp + "/work",
+                        "repo_owner": "Example",
+                        "repo_base_branches": {"worktrees": "main"},
+                    },
+                    runner,
+                )
+                with self.assertRaises(ws.RefusedError) as exc:
+                    sup.create("c1", "worktrees")
+                self.assertEqual(exc.exception.status, 500)
+                self.assertFalse(dest.exists())
+
+    def test_molecule_declares_required_exclusions(self):
+        root = Path(__file__).resolve().parent.parent / "molecule" / "default"
+        self.assertIn("worker_repos_exclude: []", (root / "converge.yml").read_text())
+        self.assertIn("worker_repos_exclude:", (root / "_render_variant.yml").read_text())
+
+    def test_all_pr_calls_mint_with_card(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sha = "a" * 40
+            sup = ws.Supervisor({"state_dir": tmp, "work_root": tmp, "repo_owner": "Example"})
+            seen = []
+
+            class Broker:
+                def mint(self, repo, card):
+                    seen.append(card)
+                    return "token", time.time() + 600
+
+            sup.broker = Broker()
+            rec = {"repo": "repo", "branch": "card/c1", "path": tmp}
+            sup._load = lambda: {"c1": rec}
+
+            def runner(cmd, **kw):
+                if cmd[0] == "git":
+                    out = sha
+                elif cmd[1:3] == ["pr", "list"]:
+                    out = json.dumps(
+                        [
+                            {
+                                "number": 1,
+                                "isDraft": True,
+                                "headRefName": "card/c1",
+                                "headRefOid": sha,
+                                "headRepositoryOwner": {"login": "Example"},
+                                "isCrossRepository": False,
+                            }
+                        ]
+                    )
+                elif cmd[1:3] == ["pr", "checks"]:
+                    out = json.dumps([{"name": "unit", "bucket": "pass"}])
+                elif cmd[1:3] == ["pr", "ready"]:
+                    out = ""
+                else:
+                    out = "[]"
+                return subprocess.CompletedProcess(cmd, 0, out, "")
+
+            sup.run = runner
+            sup.poll_pr("c1", deliver=False)
+            with self.assertRaises(ws.RefusedError):
+                sup.pr_ready("c1")  # the fake keeps reporting a draft after ready
+            self.assertGreaterEqual(len(seen), 9)
+            self.assertEqual(set(seen), {"c1"})
+
+    def test_testcase_classes_precede_script_guard(self):
+        import ast
+
+        for path in Path(__file__).parent.glob("test_*.py"):
+            tree = ast.parse(path.read_text())
+            guards = [
+                n.lineno
+                for n in tree.body
+                if isinstance(n, ast.If) and "__main__" in ast.unparse(n.test)
+            ]
+            if guards:
+                for node in tree.body:
+                    if isinstance(node, ast.ClassDef) and any(
+                        "TestCase" in ast.unparse(b) for b in node.bases
+                    ):
+                        self.assertLess(node.lineno, min(guards), str(path))
+
+    def test_pr_helpers_forward_card_to_broker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sup = ws.Supervisor({"state_dir": tmp, "work_root": tmp, "repo_owner": "Example"})
+            seen = []
+
+            class Broker:
+                def mint(self, repo, card):
+                    seen.append(card)
+                    return "token", time.time() + 3600
+
+            sup.broker = Broker()
+            sup.run = lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, "[]", "")
+            sup._gh_json(["pr", "list"], "list", "Example/repo", "c1")
+            self.assertEqual(seen, ["c1"])
 
 
 if __name__ == "__main__":
