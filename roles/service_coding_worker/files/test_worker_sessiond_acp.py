@@ -459,7 +459,8 @@ class TestContainerProtocol(unittest.TestCase):
         self.cfg = {
             "state_dir": str(self.tmp / "state"),
             "work_root": str(self.tmp / "work"),
-            "repos": [{"name": "lab"}],
+            "repo_owner": "o",
+            "repos_exclude": [],
             "container_runtime": "sysbox-runc",
             "container_image": "card:test",
             "container_tools_dir": "/opt/node",
@@ -729,6 +730,46 @@ def _find_acpx() -> str:
     return os.environ.get("ACPX_BIN") or shutil.which("acpx") or ""
 
 
+def _live_config(tmp: Path, agent: Path) -> dict:
+    """Seed the shared cache with a local origin for offline live creates."""
+    env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t")
+    env.update(GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
+    repo = tmp / "work" / "repos" / "lab"
+    repo.mkdir(parents=True)
+    for command in (
+        ["git", "init", "-q", "-b", "main"],
+        ["git", "commit", "-q", "--allow-empty", "-m", "i"],
+        ["git", "remote", "add", "origin", str(repo)],
+    ):
+        subprocess.run(command, cwd=repo, check=True, env=env)
+    return {
+        "state_dir": str(tmp / "state"),
+        "work_root": str(tmp / "work"),
+        "repo_owner": "o",
+        "repos_exclude": [],
+        "repo_base_branches": {"lab": "main"},
+        "acp_agents": {"claude": [str(agent)]},
+        "acp_permissions": "approve-all",
+        "acpx_bin": _find_acpx(),
+        "acp_keep_comms": ["python3", "Python", "python"],
+    }
+
+
+@unittest.skipUnless(shutil.which("git"), "git not installed")
+class TestLiveAcpxFixture(unittest.TestCase):
+    def test_namespace_and_seeded_cache(self):
+        with tempfile.TemporaryDirectory(prefix="sd-acp-fixture-") as tmpdir:
+            tmp = Path(tmpdir)
+            cfg = _live_config(tmp, tmp / "agent")
+            self.assertEqual(ws.resolve_repo(cfg, "lab"), ("lab", "https://github.com/o/lab.git"))
+            repo = tmp / "work" / "repos" / "lab"
+            self.assertTrue((repo / ".git").is_dir())
+            origin = subprocess.check_output(
+                ["git", "remote", "get-url", "origin"], cwd=repo, text=True
+            ).strip()
+            self.assertEqual(origin, str(repo))
+
+
 @unittest.skipUnless(_find_acpx() and shutil.which("git"), "acpx not installed")
 class TestLiveAcpx(unittest.TestCase):
     """The real acpx against a mock ACP agent, through sessiond's HTTP API AND acpx-mcp."""
@@ -739,27 +780,7 @@ class TestLiveAcpx(unittest.TestCase):
         agent = cls.tmp / "mock_agent.py"
         agent.write_text(MOCK_AGENT.replace("__PY__", sys.executable))
         agent.chmod(0o755)
-        env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t")
-        env.update(GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
-        repo = cls.tmp / "work" / "repos" / "lab"
-        repo.mkdir(parents=True)
-        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True, env=env)
-        subprocess.run(
-            ["git", "commit", "-q", "--allow-empty", "-m", "i"],
-            cwd=repo,
-            check=True,
-            env=env,
-        )
-        cls.cfg = {
-            "state_dir": str(cls.tmp / "state"),
-            "work_root": str(cls.tmp / "work"),
-            "repos": [{"name": "lab", "base_branch": "main"}],
-            "acp_agents": {"claude": [str(agent)]},
-            "acp_permissions": "approve-all",
-            "acpx_bin": _find_acpx(),
-            # the mock adapter is a python process; a real one is node (ACP_CORE_COMMS)
-            "acp_keep_comms": ["python3", "Python", "python"],
-        }
+        cls.cfg = _live_config(cls.tmp, agent)
         cls.sup = ws.Supervisor(cls.cfg)
         cls.sd_token, cls.mcp_token = "s" * 24, "m" * 24
         cls.sd = ThreadingHTTPServer(("127.0.0.1", 0), ws.make_handler(cls.sup, cls.sd_token))
