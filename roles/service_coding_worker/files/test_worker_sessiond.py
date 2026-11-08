@@ -33,6 +33,7 @@ import time
 import unittest
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import worker_metrics_pull as wmp  # noqa: E402
@@ -1546,7 +1547,9 @@ class TestContainerMode(unittest.TestCase):
         agent = self.wait_agent()
         self.assertEqual(agent["argv"][:2], ["--mcp-config", "/card/servers.json"])
         self.assertTrue(agent["token_set"])
-        self.assertEqual(os.path.realpath(agent["cwd"]), os.path.realpath(wt))
+        self.assertEqual(
+            os.path.realpath(agent["cwd"]), os.path.realpath(self.tmp / "state/cards/c1/host")
+        )
         ex = json.loads((self.tmp / "exec.json").read_text())
         self.assertIn("ANTHROPIC_AUTH_TOKEN", ex)
         self.assertEqual(ex[ex.index("card-c1") - 2 : ex.index("card-c1")][0], "-e")
@@ -2603,6 +2606,9 @@ class TestReviewRegressions(unittest.TestCase):
                 lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, sha, ""),
             )
             rec = {"repo": "repo", "branch": "card/c1", "path": tmp}
+            ref = Path(tmp) / ".git/refs/heads/card/c1"
+            ref.parent.mkdir(parents=True)
+            ref.write_text(sha + "\n")
             base = {
                 "headRefName": "card/c1",
                 "headRefOid": sha,
@@ -2617,6 +2623,74 @@ class TestReviewRegressions(unittest.TestCase):
             sup._gh_json = lambda *args, **kw: [fork, other]
             with self.assertRaises(ws.RefusedError):
                 sup._find_pr(rec, "c1")
+
+    def test_card_branch_head_confined_and_packed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            gitdir = root / ".git"
+            ref = gitdir / "refs/heads/card/c1"
+            ref.parent.mkdir(parents=True)
+            packed = gitdir / "packed-refs"
+            packed.write_text("# pack-refs\n" + "b" * 64 + " refs/heads/card/c1\n")
+            self.assertEqual(ws.card_branch_head(tmp, "card/c1"), "b" * 64)
+            outside = root / "outside"
+            outside.write_text("a" * 40)
+            ref.symlink_to(outside)
+            self.assertIsNone(ws.card_branch_head(tmp, "card/c1"))
+            ref.unlink()
+            ref.write_text("A" * 40)
+            self.assertIsNone(ws.card_branch_head(tmp, "card/c1"))
+            shutil.rmtree(gitdir)
+            gitdir.write_text("gitdir: " + str(outside))
+            self.assertIsNone(ws.card_branch_head(tmp, "card/c1"))
+
+    def test_poll_pr_never_runs_git_on_card_clone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            gitdir = root / "card/.git"
+            gitdir.mkdir(parents=True)
+            marker = root / "marker"
+            command = f"touch {marker}"
+            (gitdir / "config").write_text(
+                f"[core]\n sshCommand = {command}\n fsmonitor = {command}\n"
+                f'[remote "origin"]\n promisor = true\n'
+                f"[extensions]\n partialClone = origin\n"
+            )
+            calls = []
+
+            def runner(cmd, **kwargs):
+                calls.append(cmd)
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+
+            sup = ws.Supervisor(
+                {"state_dir": tmp, "work_root": tmp, "repo_owner": "Example"}, runner
+            )
+            rec = {"repo": "repo", "branch": "card/c1", "path": str(root / "card")}
+            sup._load = lambda: {"c1": rec}
+            base = {
+                "headRefName": "card/c1",
+                "headRefOid": "a" * 40,
+                "headRepositoryOwner": {"login": "Example"},
+                "isCrossRepository": False,
+            }
+            sup._gh_json = lambda *args, **kwargs: [
+                dict(base, number=1, isCrossRepository=True),
+                dict(base, number=2),
+            ]
+            sup._gh_pages = lambda *args, **kwargs: []
+            sup._checks = lambda *args: {"verdict": "green", "head": "a" * 40, "failing": []}
+            self.assertEqual(sup.poll_pr("c1", deliver=False)["pr"], 2)
+            self.assertFalse(marker.exists())
+            self.assertFalse(
+                any(cmd and cmd[0] == "git" and str(root / "card") in cmd for cmd in calls)
+            )
+            sup._gh_json = lambda *args, **kwargs: [
+                dict(base, number=1, isCrossRepository=True),
+                dict(base, number=3, headRepositoryOwner={"login": "Other"}),
+                dict(base, number=4, headRefName="card/other"),
+            ]
+            with self.assertRaises(ws.RefusedError):
+                sup.poll_pr("c1", deliver=False)
 
     def test_refresh_interval_is_bounded(self):
         self.assertEqual(ws.token_refresh_interval(86400), 300)
@@ -2807,6 +2881,144 @@ class TestReviewRegressions(unittest.TestCase):
             sup.run = lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, "[]", "")
             sup._gh_json(["pr", "list"], "list", "Example/repo", "c1")
             self.assertEqual(seen, ["c1"])
+
+
+class TestExecutionIsolation(unittest.TestCase):
+    def setUp(self):
+        self.tmp_path = Path(self.enterContext(tempfile.TemporaryDirectory()))
+
+    def test_started_card_never_executes_in_card_tree(self):
+        tmp_path = self.tmp_path
+        calls = []
+        state = {"container": "running", "tmux": True}
+        work = tmp_path / "work" / "worktrees" / "c1"
+        work.mkdir(parents=True)
+        state_dir = tmp_path / "state"
+
+        def runner(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            out = ""
+            if cmd[:2] == ["docker", "pause"]:
+                state["container"] = "paused"
+            elif cmd[:2] == ["docker", "unpause"]:
+                state["container"] = "running"
+            elif cmd[:3] == ["docker", "rm", "-f"]:
+                state["container"] = None
+            elif cmd[:2] == ["docker", "inspect"]:
+                if state["container"] is None:
+                    return subprocess.CompletedProcess(cmd, 1, "", "")
+                out = state["container"]
+            elif cmd[:2] == ["docker", "ps"]:
+                out = f'card-c1\t{state["container"]}\n' if state["container"] else ""
+            elif cmd[:2] == ["tmux", "list-panes"] and state["tmux"]:
+                out = "card-c1\t0\t123\t1\n"
+            elif cmd[:2] == ["tmux", "kill-session"]:
+                state["tmux"] = False
+            return subprocess.CompletedProcess(cmd, 0, out, "")
+
+        sup = ws.Supervisor(
+            {
+                "state_dir": str(state_dir),
+                "work_root": str(tmp_path / "work"),
+                "repo_owner": "Example",
+                "container_runtime": "sysbox",
+            },
+            runner,
+        )
+        rec = {
+            "repo": "repo",
+            "repo_full": "Example/repo",
+            "branch": "card/c1",
+            "path": str(work),
+            "tmux": "card-c1",
+            "container": "card-c1",
+            "state": "running",
+            "agent": "claude",
+            "mode": "interactive",
+        }
+        sup._save({"c1": rec})
+        self.enterContext(
+            patch.object(sup, "_find_pr", lambda *args: ("Example/repo", {"number": 1}))
+        )
+        self.enterContext(patch.object(sup, "_gh_pages", lambda *args, **kwargs: []))
+        self.enterContext(
+            patch.object(
+                sup, "_checks", lambda *args: {"verdict": "green", "head": "a", "failing": []}
+            )
+        )
+        sup.poll_pr("c1", deliver=False)
+        sup.get("c1")
+
+        class Broker:
+            def mint(self, repo, card):
+                return "token", time.time() + 3600
+
+        sup.broker = Broker()
+        sup.refresh_tokens()
+        assert (state_dir / "homes/c1/.config/gh/hosts.yml").exists()
+        sup.pause("c1")
+        sup.resume("c1")
+        rec = sup._load()["c1"]
+        rec.update(mode="protocol", acp_name="card-c1", acp_record_id="12345678")
+        sup._save({"c1": rec})
+        sup.acp_get("c1", history=1)
+        sup.acp_list()
+        sup.stop("c1", grace=0)
+        self.enterContext(patch.object(sup, "_ensure_container", lambda *args: None))
+        rec = sup._load()["c1"]
+        rec["mode"] = "interactive"
+        sup._save({"c1": rec})
+        sup.launch("c1", "claude", "work", resume=True)
+        script = (state_dir / "cards/c1/host/run.sh").read_text()
+        assert f"cd {work}" not in script
+        sup.done("c1")
+
+        roots = (work, state_dir / "homes" / "c1", state_dir / "cards" / "c1" / "data")
+        for cmd, kwargs in calls:
+            # docker exec's -w and its command run inside the container.
+            if cmd[:2] == ["docker", "exec"]:
+                continue
+            cwd = kwargs.get("cwd")
+            assert not cwd or not any(Path(cwd).is_relative_to(root) for root in roots)
+            if cmd and cmd[0] == "git":
+                assert not any(str(root) in arg for root in roots for arg in cmd)
+                assert not any(
+                    str(root) in str(value)
+                    for root in roots
+                    for value in kwargs.get("env", {}).values()
+                )
+            if cmd[:2] == ["tmux", "new-session"] and "-c" in cmd:
+                assert not any(
+                    Path(cmd[cmd.index("-c") + 1]).is_relative_to(root) for root in roots
+                )
+        assert any(cmd[:2] == ["docker", "exec"] for cmd, _ in calls)
+
+    def test_bare_host_launch_and_acp_execute(self):
+        tmp_path = self.tmp_path
+        calls = []
+
+        def runner(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        sup = ws.Supervisor(
+            {"state_dir": str(tmp_path / "state"), "work_root": str(tmp_path)}, runner
+        )
+        work = tmp_path / "worktrees/c1"
+        work.mkdir(parents=True)
+        rec = {"path": str(work), "tmux": "card-c1", "agent": "claude"}
+        sup._save({"c1": rec})
+        self.enterContext(patch.object(sup, "_install_policy", lambda *args: {}))
+        sup.launch("c1", "claude", "work")
+        tmux = next(cmd for cmd, _ in calls if cmd[:2] == ["tmux", "new-session"])
+        assert tmux[tmux.index("-c") + 1] == str(work)
+        script = (tmp_path / "state/cards/c1/host/run.sh").read_text()
+        assert f"cd {work}" in script
+        sup._acp_exec(rec, "c1", ["acpx", "sessions", "show"])
+        cmd, _ = calls[-1]
+        assert cmd[0] == "env"
+        assert f"HOME={tmp_path / 'state/homes/c1'}" in cmd
+        assert cmd[-3:] == ["acpx", "sessions", "show"]
 
 
 if __name__ == "__main__":

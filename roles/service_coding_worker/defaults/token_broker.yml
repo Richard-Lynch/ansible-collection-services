@@ -9,5 +9,8 @@
 # are emitted as the comments in this file.
 # Entrypoint:      token_broker
 
+# Request actions read after granting the App that permission.
+coder_token_broker_actions_read__default: false
+
 # Broker listen port.
 coder_token_broker_listen_port__default: 7693

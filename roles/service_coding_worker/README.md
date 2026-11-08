@@ -207,7 +207,7 @@ and may be removed after checking they are not needed.
 
 Run the broker on a different host from the worker. That host holds the GitHub App private
 key; the worker holds only the broker bearer. The App needs contents and pull requests
-write, checks and statuses read, and implicit metadata read. Each card receives a one-hour token scoped to
+write, checks and statuses read, and implicit metadata read. Actions read is opt-in: grant the App that permission first, then set `coder_token_broker_actions_read: true`. Each card receives a one-hour token scoped to
 its one repository in its gh configuration, refreshed before expiry. Sessiond's own GitHub
 calls use the same per-repository tokens. Without a broker URL, the legacy `worker_github_token`
 is forwarded to cards instead. A compromised worker host can use its broker bearer to request
@@ -250,8 +250,8 @@ user, project and `--settings`, and the card's root can read the file but cannot
 write, remove, unmount or remount it, so a deny cannot be removed from inside
 the card; anything the agent CAN write only adds allows, which a deny still
 beats. A container made before this mount existed (no `hermes.worker.policy`
-label) is recreated at its next launch. Without a container runtime the policy
-is a `--settings` file instead. It is not written into the card HOME: the
+label) is recreated at its next launch. Launch and ACP execution require a
+container runtime. The policy is not written into the card HOME: the
 agent's Claude Code creates `~/.claude` as the container's root, a uid sessiond
 cannot write as.
 
@@ -259,8 +259,8 @@ cannot write as.
 `.git/config` (fsmonitor, hooks, pager, external diff, clean filters), so that
 is the agent's choice of command run as whoever runs git. sessiond runs git only
 at `create`, before the agent exists; read a card's git state by running git
-INSIDE the card's container. `test_worker_sessiond.py` plants a `core.fsmonitor`
-and requires it not to run for any sessiond operation. `{card_branch}` and
+INSIDE the card's container. `test_worker_sessiond.py` checks that PR polling never runs git against a card clone, even when
+its configuration contains commands. `{card_branch}` and
 `{card_worktree}` in a rule become that card's branch and absolute clone path.
 With `worker_claude_permission_mode: dontAsk`, a command the list does not allow
 is DENIED and the agent reads the denial; under `acceptEdits` the same command

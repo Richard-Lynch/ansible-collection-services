@@ -6,6 +6,6 @@
   'private_key_file': '/etc/coder-token-broker/private-key.pem',
   'repo_owner': worker_repo_owner,
   'repos_exclude': worker_repos_exclude | list,
-  'permissions': {'contents': 'write', 'pull_requests': 'write', 'checks': 'read', 'statuses': 'read'},
+  'permissions': ({'contents': 'write', 'pull_requests': 'write', 'checks': 'read', 'statuses': 'read'} | combine({'actions': 'read'} if coder_token_broker_actions_read | bool else {})),
   'api_url': 'https://api.github.com'
 } | to_nice_json }}
