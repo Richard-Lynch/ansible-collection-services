@@ -6,6 +6,9 @@ import io
 import json
 import socket
 import unittest
+from pathlib import Path
+
+import jinja2
 
 import coder_token_broker as broker
 import worker_sessiond as sessiond
@@ -87,6 +90,29 @@ class MintTest(unittest.TestCase):
             },
         )
 
+    def test_config_template_actions_is_opt_in(self):
+        template = Path(__file__).resolve().parents[1] / "templates/coder-token-broker.json.j2"
+        env = jinja2.Environment()
+        env.filters["bool"] = bool
+        env.filters["combine"] = lambda left, right: dict(left, **right)
+        env.filters["to_nice_json"] = json.dumps
+        variables = dict(
+            coder_token_broker_listen_host="localhost",
+            coder_token_broker_listen_port=1,
+            coder_token_broker_app_id="42",
+            worker_repo_owner="Example",
+            worker_repos_exclude=[],
+        )
+        for enabled in (False, True):
+            with self.subTest(enabled=enabled):
+                result = json.loads(
+                    env.from_string(template.read_text()).render(
+                        **variables, coder_token_broker_actions_read=enabled
+                    )
+                )
+                self.assertEqual(result["permissions"].get("actions"), "read" if enabled else None)
+                self.assertEqual(len(result["permissions"]), 5 if enabled else 4)
+
     def test_canonical_repository_casing_and_scope(self):
         self.cfg["repo_owner"] = "owner"
         self.response["repositories"] = [{"name": "Repo", "full_name": "Owner/Repo"}]
@@ -116,14 +142,44 @@ class MintTest(unittest.TestCase):
         self.cfg["permissions"] = {
             "contents": "write",
             "pull_requests": "write",
+            "actions": "read",
             "checks": "read",
             "statuses": "read",
             "administration": "write",
         }
         instance = broker.Broker(self.cfg, http=self.http, sign=lambda key, message: b"signature")
+        with self.assertRaises(broker.RefusedError) as error:
+            instance.mint("repo")
+        self.assertEqual(error.exception.status, 500)
+        self.assertEqual(self.calls, [])
+        self.cfg["permissions"] = {}
+        with self.assertRaises(broker.RefusedError) as error:
+            instance.mint("repo")
+        self.assertEqual(error.exception.status, 500)
+
+    def test_actions_read_is_required_when_configured(self):
+        self.cfg["permissions"] = dict(self.response["permissions"], actions="read")
+        del self.cfg["permissions"]["metadata"]
+        self.response["permissions"]["actions"] = "read"
+        instance = broker.Broker(self.cfg, http=self.http, sign=lambda key, message: b"signature")
+        del self.response["permissions"]["actions"]
         with self.assertRaises(broker.RefusedError):
             instance.mint("repo")
-        self.assertEqual(self.calls, [])
+        self.response["permissions"]["actions"] = "write"
+        with self.assertRaises(broker.RefusedError):
+            instance.mint("repo")
+
+    def test_actions_opt_in_request_and_unconfigured_response(self):
+        base = dict(self.response["permissions"])
+        del base["metadata"]
+        self.cfg["permissions"] = dict(base, actions="read")
+        self.response["permissions"]["actions"] = "read"
+        instance = broker.Broker(self.cfg, http=self.http, sign=lambda key, message: b"signature")
+        instance.mint("repo")
+        self.assertEqual(self.calls[-1][2]["permissions"], self.cfg["permissions"])
+        self.cfg["permissions"] = base
+        with self.assertRaises(broker.RefusedError):
+            instance.mint("repo")
 
     def test_upstream_identity_and_invalid_request_refused(self):
         instance = broker.Broker(self.cfg, http=self.http, sign=lambda key, message: b"signature")

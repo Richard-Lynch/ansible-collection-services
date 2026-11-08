@@ -112,8 +112,10 @@ class Broker:
             "checks": "read",
             "statuses": "read",
         }
-        if self.cfg.get("permissions", permissions) != permissions:
+        configured = self.cfg.get("permissions", permissions)
+        if configured not in (permissions, dict(permissions, actions="read")):
             raise RefusedError("invalid broker permissions", 500)
+        permissions = configured
         try:
             now = int(time.time())
             header = b64(json.dumps({"alg": "RS256", "typ": "JWT"}).encode())

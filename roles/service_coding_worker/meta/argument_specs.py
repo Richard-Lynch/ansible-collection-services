@@ -145,8 +145,8 @@ argument_specs = ArgumentSpecs(
                     default={},
                     description=[
                         "Claude Code settings sessiond writes per card as the container's MANAGED",
-                        "settings (/etc/claude-code, mounted read-only; without a container runtime",
-                        "as a --settings file), OVERWRITTEN at each launch and resume. The",
+                        "settings (/etc/claude-code, mounted read-only), OVERWRITTEN at each",
+                        "launch and resume. The",
                         "permissions allow and deny lists are the card's Bash allowlist; the",
                         "literal text {card_branch} in a rule becomes that card's branch. Empty",
                         "writes nothing. A bypass mode, or an allow rule admitting every Bash",
@@ -535,7 +535,8 @@ argument_specs = ArgumentSpecs(
         "token_broker": ArgumentSpec(
             short_description="Install the per-card token broker",
             description=[
-                "Tokens request contents and pull requests write, checks and statuses read, plus implicit metadata read."
+                "Tokens request contents and pull requests write, checks and statuses read, plus",
+                "implicit metadata read. Actions read is opt-in after granting the App that permission.",
             ],
             version_added="2.1",
             author=DEFAULT_AUTHOR,
@@ -551,6 +552,11 @@ argument_specs = ArgumentSpecs(
                     required=True,
                     no_log=True,
                     description=["Bearer credential for broker clients."],
+                ),
+                "coder_token_broker_actions_read": OptionSpec(
+                    type="bool",
+                    default=False,
+                    description=["Request actions read after granting the App that permission."],
                 ),
                 "coder_token_broker_listen_host": OptionSpec(
                     type="str", required=True, description=["Broker listen address."]

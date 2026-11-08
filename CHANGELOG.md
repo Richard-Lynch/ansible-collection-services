@@ -9,6 +9,17 @@ All notable changes to this collection are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the collection
 uses [Semantic Versioning](https://semver.org/).
 
+## [2.1.2] — 2026-11-08
+
+### Added
+
+- Card tokens can opt in to actions read via coder_token_broker_actions_read.
+
+### Security
+
+- The session daemon no longer runs git against a card's clone after the card starts. It reads the branch head as plain data, so repository configuration written inside a card cannot execute on the host.
+- In container mode nothing the session daemon runs after a card starts uses a card-controlled directory (the clone, the card home or its data) as a working directory or repository: the tmux client starts in a supervisor-owned directory and every command for the card runs inside its container; a fallback directory removal runs in a throwaway container.
+
 ## [2.1.1] — 2026-11-08
 
 ### Fixed

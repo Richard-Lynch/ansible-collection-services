@@ -70,6 +70,7 @@
     worker_acpx_mcp_port: "{{ worker_acpx_mcp_port | default(worker_acpx_mcp_port__default) if worker_acpx_mcp_port__default is defined else worker_acpx_mcp_port | default(omit) }}"
     worker_acpx_mcp_token: "{{ worker_acpx_mcp_token | default(worker_acpx_mcp_token__default) if worker_acpx_mcp_token__default is defined else worker_acpx_mcp_token | default(omit) }}"
     worker_pr_ignore_bots: "{{ worker_pr_ignore_bots | default(worker_pr_ignore_bots__default) if worker_pr_ignore_bots__default is defined else worker_pr_ignore_bots | default(omit) }}"
+    coder_token_broker_actions_read: "{{ coder_token_broker_actions_read | default(coder_token_broker_actions_read__default) if coder_token_broker_actions_read__default is defined else coder_token_broker_actions_read | default(omit) }}"
     coder_token_broker_listen_port: "{{ coder_token_broker_listen_port | default(coder_token_broker_listen_port__default) if coder_token_broker_listen_port__default is defined else coder_token_broker_listen_port | default(omit) }}"
   when: not (_service_coding_worker__argspec_resolved | default(false))
   # At least one option carries no_log, and set_fact would otherwise print every
@@ -122,6 +123,7 @@
     worker_acpx_mcp_port: "{{ worker_acpx_mcp_port__default if worker_acpx_mcp_port__default is defined else worker_acpx_mcp_port | default(omit) }}"
     worker_acpx_mcp_token: "{{ worker_acpx_mcp_token__default if worker_acpx_mcp_token__default is defined else worker_acpx_mcp_token | default(omit) }}"
     worker_pr_ignore_bots: "{{ worker_pr_ignore_bots__default if worker_pr_ignore_bots__default is defined else worker_pr_ignore_bots | default(omit) }}"
+    coder_token_broker_actions_read: "{{ coder_token_broker_actions_read__default if coder_token_broker_actions_read__default is defined else coder_token_broker_actions_read | default(omit) }}"
     coder_token_broker_listen_port: "{{ coder_token_broker_listen_port__default if coder_token_broker_listen_port__default is defined else coder_token_broker_listen_port | default(omit) }}"
   when: _service_coding_worker__argspec_resolved | default(false)
   # At least one option carries no_log, and set_fact would otherwise print every

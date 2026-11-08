@@ -42,8 +42,8 @@ API (bearer token on everything except /healthz; JSON in, JSON out):
 Container mode: when ``container_runtime`` is set, the
 agent does NOT run on the VM. ``launch`` creates one ``--runtime=sysbox-runc`` container per card,
 mounting only that card's own clone (never the host repo's gitdir) and its data dirs, and the tmux session ``card-<id>`` only runs ``docker exec -it`` into it. tmux is the
-viewing layer; the container is the sandbox. With ``container_runtime`` unset the supervisor behaves
-as it did before (agent directly under tmux), which the unit tests still exercise.
+viewing layer; the container is the sandbox. With ``container_runtime`` unset the agent runs on the
+host directly under tmux or via ACP; bare-host mode does not provide a sandbox.
 
 Anything that decides is a pure function (``validate_card_id``, ``resolve_mcp``, ``scrub``,
 ``reconcile_records``, ``process_tree``), so the tests exercise the decision rather than a mock of
@@ -61,6 +61,7 @@ import re
 import shlex
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -478,8 +479,7 @@ def plan_image(worktree: Path, default_image: str, card: str) -> dict:
     return {"image": default_image, "source": "default"}
 
 
-# Host-side git on a path a container can write must not run anything that path supplies: no hooks,
-# no fsmonitor, no external protocols. (The card's clone config is written by the container's root.)
+# Defense in depth for create-time git, before the card can modify its clone.
 SAFE_GIT = [
     "-c",
     "core.hooksPath=/dev/null",
@@ -488,6 +488,58 @@ SAFE_GIT = [
     "-c",
     "protocol.ext.allow=never",
 ]
+
+
+def card_branch_head(path: str, branch: str) -> Optional[str]:
+    """Read a card's ref as untrusted data, without following any card-controlled symlinks."""
+    validate_branch(branch)
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    fds: list[int] = []
+
+    def read_file(parts: list[str], limit: int) -> bytes:
+        fd = fds[1]  # .git, opened as a directory without following symlinks
+        opened = []
+        try:
+            for part in parts[:-1]:
+                fd = os.open(part, directory_flags, dir_fd=fd)
+                opened.append(fd)
+            file_fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+            opened.append(file_fd)
+            if not stat.S_ISREG(os.fstat(file_fd).st_mode):
+                raise ValueError("ref is not a regular file")
+            data = b""
+            while len(data) <= limit:
+                chunk = os.read(file_fd, limit + 1 - len(data))
+                if not chunk:
+                    break
+                data += chunk
+            if len(data) > limit:
+                raise ValueError("ref exceeds size limit")
+            return data
+        finally:
+            for item in reversed(opened):
+                os.close(item)
+
+    try:
+        fds.append(os.open(path, directory_flags))
+        fds.append(os.open(".git", directory_flags, dir_fd=fds[0]))
+        try:
+            data = read_file(["refs", "heads", *branch.split("/")], 4096)
+            value = data.strip().decode("ascii")
+        except FileNotFoundError:
+            data = read_file(["packed-refs"], 1024 * 1024)
+            target = b"refs/heads/" + branch.encode("ascii")
+            matches = [
+                line.split(b" ") for line in data.splitlines() if not line.startswith((b"#", b"^"))
+            ]
+            values = [parts[0] for parts in matches if len(parts) == 2 and parts[1] == target]
+            value = values[0].decode("ascii") if len(values) == 1 else ""
+        return value if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", value) else None
+    except (OSError, ValueError, UnicodeError):
+        return None
+    finally:
+        for fd in reversed(fds):
+            os.close(fd)
 
 
 def safe_write(base: Path, path: Path, text: str, mode: int = 0o600) -> None:
@@ -2016,7 +2068,7 @@ class Supervisor:
             body = [
                 "#!/usr/bin/env bash",
                 "set -u",
-                f"cd {shlex.quote(rec['path'])}",
+                *([] if self.runtime else [f"cd {shlex.quote(rec['path'])}"]),
                 *self._env_source_lines(),
                 *env_lines,
                 f"echo {shlex.quote('worker-sessiond: starting ' + agent + ' for card ' + card)}",
@@ -2031,7 +2083,7 @@ class Supervisor:
                     "-s",
                     rec["tmux"],
                     "-c",
-                    rec["path"],
+                    str(host_dir) if self.runtime else rec["path"],
                     f"bash {shlex.quote(str(script))}",
                 ]
             )
@@ -2351,20 +2403,7 @@ class Supervisor:
 
     def _find_pr(self, rec: dict, card: str) -> tuple[str, dict]:
         slug = rec.get("repo_full") or f"{self.cfg['repo_owner']}/{rec['repo']}"
-        result = self.run(
-            [
-                "git",
-                *SAFE_GIT,
-                "-C",
-                rec["path"],
-                "rev-parse",
-                "--verify",
-                rec["branch"] + "^{commit}",
-            ]
-        )
-        sha = (result.stdout or "").strip()
-        if result.returncode or not re.fullmatch(r"[0-9a-fA-F]{40,64}", sha):
-            raise RefusedError("could not resolve card branch commit", 500)
+        sha = card_branch_head(rec["path"], rec["branch"])
         prs = self._gh_json(
             [
                 "pr",
@@ -2392,7 +2431,7 @@ class Supervisor:
                 and owner["login"].casefold() == self.cfg["repo_owner"].casefold()
                 and pr.get("isCrossRepository") is False
                 and pr.get("headRefName") == rec["branch"]
-                and pr.get("headRefOid", "").lower() == sha.lower()
+                and (sha is None or pr.get("headRefOid", "").lower() == sha)
             ):
                 return slug, pr
         raise RefusedError(f"no open pull request for branch {rec['branch']}", 404)
