@@ -9,7 +9,13 @@
 # are emitted as the comments in this file.
 # Entrypoint:      main
 
-# Repos live at work_root/name; worktrees at work_root/worktrees/card.
+# Optional repository base branch overrides.
+worker_repo_base_branches__default: {}
+
+# GitHub host for repository URLs.
+worker_github_host__default: github.com
+
+# Repos live at work_root/repos/name; worktrees at work_root/worktrees/card.
 worker_work_root__default: /srv/work
 
 # Claude Code permission mode for card sessions. dontAsk DENIES anything
@@ -31,6 +37,15 @@ worker_claude_settings__default: {}
 # Must stay false. The worker authenticates with its LiteLLM key only;
 # the role refuses true so a personal login cannot become a dependency.
 worker_subscription_login__default: false
+
+# Legacy GitHub token, used only without a broker.
+worker_github_token__default: ''
+
+# Token broker URL; empty selects legacy mode.
+worker_token_broker_url__default: ''
+
+# Bearer credential for the token broker.
+worker_token_broker_bearer__default: ''
 
 # Extra NAME to value pairs for the agent environment: the credentials MCP
 # catalogue entries refer to. Names are upper-case with underscores.

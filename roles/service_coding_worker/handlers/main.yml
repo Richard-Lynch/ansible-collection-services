@@ -26,3 +26,8 @@
     name: worker-acpx-mcp
     state: restarted
   when: worker_acp_enabled | bool
+
+- name: Restart coder-token-broker
+  ansible.builtin.systemd:
+    name: coder-token-broker
+    state: restarted

@@ -1,0 +1,13 @@
+---
+# AUTO-GENERATED defaults file — DO NOT EDIT.
+#
+# Source of truth: roles/service_coding_worker/meta/argument_specs.py
+# Regenerate:      venv/bin/python tools/argspec/cli.py x generate service_coding_worker
+#
+# Edits here are silently overwritten on the next generation. To change a value or its
+# documentation, change the OptionSpec in the source file above — descriptions there
+# are emitted as the comments in this file.
+# Entrypoint:      token_broker
+
+# Broker listen port.
+coder_token_broker_listen_port__default: 7693

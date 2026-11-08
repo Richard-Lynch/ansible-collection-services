@@ -30,7 +30,7 @@
           - >-
             _gate_out.refused | sort == ['bad-node-checksum', 'default-not-in-catalogue',
             'floating-claude', 'http-header-mixed-value', 'literal-mcp-secret', 'not-x86',
-            'path-traversal-repo-name', 'ssh-repo-url', 'stdio-env-other-name',
+            'missing-github-credential', 'broker-invalid-url', 'broker-missing-bearer', 'stdio-env-other-name',
             'subscription-login', 'unreviewed-mcp', 'accept-env-path', 'accept-env-lowercase', 'extra-key-private',
             'runtime-runc', 'sysbox-checksum-short', 'sysbox-version-floating', 'memory-unitless', 'memory-zero',
             'cpus-zero', 'reserve-too-small', 'claude-bypass-mode', 'claude-skip-prompt',
@@ -44,7 +44,7 @@
     - name: Slurp each variant's rendered artifacts
       ansible.builtin.slurp:
         src: "{{ render_root }}/{{ item.0 }}/{{ item.1 }}"
-      loop: "{{ ['loopback', 'lan'] | product(['sessiond.json', 'codex_base.toml', 'worker-sessiond.service', 'worker-ttyd.service', 'worker-acpx-mcp.service', 'derived.json', 'tmux.conf', 'worker-metrics.service', 'worker-metrics.timer', 'sshd-worker-env.conf', 'docker-daemon.json', 'card-image.Dockerfile', 'card-firewall.nft']) | list }}"
+      loop: "{{ ['loopback', 'lan'] | product(['agent.env', 'sessiond.json', 'codex_base.toml', 'worker-sessiond.service', 'worker-ttyd.service', 'worker-acpx-mcp.service', 'derived.json', 'tmux.conf', 'worker-metrics.service', 'worker-metrics.timer', 'sshd-worker-env.conf', 'docker-daemon.json', 'card-image.Dockerfile', 'card-firewall.nft']) | list }}"
       register: _art
       loop_control:
         label: "{{ item.0 }}/{{ item.1 }}"
@@ -66,7 +66,8 @@
         that:
           - cfg_lo.mcp_catalogue | map(attribute='name') | list == ['grafana-ro', 'runner']
           - cfg_lo.mcp_default_enabled == ['runner']
-          - cfg_lo.repos[0].name == 'lab'
+          - cfg_lo.repo_owner == 'example-org'
+          - cfg_lo.repos_exclude == []
           - cfg_lo.agent_env_file == '/etc/worker/agent.env'
           - cfg_lo.card_tail_enabled == false
           - cfg_lan.card_tail_enabled == true
@@ -156,6 +157,17 @@
           - "'hook forward' not in art['lan/card-firewall.nft']"
           - docker_cfg.runtimes['sysbox-runc'].path == '/usr/bin/sysbox-runc'
           - "'live-restore' not in docker_cfg"
+        quiet: true
+
+    - name: ASSERT — broker and legacy authentication render correctly
+      ansible.builtin.assert:
+        that:
+          - cfg_lan.token_broker_url == 'http://broker:7693'
+          - cfg_lan.token_broker_bearer_file == '/etc/worker/token-broker.bearer'
+          - cfg_lo.token_broker_url == ''
+          - cfg_lo.token_broker_bearer_file == ''
+          - art['lan/agent.env'] is not search('(?m)^GH_TOKEN=')
+          - art['loopback/agent.env'] is search('(?m)^GH_TOKEN=')
         quiet: true
 
     - name: ASSERT — the default card image is a sandbox base with Docker and no baked-in agent or credential

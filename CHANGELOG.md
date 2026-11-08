@@ -9,6 +9,27 @@ All notable changes to this collection are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the collection
 uses [Semantic Versioning](https://semver.org/).
 
+## [2.1.0] — 2026-11-08
+
+### Added
+
+- `service_coding_worker` entry point `token_broker`: a small HTTP service, run on a host other than the worker, that holds a GitHub App private key and mints a one-hour installation token scoped to ONE repository (`contents: write`, `pull_requests: write`) for each card. It refuses repositories outside the configured owner or on the exclude list, refuses a token GitHub returns with broader permissions or repositories than asked for, and logs every mint with its card and repository (never the token).
+- `worker_token_broker_url` / `worker_token_broker_bearer`: with a broker configured, sessiond mints a token per card for that card's repository, writes it to the card container's gh configuration (0600), refreshes it before it expires, and uses the same per-repository tokens for its own GitHub calls. No `GH_TOKEN` is written to the agent environment or forwarded into a container.
+
+### Changed
+
+- Repositories are an owner namespace (`worker_repo_owner`) with a required explicit exclude list (`worker_repos_exclude`) and per-repository base branch overrides (`worker_repo_base_branches`); sessiond clones a repository on demand the first time a card names it and fetches it on every later card, so each card branches from the current remote base. Names outside the owner (including near-miss owners), path-like names and excluded names are refused.
+- `worker_github_token` is optional: it is the legacy credential, used only when no broker is configured.
+
+### Removed
+
+- **Breaking:** `worker_repos` and the converge-time clone of each listed repository. Set `worker_repo_owner` and `worker_repos_exclude` (and, where needed, `worker_repo_base_branches`) instead.
+
+### Security
+
+- Every agent start installs the managed Claude policy; containers refuse to start when it is missing. Card branches must stay in their own namespace and cannot be base branches. The broker validates repository identities independently and verifies upstream identity.
+- With a broker, a card can push only to its own repository, for at most an hour, and the App private key is never on the worker host. The worker's broker bearer can still request a token for any repository in the namespace, so it is the worker's credential: keep it 0600 and watch the broker's mint log. Shared caches now live under work_root/repos; old caches are no longer used. Tokens include checks and statuses read, and refresh independently of PR polling. PR feedback is limited to the card branch commit in the same repository.
+
 ## [2.0.1] — 2026-11-05
 
 ### Fixed

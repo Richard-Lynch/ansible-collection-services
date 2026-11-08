@@ -66,6 +66,8 @@ import sys
 import threading
 import time
 import uuid
+import urllib.request
+from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -98,6 +100,78 @@ class RefusedError(Exception):
     def __init__(self, message: str, status: int = 400):
         super().__init__(message)
         self.status = status
+
+
+class BrokerClient:
+    def __init__(self, url: str, bearer_file: str, opener=None):
+        self.url = url.rstrip("/")
+        self.bearer_file = bearer_file
+        self.opener = opener or urllib.request.urlopen
+
+    def mint(self, repo_full: str, card: Optional[str] = None) -> tuple[str, float]:
+        try:
+            bearer = Path(self.bearer_file).read_text().strip()
+            if not bearer:
+                raise ValueError()
+            req = urllib.request.Request(
+                self.url + "/v1/token",
+                data=json.dumps({"repo": repo_full, "card": card}).encode(),
+                headers={"Authorization": "Bearer " + bearer, "Content-Type": "application/json"},
+                method="POST",
+            )
+            with self.opener(req, timeout=15) as response:
+                doc = json.load(response)
+            token, expiry, repo = doc["token"], doc["expires_at"], doc["repo"]
+            if (
+                not isinstance(token, str)
+                or not token.strip()
+                or not isinstance(repo, str)
+                or repo.casefold() != repo_full.casefold()
+            ):
+                raise ValueError()
+            if not isinstance(expiry, str) or not expiry.endswith("Z"):
+                raise ValueError()
+            exp = datetime.fromisoformat(expiry[:-1] + "+00:00").timestamp()
+            return token, exp
+        except Exception:
+            raise RefusedError("token broker: request or response failed", 502) from None
+
+
+def resolve_repo(cfg: dict, repo: Any) -> tuple[str, str]:
+    """Resolve a repository within the configured owner namespace."""
+    # Deliberate installation choice: namespace plus an explicit exclude list.
+    owner = cfg.get("repo_owner", "")
+    message = f"repository is not permitted in owner namespace {owner}"
+    if (
+        not isinstance(repo, str)
+        or not isinstance(owner, str)
+        or not re.fullmatch(r"[A-Za-z0-9-]+", owner)
+    ):
+        raise RefusedError(message, 422)
+    parts = repo.split("/")
+    if len(parts) == 2:
+        if not re.fullmatch(r"[A-Za-z0-9-]+", parts[0]) or parts[0].casefold() != owner.casefold():
+            raise RefusedError(message, 422)
+        name = parts[1]
+    elif len(parts) == 1:
+        name = parts[0]
+    else:
+        raise RefusedError(message, 422)
+    if (
+        not re.fullmatch(r"[A-Za-z0-9._-]{1,100}", name)
+        or ".." in name
+        or name.startswith((".", "-"))
+        or name.lower().endswith(".git")
+    ):
+        raise RefusedError(message, 422)
+    for excluded in cfg.get("repos_exclude", []):
+        if not isinstance(excluded, str):
+            continue
+        pieces = excluded.split("/")
+        if len(pieces) == 1 or (len(pieces) == 2 and pieces[0].casefold() == owner.casefold()):
+            if pieces[-1].casefold() == name.casefold():
+                raise RefusedError(message, 422)
+    return name, f"https://{cfg.get('github_host', 'github.com')}/{owner}/{name}.git"
 
 
 def validate_card_id(card_id: Any) -> str:
@@ -1269,6 +1343,13 @@ class Supervisor:
         self.work_root = Path(config["work_root"])
         self.sessions_file = self.state_dir / "sessions.json"
         self.lock = threading.RLock()
+        self.token_lock = threading.Lock()
+        self.token_cache: dict[str, tuple[str, float]] = {}
+        self.broker = (
+            BrokerClient(config["token_broker_url"], config.get("token_broker_bearer_file", ""))
+            if config.get("token_broker_url")
+            else None
+        )
         self.state_dir.mkdir(parents=True, exist_ok=True)
         # Container mode. Unset runtime = the agent runs directly under tmux, as before.
         self.runtime: str = config.get("container_runtime") or ""
@@ -1392,6 +1473,11 @@ class Supervisor:
         lost); a stopped one is started; a paused one is refused (that is ``resume``'s job).
         After either, the runtime is READ BACK: a container that quietly came up under ``runc``
         looks identical until the first nested ``docker run`` fails."""
+        if (
+            self.cfg.get("claude_settings")
+            and not (self.state_dir / "cards" / card / "policy" / MANAGED_FILE).is_file()
+        ):
+            raise RefusedError("managed policy is missing", 500)
         name = rec["container"]
         st = self.container_status(name)
         if st == "paused":
@@ -1638,64 +1724,210 @@ class Supervisor:
             "default_enabled": list(self.cfg.get("mcp_default_enabled", [])),
         }
 
+    def _token_for(self, repo_full: str, card: Optional[str] = None) -> Optional[str]:
+        if self.broker:
+            with self.token_lock:
+                cached = self.token_cache.get(repo_full.casefold())
+                if not cached or cached[1] - time.time() <= 900:
+                    cached = self.broker.mint(repo_full, card)
+                    self.token_cache[repo_full.casefold()] = cached
+                return cached[0]
+        f = self.cfg.get("agent_env_file")
+        if not f:
+            return None
+        r = self.run(
+            ["bash", "-c", 'unset GH_TOKEN; set -a; . "$0"; printf "%s" "${GH_TOKEN-}"', f]
+        )
+        if r.returncode:
+            raise RefusedError("could not read agent environment", 500)
+        return r.stdout or None
+
+    def _git_env(
+        self, repo_full: str, card: Optional[str] = None
+    ) -> tuple[list[str], dict[str, str]]:
+        env = os.environ.copy()
+        token = self._token_for(repo_full, card)
+        env.pop("WORKER_GIT_TOKEN", None)
+        if not token:
+            return [], env
+        env["WORKER_GIT_TOKEN"] = token
+        return [
+            "-c",
+            "credential.helper=",
+            "-c",
+            'credential.helper=!f() { echo username=x-access-token; echo "password=$WORKER_GIT_TOKEN"; }; f',
+        ], env
+
+    def _repo_full(self, rec: dict) -> str:
+        return rec.get("repo_full") or f"{self.cfg['repo_owner']}/{rec['repo']}"
+
+    def _install_token(self, card: str, rec: dict) -> None:
+        if not self.broker or not self.runtime:
+            return
+        repo = self._repo_full(rec)
+        with self.token_lock:
+            cached = self.token_cache.get(repo.casefold())
+            if not cached or cached[1] - time.time() <= 900:
+                cached = self.broker.mint(repo, card)
+                self.token_cache[repo.casefold()] = cached
+            token, expiry = cached
+        home = self.state_dir / "homes" / card
+        homes = self.state_dir / "homes"
+        if homes.is_symlink():
+            raise RefusedError("card homes directory is a symlink", 500)
+        homes.mkdir(exist_ok=True, mode=0o700)
+        if home.is_symlink():
+            raise RefusedError("card home is a symlink", 500)
+        home.mkdir(exist_ok=True, mode=0o700)
+        directory = home
+        for part in (".config", "gh"):
+            directory = directory / part
+            if directory.is_symlink():
+                raise RefusedError("card configuration directory is a symlink", 500)
+            directory.mkdir(exist_ok=True, mode=0o700)
+        safe_write(
+            home,
+            directory / "hosts.yml",
+            "github.com:\n    oauth_token: "
+            + json.dumps(token)
+            + "\n    user: x-access-token\n    git_protocol: https\n",
+        )
+        rec["token_expires_at"] = expiry
+
+    def refresh_tokens(self) -> None:
+        if not self.broker or not self.runtime:
+            return
+        with self.lock:
+            records = self._load()
+            changed = False
+            for card, rec in records.items():
+                if not rec.get("container") or self.container_status(rec["container"]) not in (
+                    "running",
+                    "paused",
+                ):
+                    continue
+                if rec.get("token_expires_at", 0) - time.time() > 900:
+                    continue
+                try:
+                    self._install_token(card, rec)
+                    changed = True
+                except Exception:
+                    sys.stderr.write("token broker: refresh failed\n")
+            if changed:
+                self._save(records)
+
     # -- writes
     def create(self, card_id: Any, repo: Any, branch: Any = None) -> dict:
         card = validate_card_id(card_id)
-        repos = {r["name"]: r for r in self.cfg.get("repos", [])}
-        if not isinstance(repo, str) or repo not in repos:
-            raise RefusedError(f"repo {repo!r} is not one this worker is configured for", 422)
+        name, url = resolve_repo(self.cfg, repo)
+        repo_full = f"{self.cfg['repo_owner']}/{name}"
         branch = validate_branch(branch if branch else f"card/{card}")
         with self.lock:
             records = self._load()
             if card in records:
                 raise RefusedError(f"card {card} already has a session (one session per card)", 409)
-            src = self.work_root / repo
+            src = self.work_root / "repos" / name
             dest = self.work_root / "worktrees" / card
-            if dest.exists():
+            if dest.exists() or dest.is_symlink():
                 raise RefusedError(
                     "worktree path exists on disk but not in sessions.json; refusing to reuse it",
                     409,
                 )
-            base = repos[repo].get("base_branch", "main")
-            # The card's OWN clone, copied (--no-hardlinks) so nothing in it shares an inode with
-            # the host repo, and made with hooks/fsmonitor off. The container only ever sees this.
-            url = repos[repo].get("url", "")
-            steps = [
-                [
-                    "git",
-                    *SAFE_GIT,
-                    "clone",
-                    "--no-hardlinks",
-                    "--branch",
-                    base,
-                    str(src),
-                    str(dest),
-                ],
-                ["git", *SAFE_GIT, "-C", str(dest), "checkout", "-b", branch],
-            ]
-            if url:
-                steps.append(
-                    ["git", *SAFE_GIT, "-C", str(dest), "remote", "set-url", "origin", url]
+            token = None
+            try:
+                args, env = self._git_env(repo_full, card)
+                token = env.get("WORKER_GIT_TOKEN")
+
+                def git(cmd: list[str], authenticated: bool = False) -> str:
+                    argv = ["git", *SAFE_GIT, *(args if authenticated else []), *cmd]
+                    r = self.run(argv, env=env) if authenticated else self.run(argv)
+                    if r.returncode:
+                        detail = r.stderr or ""
+                        if token:
+                            detail = detail.replace(token, "[REDACTED]")
+                        raise RefusedError("git failed: " + scrub(detail.strip())[:300], 500)
+                    return r.stdout or ""
+
+                src.parent.mkdir(parents=True, exist_ok=True)
+                if src.exists():
+                    git(["-C", str(src), "fetch", "--prune", "origin"], True)
+                else:
+                    git(["clone", url, str(src)], True)
+                base = self.cfg.get("repo_base_branches", {}).get(name)
+                if not base:
+                    output = git(["-C", str(src), "ls-remote", "--symref", "origin", "HEAD"], True)
+                    match = re.search(r"(?m)^ref: refs/heads/([^\s]+)\s+HEAD$", output)
+                    if not match:
+                        raise RefusedError("could not determine remote default branch", 500)
+                    base = match.group(1)
+                if (
+                    branch == base
+                    or branch in self.cfg.get("repo_base_branches", {}).values()
+                    or not (branch == f"card/{card}" or branch.startswith(f"card/{card}/"))
+                ):
+                    raise RefusedError(
+                        "branch is outside the card namespace or is a base branch", 422
+                    )
+                sha = git(
+                    [
+                        "-C",
+                        str(src),
+                        "rev-parse",
+                        "--verify",
+                        f"refs/remotes/origin/{base}^{{commit}}",
+                    ]
+                ).strip()
+                if not re.fullmatch(r"[0-9a-fA-F]{40,64}", sha):
+                    raise RefusedError("could not resolve remote base commit", 500)
+                git(["clone", "--no-hardlinks", str(src), str(dest)])
+                git(
+                    [
+                        "-C",
+                        str(dest),
+                        "fetch",
+                        "--no-tags",
+                        str(src),
+                        "+refs/remotes/origin/*:refs/remotes/origin/*",
+                    ]
                 )
-            for cmd in steps:
-                r = self.run(cmd)
-                if r.returncode != 0:
-                    shutil.rmtree(dest, ignore_errors=True)
-                    raise RefusedError("git clone failed: " + scrub(r.stderr.strip())[:300], 500)
-            rec = {
-                "state": "created",
-                "repo": repo,
-                "branch": branch,
-                "path": str(dest),
-                "mode": "interactive",
-                "tmux": f"{self.prefix}{card}",
-                "created": time.time(),
-            }
-            if self.runtime:
-                rec["container"] = f"{self.prefix}{card}"
-            records[card] = rec
-            self._save(records)
-            return dict(card_id=card, **rec)
+                git(["-C", str(dest), "checkout", "-b", branch, sha])
+                if (
+                    git(["-C", str(dest), "status", "--porcelain"]).strip()
+                    or git(["-C", str(dest), "rev-parse", "HEAD"]).strip().lower() != sha.lower()
+                ):
+                    raise RefusedError("card checkout does not match the clean base commit", 500)
+                git(["-C", str(dest), "remote", "set-url", "origin", url])
+                rec = {
+                    "state": "created",
+                    "repo": name,
+                    "repo_full": repo_full,
+                    "branch": branch,
+                    "path": str(dest),
+                    "mode": "interactive",
+                    "tmux": f"{self.prefix}{card}",
+                    "created": time.time(),
+                }
+                if self.runtime:
+                    rec["container"] = f"{self.prefix}{card}"
+                records[card] = rec
+                self._save(records)
+                return dict(card_id=card, **rec)
+            except Exception as exc:
+                shutil.rmtree(dest, ignore_errors=True)
+                if isinstance(exc, RefusedError) and exc.status in (422, 500, 502):
+                    raise
+                detail = str(exc)
+                if token:
+                    detail = detail.replace(token, "[REDACTED]")
+                raise RefusedError("git setup failed: " + scrub(detail)[:300], 500) from exc
+
+    def _install_policy(self, card: str, rec: dict) -> Optional[dict]:
+        policy = card_claude_settings(self.cfg.get("claude_settings"), rec["branch"], rec["path"])
+        if self.runtime:
+            policy_dir = self.state_dir / "cards" / card / "policy"
+            policy_dir.mkdir(parents=True, exist_ok=True, mode=0o755)
+            write_managed_settings(policy_dir, policy)
+        return policy
 
     def launch(
         self, card: str, agent: Any, prompt: Any, mcp: Any = None, resume: bool = False
@@ -1733,9 +1965,11 @@ class Supervisor:
                     "a tmux session for this card is already live (one session per card)",
                     409,
                 )
+            policy = self._install_policy(card, rec)
             if self.runtime:
                 if rec.get("state") == "paused":
                     raise RefusedError("the card is paused; use resume", 409)
+                self._install_token(card, rec)
                 rec.setdefault("container", f"{self.prefix}{card}")
                 self._ensure_container(card, rec, records)
             # host/ holds what THIS process writes and EXECUTES (run.sh, the prompt) and is never
@@ -1755,15 +1989,9 @@ class Supervisor:
                     data_dir / "servers.json",
                     json.dumps(render_claude_mcp(entries), indent=2),
                 )
-                # The permission policy, rewritten on every launch and resume.
-                policy = card_claude_settings(
-                    self.cfg.get("claude_settings"), rec["branch"], rec["path"]
-                )
                 session_id = rec.get("agent_session_id") or str(uuid.uuid4())
                 argv = ["claude", "--mcp-config", f"{seen_dir}/servers.json", "--strict-mcp-config"]
-                if self.runtime:
-                    write_managed_settings(card_root / "policy", policy)
-                elif write_card_settings(data_dir, policy):
+                if not self.runtime and write_card_settings(data_dir, policy):
                     argv += ["--settings", f"{seen_dir}/{CARD_SETTINGS_FILE}"]
                 perm = self.cfg.get("claude_permission_mode")
                 if perm and perm != "default":
@@ -1836,6 +2064,8 @@ class Supervisor:
                 names = env_names(Path(f).read_text())
             except OSError:
                 names = []  # run.sh already fails loudly when the file is unreadable
+        if self.broker:
+            names = [n for n in names if n not in ("GH_TOKEN", "GITHUB_TOKEN")]
         names = names + (["CODEX_HOME"] if "CODEX_HOME" not in names else [])
         out = ["docker", "exec", "-it", "-w", rec["path"]]
         for n in names:
@@ -1988,6 +2218,8 @@ class Supervisor:
             if state == "created":
                 raise RefusedError("the card was never launched; launch it", 409)
             if state == "paused" and self.tmux_live().get(rec["tmux"]) is not None:
+                self._install_policy(card, rec)
+                self._install_token(card, rec)
                 r = self.run(["docker", "unpause", rec["container"]])
                 st = self.container_status(rec["container"])
                 if r.returncode != 0 or st != "running":
@@ -2064,16 +2296,32 @@ class Supervisor:
             }
 
     # -- the GitHub PR loop
-    def _gh(self, args: list[str]) -> "subprocess.CompletedProcess[str]":
+    def _gh(
+        self, args: list[str], repo_full: Optional[str] = None, card: Optional[str] = None
+    ) -> "subprocess.CompletedProcess[str]":
         """gh with the agent environment's GH_TOKEN, sourced in a child shell so the token is not in
         sessiond's own environment (tmux and every child inherit that) and not on a command line."""
+        if self.broker:
+            env = os.environ.copy()
+            env.pop("GITHUB_TOKEN", None)
+            env["GH_TOKEN"] = self._token_for(repo_full, card)
+            result = self.run(["gh", *args], env=env)
+            if result.stderr:
+                result.stderr = result.stderr.replace(env["GH_TOKEN"], "[REDACTED]")
+            return result
         f = self.cfg.get("agent_env_file")
         if not f:
             return self.run(["gh", *args])
         return self.run(["bash", "-c", 'set -a; . "$0"; set +a; exec gh "$@"', f, *args])
 
-    def _gh_json(self, args: list[str], what: str) -> Any:
-        r = self._gh(args)
+    def _gh_json(
+        self,
+        args: list[str],
+        what: str,
+        repo_full: Optional[str] = None,
+        card: Optional[str] = None,
+    ) -> Any:
+        r = self._gh(args, repo_full, card) if self.broker else self._gh(args)
         if r.returncode != 0:
             raise RefusedError(f"gh {what} failed: " + scrub(r.stderr.strip())[:300], 502)
         try:
@@ -2081,10 +2329,16 @@ class Supervisor:
         except ValueError:
             raise RefusedError(f"gh {what} did not return JSON", 502)
 
-    def _gh_pages(self, endpoint: str, what: str) -> list:
+    def _gh_pages(
+        self, endpoint: str, what: str, repo_full: Optional[str] = None, card: Optional[str] = None
+    ) -> list:
         # No --slurp: it arrived in gh 2.48 and Ubuntu 24.04's gh is 2.45, which refuses the flag,
         # so every PR poll would fail with "unknown flag: --slurp". --paginate alone prints each page's array back to back.
-        r = self._gh(["api", "--paginate", endpoint])
+        r = (
+            self._gh(["api", "--paginate", endpoint], repo_full, card)
+            if self.broker
+            else self._gh(["api", "--paginate", endpoint])
+        )
         if r.returncode != 0:
             raise RefusedError(f"gh {what} failed: " + scrub(r.stderr.strip())[:300], 502)
         pages = json_pages(r.stdout or "")
@@ -2095,9 +2349,22 @@ class Supervisor:
             flat.extend(page if isinstance(page, list) else [page])
         return flat
 
-    def _find_pr(self, rec: dict) -> tuple[str, dict]:
-        repos = {r["name"]: r for r in self.cfg.get("repos", [])}
-        slug = repo_slug(repos.get(rec["repo"], {}).get("url", ""))
+    def _find_pr(self, rec: dict, card: str) -> tuple[str, dict]:
+        slug = rec.get("repo_full") or f"{self.cfg['repo_owner']}/{rec['repo']}"
+        result = self.run(
+            [
+                "git",
+                *SAFE_GIT,
+                "-C",
+                rec["path"],
+                "rev-parse",
+                "--verify",
+                rec["branch"] + "^{commit}",
+            ]
+        )
+        sha = (result.stdout or "").strip()
+        if result.returncode or not re.fullmatch(r"[0-9a-fA-F]{40,64}", sha):
+            raise RefusedError("could not resolve card branch commit", 500)
         prs = self._gh_json(
             [
                 "pr",
@@ -2109,19 +2376,31 @@ class Supervisor:
                 "--state",
                 "open",
                 "--json",
-                "number,url,isDraft,headRefOid",
+                "number,url,isDraft,headRefName,headRefOid,headRepositoryOwner,isCrossRepository",
                 "--limit",
                 "5",
             ],
             "pr list",
+            **({"repo_full": slug, "card": card} if self.broker else {}),
         )
-        if not isinstance(prs, list) or not prs:
-            raise RefusedError(f"no open pull request for branch {rec['branch']}", 404)
-        return slug, prs[0]
+        for pr in prs if isinstance(prs, list) else []:
+            owner = pr.get("headRepositoryOwner") or {}
+            if (
+                isinstance(owner, dict)
+                and isinstance(owner.get("login"), str)
+                and owner["login"].isascii()
+                and owner["login"].casefold() == self.cfg["repo_owner"].casefold()
+                and pr.get("isCrossRepository") is False
+                and pr.get("headRefName") == rec["branch"]
+                and pr.get("headRefOid", "").lower() == sha.lower()
+            ):
+                return slug, pr
+        raise RefusedError(f"no open pull request for branch {rec['branch']}", 404)
 
-    def _checks(self, slug: str, pr: dict) -> dict:
+    def _checks(self, slug: str, pr: dict, card: str) -> dict:
         r = self._gh(
-            ["pr", "checks", str(pr["number"]), "--repo", slug, "--json", "name,bucket,link"]
+            ["pr", "checks", str(pr["number"]), "--repo", slug, "--json", "name,bucket,link"],
+            **({"repo_full": slug, "card": card} if self.broker else {}),
         )
         rows: Any
         if r.stdout.strip():
@@ -2160,17 +2439,29 @@ class Supervisor:
             rec = records.get(card)
             if rec is None:
                 raise RefusedError("no such session", 404)
-            slug, pr = self._find_pr(rec)
+            slug, pr = self._find_pr(rec, card)
             n = pr["number"]
             items = review_items(
-                self._gh_pages(f"repos/{slug}/pulls/{n}/comments", "pr comments"),
-                self._gh_pages(f"repos/{slug}/pulls/{n}/reviews", "pr reviews"),
-                self._gh_pages(f"repos/{slug}/issues/{n}/comments", "pr conversation"),
+                self._gh_pages(
+                    f"repos/{slug}/pulls/{n}/comments",
+                    "pr comments",
+                    **({"repo_full": slug, "card": card} if self.broker else {}),
+                ),
+                self._gh_pages(
+                    f"repos/{slug}/pulls/{n}/reviews",
+                    "pr reviews",
+                    **({"repo_full": slug, "card": card} if self.broker else {}),
+                ),
+                self._gh_pages(
+                    f"repos/{slug}/issues/{n}/comments",
+                    "pr conversation",
+                    **({"repo_full": slug, "card": card} if self.broker else {}),
+                ),
                 set(rec.get("pr_seen", [])),
                 bool(self.cfg.get("pr_ignore_bots", True)),
                 {slug.split("/")[0], *self.cfg.get("pr_reviewer_logins", [])},
             )
-            ci = self._checks(slug, pr)
+            ci = self._checks(slug, pr, card)
             tell_ci = ci["verdict"] == "red" and rec.get("pr_ci_told") != ci["head"]
             result = {
                 "card_id": card,
@@ -2246,8 +2537,8 @@ class Supervisor:
             rec = self._load().get(card)
             if rec is None:
                 raise RefusedError("no such session", 404)
-            slug, pr = self._find_pr(rec)
-            ci = self._checks(slug, pr)
+            slug, pr = self._find_pr(rec, card)
+            ci = self._checks(slug, pr, card)
             allow_none = bool(self.cfg.get("pr_allow_no_checks", False)) and ci["verdict"] == "none"
             if ci["verdict"] != "green" and not allow_none:
                 raise RefusedError(
@@ -2264,10 +2555,13 @@ class Supervisor:
                 )
             if not pr.get("isDraft"):
                 return {"card_id": card, "pr": pr["number"], "ready": True, "already": True}
-            r = self._gh(["pr", "ready", str(pr["number"]), "--repo", slug])
+            r = self._gh(
+                ["pr", "ready", str(pr["number"]), "--repo", slug],
+                **({"repo_full": slug, "card": card} if self.broker else {}),
+            )
             if r.returncode != 0:
                 raise RefusedError("gh pr ready failed: " + scrub(r.stderr.strip())[:300], 502)
-            _, after = self._find_pr(rec)
+            _, after = self._find_pr(rec, card)
             if after.get("isDraft"):
                 raise RefusedError("gh pr ready reported success but the PR is still a draft", 500)
             return {"card_id": card, "pr": pr["number"], "ready": True, "already": False}
@@ -2319,6 +2613,8 @@ class Supervisor:
                     names = env_names(Path(f).read_text())
                 except OSError:
                     names = []
+            if self.broker:
+                names = [n for n in names if n not in ("GH_TOKEN", "GITHUB_TOKEN")]
             cmd = ["docker", "exec", "-i", "-w", rec["path"]]
             for n in names:
                 cmd += ["-e", n]
@@ -2537,7 +2833,9 @@ class Supervisor:
                     "card: use session_prompt or session_resume",
                     409,
                 )
+            self._install_policy(card, rec)
             if self.runtime:
+                self._install_token(card, rec)
                 rec.setdefault("container", f"{self.prefix}{card}")
                 self._ensure_container(card, rec, records)
             self._acp_prepare_home(card, rec, agent, entries)
@@ -2599,6 +2897,7 @@ class Supervisor:
             rec = self._acp_record(records, card)
             state = self.reconcile().get(card, {}).get("state")
             if state == "paused":
+                self._install_policy(card, rec)
                 # A frozen turn has no effects NOW, but would continue on unpause: thaw it and cancel
                 # it like any other, so "cancelled" means the turn is over, not postponed.
                 self.run(["docker", "unpause", rec["container"]])
@@ -2691,6 +2990,9 @@ class Supervisor:
             records = self._load()
             rec = self._acp_record(records, card)
             state = self.reconcile().get(card, {}).get("state")
+            self._install_policy(card, rec)
+            if self.runtime:
+                self._install_token(card, rec)
             if state == "paused" and self.runtime:
                 self.run(["docker", "unpause", rec["container"]])
                 if self.container_status(rec["container"]) != "running":
@@ -2956,6 +3258,19 @@ def make_handler(sup: Supervisor, token: str):
     return Handler
 
 
+def token_refresh_interval(poll_seconds: int) -> int:
+    return min(poll_seconds, 300) if poll_seconds > 0 else 300
+
+
+def token_refresh_loop(sup: Supervisor, sleep=time.sleep) -> None:
+    while True:
+        sleep(token_refresh_interval(int(sup.cfg.get("pr_poll_seconds", 0) or 0)))
+        try:
+            sup.refresh_tokens()
+        except Exception as e:
+            sys.stderr.write(f"token refresh failed: {scrub(str(e))}\n")
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
@@ -2987,19 +3302,19 @@ def main(argv: Optional[list[str]] = None) -> int:
     poll_every = int(sup.cfg.get("pr_poll_seconds", 0) or 0)
 
     def pr_loop() -> None:
-        # sessiond's own PR poller, so a review reaches the session (and wakes a paused card)
-        # whether or not the gateway's heartbeat is running. 0 turns it off.
         while True:
             time.sleep(poll_every)
             try:
                 got = sup.poll_all(wake=True)
                 for card, err in got["errors"].items():
                     sys.stderr.write(f"pr poll {card}: {err}\n")
-            except Exception as e:  # keep the loop alive; the next tick retries
+            except Exception as e:
                 sys.stderr.write(f"pr poll failed: {scrub(str(e))}\n")
 
     if poll_every > 0:
         threading.Thread(target=pr_loop, daemon=True).start()
+    if sup.broker:
+        threading.Thread(target=token_refresh_loop, args=(sup,), daemon=True).start()
     ThreadingHTTPServer((args.bind, args.port), make_handler(sup, token)).serve_forever()
     return 0
 

@@ -1,0 +1,11 @@
+{{ {
+  'listen_host': coder_token_broker_listen_host,
+  'listen_port': coder_token_broker_listen_port | int,
+  'bearer_token_file': '/etc/coder-token-broker/bearer',
+  'app_id': coder_token_broker_app_id,
+  'private_key_file': '/etc/coder-token-broker/private-key.pem',
+  'repo_owner': worker_repo_owner,
+  'repos_exclude': worker_repos_exclude | list,
+  'permissions': {'contents': 'write', 'pull_requests': 'write', 'checks': 'read', 'statuses': 'read'},
+  'api_url': 'https://api.github.com'
+} | to_nice_json }}

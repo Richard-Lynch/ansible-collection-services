@@ -1,0 +1,146 @@
+---
+- name: Load broker defaults
+  ansible.builtin.include_vars: "{{ role_path }}/defaults/token_broker.yml"
+
+- name: Resolve declared options over their generated defaults
+  ansible.builtin.include_tasks: _resolve_defaults.yml
+
+- name: Apply the generated argspec guards
+  ansible.builtin.include_tasks: _argspec_guards.yml
+
+- name: Validate broker configuration
+  ansible.builtin.assert:
+    that:
+      - coder_token_broker_app_id | length > 0
+      - coder_token_broker_private_key | length > 0
+      - coder_token_broker_bearer_token | length > 0
+      - coder_token_broker_listen_host | length > 0
+      - worker_repo_owner | length > 0
+      - coder_token_broker_listen_port | int > 0
+      - coder_token_broker_listen_port | int < 65536
+    fail_msg: Broker credentials, owner, listen address and port must be valid.
+    quiet: true
+  no_log: true
+
+- name: Check broker dependencies
+  ansible.builtin.stat:
+    path: "/usr/bin/{{ item }}"
+  loop: [python3, openssl]
+  register: _broker_dependencies
+
+- name: Install missing broker dependencies
+  ansible.builtin.apt:
+    name: "{{ item.item }}"
+    state: present
+    update_cache: true
+  loop: "{{ _broker_dependencies.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: not item.stat.exists
+
+- name: Create broker system account
+  ansible.builtin.user:
+    name: coder-token-broker
+    system: true
+    create_home: false
+    shell: /usr/sbin/nologin
+
+- name: Create broker directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.owner }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - {path: /usr/local/lib/coder-token-broker, owner: root, mode: '0755'}
+    - {path: /etc/coder-token-broker, owner: coder-token-broker, mode: '0700'}
+
+- name: Install broker script
+  ansible.builtin.copy:
+    src: coder_token_broker.py
+    dest: /usr/local/lib/coder-token-broker/coder_token_broker.py
+    owner: root
+    group: root
+    mode: "0755"
+  notify: Restart coder-token-broker
+
+- name: Write broker credentials
+  ansible.builtin.copy:
+    content: "{{ item.content }}"
+    dest: "/etc/coder-token-broker/{{ item.name }}"
+    owner: coder-token-broker
+    group: coder-token-broker
+    mode: "0600"
+  loop:
+    - {name: private-key.pem, content: "{{ coder_token_broker_private_key }}"}
+    - {name: bearer, content: "{{ coder_token_broker_bearer_token }}"}
+  no_log: true
+  notify: Restart coder-token-broker
+
+- name: Render broker configuration
+  ansible.builtin.template:
+    src: coder-token-broker.json.j2
+    dest: /etc/coder-token-broker/config.json
+    owner: coder-token-broker
+    group: coder-token-broker
+    mode: "0600"
+  no_log: true
+  notify: Restart coder-token-broker
+
+- name: Install broker unit
+  ansible.builtin.template:
+    src: coder-token-broker.service.j2
+    dest: /etc/systemd/system/coder-token-broker.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart coder-token-broker
+
+- name: Flush broker handlers
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and start broker
+  ansible.builtin.systemd:
+    name: coder-token-broker
+    enabled: true
+    state: started
+
+- name: Verify broker health
+  ansible.builtin.uri:
+    url: "http://{{ _broker_probe_host }}:{{ coder_token_broker_listen_port }}/healthz"
+    status_code: 200
+    use_proxy: false
+  vars:
+    _broker_probe_host: "{{ '127.0.0.1' if coder_token_broker_listen_host == '0.0.0.0' else ('[::1]' if coder_token_broker_listen_host == '::' else ('[' ~ coder_token_broker_listen_host ~ ']' if ':' in coder_token_broker_listen_host else coder_token_broker_listen_host)) }}"
+  register: _broker_health
+  until: _broker_health.status | default(0) == 200
+  retries: 10
+  delay: 2
+
+- name: Verify broker refuses unauthenticated requests
+  ansible.builtin.uri:
+    url: "http://{{ _broker_probe_host }}:{{ coder_token_broker_listen_port }}/v1/token"
+    method: POST
+    body_format: json
+    body: {repo: x, card: probe}
+    status_code: 401
+    use_proxy: false
+  vars:
+    _broker_probe_host: "{{ '127.0.0.1' if coder_token_broker_listen_host == '0.0.0.0' else ('[::1]' if coder_token_broker_listen_host == '::' else ('[' ~ coder_token_broker_listen_host ~ ']' if ':' in coder_token_broker_listen_host else coder_token_broker_listen_host)) }}"
+
+- name: Verify broker refuses a foreign owner
+  ansible.builtin.uri:
+    url: "http://{{ _broker_probe_host }}:{{ coder_token_broker_listen_port }}/v1/token"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ coder_token_broker_bearer_token }}"
+    body_format: json
+    body: {repo: "not-{{ worker_repo_owner }}-0/x", card: probe}
+    status_code: 422
+    use_proxy: false
+  vars:
+    _broker_probe_host: "{{ '127.0.0.1' if coder_token_broker_listen_host == '0.0.0.0' else ('[::1]' if coder_token_broker_listen_host == '::' else ('[' ~ coder_token_broker_listen_host ~ ']' if ':' in coder_token_broker_listen_host else coder_token_broker_listen_host)) }}"
+  no_log: true

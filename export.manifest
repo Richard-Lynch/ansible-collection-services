@@ -10,7 +10,6 @@
 .python-version
 CHANGELOG.md
 LICENSE
-Makefile
 README.md
 ci/affected-scenarios.sh
 configured_roles.txt
@@ -53,7 +52,6 @@ plugins/filter/mcp_catalogue_document.yml
 plugins/lookup/hosting_definition.py
 plugins/modules/slack_channels.py
 renovate.json
-requirements.yml
 roles/config_agent_state/README.md
 roles/config_agent_state/defaults/backup.yml
 roles/config_agent_state/defaults/drill.yml
@@ -211,8 +209,11 @@ roles/service_code_reader/templates/code-reader.env.j2
 roles/service_code_reader/templates/docker-compose.yml.j2
 roles/service_coding_worker/README.md
 roles/service_coding_worker/defaults/main.yml
+roles/service_coding_worker/defaults/token_broker.yml
 roles/service_coding_worker/files/acpx_mcp.py
+roles/service_coding_worker/files/coder_token_broker.py
 roles/service_coding_worker/files/test_acpx_mcp.py
+roles/service_coding_worker/files/test_coder_token_broker.py
 roles/service_coding_worker/files/test_worker_sessiond.py
 roles/service_coding_worker/files/test_worker_sessiond_acp.py
 roles/service_coding_worker/files/worker-attach
@@ -237,8 +238,11 @@ roles/service_coding_worker/tasks/_protocol.yml
 roles/service_coding_worker/tasks/_protocol_verify.yml
 roles/service_coding_worker/tasks/_resolve_defaults.yml
 roles/service_coding_worker/tasks/main.yml
+roles/service_coding_worker/tasks/token_broker.yml
 roles/service_coding_worker/templates/agent.env.j2
 roles/service_coding_worker/templates/card-image.Dockerfile.j2
+roles/service_coding_worker/templates/coder-token-broker.json.j2
+roles/service_coding_worker/templates/coder-token-broker.service.j2
 roles/service_coding_worker/templates/codex_base.toml.j2
 roles/service_coding_worker/templates/docker-daemon.json.j2
 roles/service_coding_worker/templates/sessiond.json.j2

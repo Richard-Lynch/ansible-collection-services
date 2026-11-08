@@ -117,6 +117,7 @@
     mode: "{{ item.mode }}"
   loop:
     - {path: "{{ worker_work_root }}", owner: "{{ worker_user }}", mode: "0755"}
+    - {path: "{{ worker_work_root }}/repos", owner: "{{ worker_user }}", mode: "0755"}
     - {path: "{{ worker_work_root }}/worktrees", owner: "{{ worker_user }}", mode: "0755"}
     - {path: "{{ worker_conf_dir }}", owner: root, mode: "0755"}
     - {path: "{{ worker_lib_dir }}", owner: root, mode: "0755"}
@@ -216,6 +217,7 @@
     owner: root
     group: root
     mode: "0644"
+  no_log: true
   notify: Restart worker-sessiond
 
 - name: Write sessiond's token file
@@ -226,6 +228,24 @@
     group: root
     mode: "0600"
   no_log: true
+  notify: Restart worker-sessiond
+
+- name: Write the token broker bearer
+  ansible.builtin.copy:
+    content: "{{ worker_token_broker_bearer }}"
+    dest: "{{ worker_conf_dir }}/token-broker.bearer"
+    owner: "{{ worker_user }}"
+    group: "{{ worker_user }}"
+    mode: "0600"
+  no_log: true
+  when: worker_token_broker_url | length > 0
+  notify: Restart worker-sessiond
+
+- name: Remove the unused token broker bearer
+  ansible.builtin.file:
+    path: "{{ worker_conf_dir }}/token-broker.bearer"
+    state: absent
+  when: worker_token_broker_url | length == 0
   notify: Restart worker-sessiond
 
 - name: Write ttyd's credential file
@@ -332,26 +352,6 @@
   loop: [worker-metrics.service, worker-metrics.timer]
   when: worker_metrics_textfile | length > 0
   notify: Reload systemd
-
-# Repo checkouts. The clone authenticates through the gh credential helper configured above, with
-# GH_TOKEN in the task environment, so the token is never written into .git/config. `update: false`
-# because a checkout that sessiond makes worktrees from must not move under live cards; moving the
-# base is a deliberate act, not a side effect of a converge.
-- name: Clone each configured repo
-  ansible.builtin.git:
-    repo: "{{ item.url }}"
-    dest: "{{ worker_work_root }}/{{ item.name }}"
-    version: "{{ item.base_branch }}"
-    update: false
-  become: true
-  become_user: "{{ worker_user }}"
-  environment:
-    GH_TOKEN: "{{ worker_github_token }}"
-    HOME: "{{ worker_home }}"
-  loop: "{{ worker_repos }}"
-  loop_control:
-    label: "{{ item.name }}"
-  no_log: true
 
 - name: Flush handlers so the services run the new configuration before the read-backs
   ansible.builtin.meta: flush_handlers

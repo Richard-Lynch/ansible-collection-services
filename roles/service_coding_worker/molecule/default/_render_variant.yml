@@ -43,6 +43,7 @@
     worker_card_tail_enabled: "{{ item.tail }}"
     worker_acp_enabled: "{{ item.acp }}"
     # the card image tag is the Dockerfile's hash, so its inputs must survive the rebind too
+    worker_repos_exclude: "{{ _good.worker_repos_exclude }}"
     worker_card_dns: "{{ _good.worker_card_dns }}"
     # unset in the loopback variant means the role's own generated default
     worker_card_image_name: "{{ 'example-card' if item.custom else worker_card_image_name__default }}"
@@ -63,8 +64,11 @@
     worker_ttyd_bind: "{{ item.ttyd_bind }}"
     worker_card_tail_enabled: "{{ item.tail }}"
     worker_acp_enabled: "{{ item.acp | bool }}"
+    worker_token_broker_url: "{{ 'http://broker:7693' if item.custom else '' }}"
+    worker_github_token: "molecule-NOT-A-REAL-GITHUB-TOKEN-0001"
     worker_acp_permissions: "{{ _good.worker_acp_permissions }}"
     worker_ssh_accept_env: "{{ _good.worker_ssh_accept_env }}"
+    worker_repos_exclude: "{{ _good.worker_repos_exclude }}"
     worker_card_dns: "{{ _good.worker_card_dns }}"
     worker_ttyd_title: "{{ 'example-worker' if item.custom else worker_ttyd_title__default }}"
     worker_docker_bip: "{{ '198.51.100.1/24' if item.custom else worker_docker_bip__default }}"
@@ -77,6 +81,7 @@
     mode: "0644"
   loop:
     - {src: sessiond.json.j2, dest: sessiond.json}
+    - {src: agent.env.j2, dest: agent.env}
     - {src: codex_base.toml.j2, dest: codex_base.toml}
     - {src: worker-sessiond.service.j2, dest: worker-sessiond.service}
     - {src: worker-ttyd.service.j2, dest: worker-ttyd.service}

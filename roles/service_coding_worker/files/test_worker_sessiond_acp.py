@@ -527,6 +527,26 @@ class TestContainerProtocol(unittest.TestCase):
         cfg = json.loads((self.tmp / "state/homes/p1/.acpx/config.json").read_text())
         self.assertEqual(cfg["agents"]["claude"]["argv"], ["/opt/node/bin/claude-agent-acp"])
 
+    def test_acp_managed_policy_installed_and_missing_refused(self):
+        self.sup.cfg["claude_settings"] = {"permissions": {"deny": ["Bash(rm *)"]}}
+        original = self.sup._install_policy
+        self.sup._install_policy = lambda *args: None
+        with self.assertRaises(ws.RefusedError) as error:
+            self.sup.acp_new(str(self.wt), "claude", "x")
+        self.assertEqual(error.exception.status, 500)
+        self.assertEqual(self.r.containers, {})
+        self.sup._install_policy = original
+        self.sup.acp_new(str(self.wt), "claude", "x")
+        policy = self.tmp / "state/cards/p1/policy/managed-settings.json"
+        self.assertIn("Bash(rm *)", json.loads(policy.read_text())["permissions"]["deny"])
+
+    def test_interactive_launch_installs_managed_policy(self):
+        self.sup.cfg["claude_settings"] = {"permissions": {"deny": ["Bash(rm *)"]}}
+        self.sup.tmux_live = lambda: {}
+        self.sup.launch("p1", "claude", "x")
+        policy = self.tmp / "state/cards/p1/policy/managed-settings.json"
+        self.assertIn("Bash(rm *)", json.loads(policy.read_text())["permissions"]["deny"])
+
     def test_only_a_fresh_card_gets_a_session(self):
         self.sup.acp_new(str(self.wt), "claude", "x")
         with self.assertRaises(ws.RefusedError) as c:
@@ -721,7 +741,7 @@ class TestLiveAcpx(unittest.TestCase):
         agent.chmod(0o755)
         env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t")
         env.update(GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
-        repo = cls.tmp / "work" / "lab"
+        repo = cls.tmp / "work" / "repos" / "lab"
         repo.mkdir(parents=True)
         subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True, env=env)
         subprocess.run(
