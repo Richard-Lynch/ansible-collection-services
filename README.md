@@ -41,7 +41,7 @@ or pin it in `requirements.yml`:
 ```yaml
 collections:
   - name: richard_lynch.services
-    version: "2.1.2"
+    version: "2.1.3"
 ```
 
 Requires ansible-core >=2.19.0.

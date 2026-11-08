@@ -9,6 +9,12 @@ All notable changes to this collection are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the collection
 uses [Semantic Versioning](https://semver.org/).
 
+## [2.1.3] — 2026-11-08
+
+### Fixed
+
+- `service_coding_worker`'s live protocol-mode suite builds the session daemon's configuration for the owner-namespace repository model and seeds a local repository cache, so it runs instead of being refused when the pinned acpx is installed.
+
 ## [2.1.2] — 2026-11-08
 
 ### Added
