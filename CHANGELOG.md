@@ -9,6 +9,13 @@ All notable changes to this collection are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the collection
 uses [Semantic Versioning](https://semver.org/).
 
+## [2.2.0] — 2026-11-09
+
+### Added
+
+- `service_coding_worker`: `worker_codex_approval_policy` and `worker_codex_sandbox_mode` set Codex's approval policy and sandbox in the base `config.toml` (defaults unchanged: `on-request`, `workspace-write`), so an unattended card can run with `never` instead of stopping on a prompt nobody answers.
+- `service_coding_worker`: `worker_codex_reasoning_effort` (empty leaves the model's default) and the gateway provider's `stream_idle_timeout_ms`, `stream_max_retries` and `request_max_retries`, so a long agent turn behind a proxy is not cut off early.
+
 ## [2.1.3] — 2026-11-08
 
 ### Fixed
