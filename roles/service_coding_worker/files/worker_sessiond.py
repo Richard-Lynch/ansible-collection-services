@@ -330,12 +330,22 @@ def codex_stdio_env_names(entry: dict) -> list[str]:
     return names
 
 
-def render_codex_config(base: str, entries: list[dict]) -> str:
+def render_codex_config(base: str, entries: list[dict], trusted_path: str = "") -> str:
     """The per-card ``config.toml`` for Codex: the role-rendered base (provider, model, sandbox)
     plus one ``[mcp_servers.<name>]`` table per entry. Credentials are FORWARDED by name
     (``env_vars``, ``bearer_token_env_var``, ``env_http_headers``) from the worker environment,
-    never written into the file."""
+    never written into the file.
+
+    ``trusted_path`` (the card's clone, mounted at the same path in its container) is written as a
+    ``[projects."<path>"]`` table with ``trust_level = "trusted"``. Codex matches project trust on
+    the EXACT path, so it cannot live in the shared base, and an untrusted project runs read-only
+    whatever the base's sandbox and approval policy say (codex-acp's session mode falls back to
+    read-only; the interactive client asks the trust question first)."""
     out = [base.rstrip("\n"), ""]
+    if trusted_path:
+        if not trusted_path.startswith("/"):
+            raise RefusedError(f"codex trusted path must be absolute: {trusted_path!r}", 500)
+        out += [f"[projects.{_toml_str(trusted_path)}]", 'trust_level = "trusted"', ""]
     for e in entries:
         out.append(f"[mcp_servers.{e['name']}]")
         if e["transport"] == "http":
@@ -2060,7 +2070,7 @@ class Supervisor:
                 safe_write(
                     data_dir,
                     codex_home / "config.toml",
-                    render_codex_config(self._codex_base(), entries),
+                    render_codex_config(self._codex_base(), entries, self._codex_trusted(rec)),
                 )
                 argv = ["codex", "resume", "--last"] if resume else ["codex", prompt]
                 env_lines = [f"export CODEX_HOME={shlex.quote(seen_dir + '/codex')}"]
@@ -2123,6 +2133,10 @@ class Supervisor:
         for n in names:
             out += ["-e", n]
         return out + [rec["container"]]
+
+    def _codex_trusted(self, rec: dict) -> str:
+        """The card clone's path when Codex should trust it (``codex_trust_card_worktree``), else ""."""
+        return str(rec.get("path") or "") if self.cfg.get("codex_trust_card_worktree") else ""
 
     def _codex_base(self) -> str:
         if self.cfg.get("codex_base_config"):
@@ -2819,7 +2833,7 @@ class Supervisor:
             safe_write(
                 data,
                 codex_home / "config.toml",
-                render_codex_config(self._codex_base(), entries),
+                render_codex_config(self._codex_base(), entries, self._codex_trusted(rec)),
             )
 
     def acp_capabilities(self) -> dict:

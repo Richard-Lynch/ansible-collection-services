@@ -71,7 +71,10 @@ POLICY = {
 
 class TestRepoScope(unittest.TestCase):
     def test_repo_validation(self):
-        cfg = {"repo_owner": "example-org", "repos_exclude": ["SeCrEt", "example-org/blocked"]}
+        cfg = {
+            "repo_owner": "example-org",
+            "repos_exclude": ["SeCrEt", "example-org/blocked"],
+        }
         for repo in (
             "other-org/x",
             "example-org-evil/x",
@@ -103,7 +106,8 @@ class TestRepoScope(unittest.TestCase):
         ):
             with self.subTest(repo=repo):
                 self.assertEqual(
-                    ws.resolve_repo(cfg, repo), (name, f"https://github.com/example-org/{name}.git")
+                    ws.resolve_repo(cfg, repo),
+                    (name, f"https://github.com/example-org/{name}.git"),
                 )
 
     def test_create_repo_clone_fetch_and_credentials(self):
@@ -172,7 +176,10 @@ class TestRepoScope(unittest.TestCase):
             ("card/c1/x", "develop", True),
             (None, "develop", True),
         ]:
-            with self.subTest(branch=branch, base=base), tempfile.TemporaryDirectory() as tmp:
+            with (
+                self.subTest(branch=branch, base=base),
+                tempfile.TemporaryDirectory() as tmp,
+            ):
 
                 def runner(cmd, **kwargs):
                     output = (
@@ -223,7 +230,13 @@ class TestRepoScope(unittest.TestCase):
             sup._gh_json = gh_json
             sup._find_pr({"repo": "old", "branch": "card/a", "path": tmp}, "a")
             sup._find_pr(
-                {"repo": "new", "repo_full": "Other/New", "branch": "card/b", "path": tmp}, "b"
+                {
+                    "repo": "new",
+                    "repo_full": "Other/New",
+                    "branch": "card/b",
+                    "path": tmp,
+                },
+                "b",
             )
             self.assertIn("example-org/old", calls[0])
             self.assertIn("Other/New", calls[1])
@@ -314,7 +327,11 @@ class TestCardPolicy(unittest.TestCase):
         self.assertIsNotNone(ws.card_claude_settings(ok, "card/x", "/w"))
 
     def test_a_bad_branch_or_relative_worktree_is_refused(self):
-        for branch, wt in [("card/../main", "/w"), ("card/x", "w"), ("card/x", "/w/../etc")]:
+        for branch, wt in [
+            ("card/../main", "/w"),
+            ("card/x", "w"),
+            ("card/x", "/w/../etc"),
+        ]:
             with self.assertRaises(ws.RefusedError):
                 ws.card_claude_settings(POLICY, branch, wt)
 
@@ -345,7 +362,10 @@ class TestCardPolicy(unittest.TestCase):
             ws.Supervisor(dict(cfg, claude_settings=POLICY))  # near-miss
             with self.assertRaises(ws.RefusedError):
                 ws.Supervisor(
-                    dict(cfg, claude_settings={"permissions": {"defaultMode": "bypassPermissions"}})
+                    dict(
+                        cfg,
+                        claude_settings={"permissions": {"defaultMode": "bypassPermissions"}},
+                    )
                 )
         finally:
             shutil.rmtree(d, ignore_errors=True)
@@ -410,6 +430,28 @@ class TestMcp(unittest.TestCase):
         # connect with no Authorization header at all).
         self.assertIn('bearer_token_env_var = "T"', toml)
         self.assertNotIn("${", toml)
+
+    def test_codex_trusts_exactly_the_card_clone_when_asked(self):
+        toml = ws.render_codex_config('model = "m"\n', CAT, "/srv/work/cards/c1/lab")
+        self.assertIn('[projects."/srv/work/cards/c1/lab"]\ntrust_level = "trusted"', toml)
+        # the table comes before the MCP tables and the base stays first
+        self.assertTrue(toml.startswith('model = "m"\n'))
+        self.assertLess(toml.index("[projects."), toml.index("[mcp_servers."))
+        # NEAR-MISS: no path, no projects table (the 2.2.0 output)
+        self.assertNotIn("[projects.", ws.render_codex_config('model = "m"\n', CAT))
+        # a relative path would be trusted relative to wherever Codex starts: refused
+        with self.assertRaises(ws.RefusedError):
+            ws.render_codex_config("", [], "lab")
+
+    def test_codex_trusted_path_follows_the_option(self):
+        sup = ws.Supervisor.__new__(ws.Supervisor)
+        rec = {"path": "/srv/work/cards/c1/lab"}
+        sup.cfg = {"codex_trust_card_worktree": True}
+        self.assertEqual(sup._codex_trusted(rec), "/srv/work/cards/c1/lab")
+        sup.cfg = {}  # the default: the role leaves the option off
+        self.assertEqual(sup._codex_trusted(rec), "")
+        sup.cfg = {"codex_trust_card_worktree": True}
+        self.assertEqual(sup._codex_trusted({}), "")  # no path, nothing trusted
 
     def test_codex_http_headers_other_than_bearer_go_through_env_http_headers(self):
         entry = {
@@ -548,7 +590,10 @@ class TestMetrics(unittest.TestCase):
         recs = {"a": {"state": "running"}, "b": {"state": "running"}}
         live = {
             "card-a": {"dead": False, "activity": self.NOW - 1801},  # beyond 1800
-            "card-b": {"dead": False, "activity": self.NOW - 1800},  # exactly at: not stuck
+            "card-b": {
+                "dead": False,
+                "activity": self.NOW - 1800,
+            },  # exactly at: not stuck
         }
         t = ws.render_metrics(recs, live, self.PFX, self.NOW, 1800)
         self.assertEqual(self.val(t, "hermes_worker_stuck_cards"), 1)
@@ -599,7 +644,11 @@ class TestMetrics(unittest.TestCase):
     def test_clock_skew_never_yields_negative_idle(self):
         recs = {"a": {"state": "running"}}
         t = ws.render_metrics(
-            recs, {"card-a": {"dead": False, "activity": self.NOW + 500}}, self.PFX, self.NOW, 60
+            recs,
+            {"card-a": {"dead": False, "activity": self.NOW + 500}},
+            self.PFX,
+            self.NOW,
+            60,
         )
         self.assertEqual(self.val(t, "hermes_worker_oldest_idle_seconds"), 0)
 
@@ -795,11 +844,13 @@ class TestLive(unittest.TestCase):
         # positive control: the plant is live, so its absence above means something
         rec = s.create("fsm2", "lab")
         subprocess.run(
-            ["git", "-C", rec["path"], "config", "core.fsmonitor", str(hook)], check=True
+            ["git", "-C", rec["path"], "config", "core.fsmonitor", str(hook)],
+            check=True,
         )
         subprocess.run(["git", "-C", rec["path"], "status"], capture_output=True)
         self.assertTrue(
-            marker.exists(), "the planted fsmonitor never runs at all: the test proves nothing"
+            marker.exists(),
+            "the planted fsmonitor never runs at all: the test proves nothing",
         )
         s.done("fsm2")
 
@@ -1145,7 +1196,12 @@ class TestPureContainerDecisions(unittest.TestCase):
             live,
             "card-",
             100.0,
-            {"card-a": "running", "card-b": "paused", "card-c": "exited", "card-d": "paused"},
+            {
+                "card-a": "running",
+                "card-b": "paused",
+                "card-c": "exited",
+                "card-d": "paused",
+            },
         )
         self.assertEqual(out["a"]["state"], "running")
         self.assertEqual(out["b"]["state"], "paused")  # paused out of band: say so
@@ -1173,8 +1229,16 @@ class TestPureContainerDecisions(unittest.TestCase):
                 "container": "card-p",
                 "container_state": "paused",
             },
-            "m": {"state": "vanished", "container": "card-m", "container_state": "absent"},
-            "s": {"state": "stopped", "container": "card-s", "container_state": "absent"},
+            "m": {
+                "state": "vanished",
+                "container": "card-m",
+                "container_state": "absent",
+            },
+            "s": {
+                "state": "stopped",
+                "container": "card-s",
+                "container_state": "absent",
+            },
         }
         t = ws.render_metrics(recs, {}, "card-", 5000.0, 1800)
         self.assertEqual(TestMetrics.val(t, "hermes_worker_oldest_paused_seconds"), 4000)
@@ -1198,7 +1262,8 @@ class TestDevcontainerPlan(unittest.TestCase):
     def test_no_devcontainer_uses_the_default_image(self):
         shutil.rmtree(self.wt / ".devcontainer")
         self.assertEqual(
-            ws.plan_image(self.wt, "worker:1", "c1"), {"image": "worker:1", "source": "default"}
+            ws.plan_image(self.wt, "worker:1", "c1"),
+            {"image": "worker:1", "source": "default"},
         )
 
     DIG = "mcr.microsoft.com/devcontainers/base@sha256:" + "a" * 64
@@ -1212,7 +1277,8 @@ class TestDevcontainerPlan(unittest.TestCase):
         got = ws.plan_image(self.wt, "worker:1", "c1")
         self.assertEqual(got["image"], self.DIG)
         self.assertEqual(
-            json.loads(ws.strip_jsonc('{"u": "http://a//b" // c\n}'))["u"], "http://a//b"
+            json.loads(ws.strip_jsonc('{"u": "http://a//b" // c\n}'))["u"],
+            "http://a//b",
         )
 
     def test_a_tag_only_image_is_refused(self):
@@ -1328,10 +1394,12 @@ class TestPrPure(unittest.TestCase):
         self.assertEqual(got[1]["where"], "a.py:7")
         # seen ids are skipped; a bot is kept only when asked
         self.assertEqual(
-            [i["key"] for i in ws.review_items(inline, reviews, issue, {"i1", "c1", "r1"})], []
+            [i["key"] for i in ws.review_items(inline, reviews, issue, {"i1", "c1", "r1"})],
+            [],
         )
         self.assertIn(
-            "i9", [i["key"] for i in ws.review_items([], [], issue, set(), ignore_bots=False)]
+            "i9",
+            [i["key"] for i in ws.review_items([], [], issue, set(), ignore_bots=False)],
         )
 
     def test_feedback_is_one_line_without_control_characters_and_bounded(self):
@@ -1510,7 +1578,9 @@ class TestContainerMode(unittest.TestCase):
         base.update(fx)
         (self.tmp / "gh.json").write_text(json.dumps(base))
 
-    def test_01_launch_creates_a_sandboxed_container_and_runs_the_agent_through_exec(self):
+    def test_01_launch_creates_a_sandboxed_container_and_runs_the_agent_through_exec(
+        self,
+    ):
         s = self.sup
         s.create("c1", "lab")
         self.assertEqual(s.get("c1")["container"], "card-c1")
@@ -1526,7 +1596,14 @@ class TestContainerMode(unittest.TestCase):
         self.assertEqual(flag("--name"), "card-c1")
         self.assertIn("hermes.worker.card=c1", run)
         self.assertEqual(run[-4:-2], ["worker-card:test", "sh"])
-        for forbidden in ("-p", "--publish", "-P", "--privileged", "--network=host", "--pid=host"):
+        for forbidden in (
+            "-p",
+            "--publish",
+            "-P",
+            "--privileged",
+            "--network=host",
+            "--pid=host",
+        ):
             self.assertNotIn(forbidden, run)
         mounts = [run[i + 1] for i, a in enumerate(run) if a == "-v"]
         wt = started["path"]
@@ -1548,7 +1625,8 @@ class TestContainerMode(unittest.TestCase):
         self.assertEqual(agent["argv"][:2], ["--mcp-config", "/card/servers.json"])
         self.assertTrue(agent["token_set"])
         self.assertEqual(
-            os.path.realpath(agent["cwd"]), os.path.realpath(self.tmp / "state/cards/c1/host")
+            os.path.realpath(agent["cwd"]),
+            os.path.realpath(self.tmp / "state/cards/c1/host"),
         )
         ex = json.loads((self.tmp / "exec.json").read_text())
         self.assertIn("ANTHROPIC_AUTH_TOKEN", ex)
@@ -1631,7 +1709,9 @@ class TestContainerMode(unittest.TestCase):
         with self.assertRaises(ws.RefusedError):  # running cards do not resume
             s.resume("c4")
 
-    def test_05_resume_after_the_tmux_server_dies_recreates_and_uses_claude_resume(self):
+    def test_05_resume_after_the_tmux_server_dies_recreates_and_uses_claude_resume(
+        self,
+    ):
         s = self.sup
         s.create("c5", "lab")
         sid = s.launch("c5", "claude", "x")["agent_session_id"]
@@ -1733,7 +1813,14 @@ class TestContainerMode(unittest.TestCase):
             s.get("c9")
         self.assertEqual(c.exception.status, 404)
         branches = subprocess.run(
-            ["git", "-C", str(self.tmp / "work/repos/lab"), "branch", "--list", "card/c9"],
+            [
+                "git",
+                "-C",
+                str(self.tmp / "work/repos/lab"),
+                "branch",
+                "--list",
+                "card/c9",
+            ],
             capture_output=True,
             text=True,
         ).stdout
@@ -1855,7 +1942,9 @@ class TestContainerMode(unittest.TestCase):
         time.sleep(0.4)
         # the text reached the SAME session's pane (the stub agent is reading stdin there)
         pane = subprocess.run(
-            ["tmux", "capture-pane", "-J", "-p", "-t", "card-p1"], capture_output=True, text=True
+            ["tmux", "capture-pane", "-J", "-p", "-t", "card-p1"],
+            capture_output=True,
+            text=True,
         ).stdout
         self.assertIn("rename this", pane)
         self.assertIn("a.py:3", pane)
@@ -1895,7 +1984,9 @@ class TestContainerMode(unittest.TestCase):
         self.assertEqual(first["failing"], ["lint"])
         time.sleep(0.3)
         pane = subprocess.run(
-            ["tmux", "capture-pane", "-J", "-p", "-t", "card-p2"], capture_output=True, text=True
+            ["tmux", "capture-pane", "-J", "-p", "-t", "card-p2"],
+            capture_output=True,
+            text=True,
         ).stdout
         self.assertIn("CI is RED", pane)
         self.assertFalse(s.poll_pr("p2")["delivered"])  # same head, still red: not repeated
@@ -1933,7 +2024,12 @@ class TestContainerMode(unittest.TestCase):
         s.pause("p3")
         self.gh(
             comments=[
-                {"id": 1, "body": "hi", "user": {"login": "rev"}, "author_association": "MEMBER"}
+                {
+                    "id": 1,
+                    "body": "hi",
+                    "user": {"login": "rev"},
+                    "author_association": "MEMBER",
+                }
             ],
             checks=[{"name": "u", "bucket": "pass"}],
         )
@@ -1960,7 +2056,12 @@ class TestContainerMode(unittest.TestCase):
             body = json.loads(str(c.exception))
             self.assertFalse(body["ready"])
             self.assertEqual(body["ci"], verdict)
-        self.gh(checks=[{"name": "lint", "bucket": "fail"}, {"name": "unit", "bucket": "fail"}])
+        self.gh(
+            checks=[
+                {"name": "lint", "bucket": "fail"},
+                {"name": "unit", "bucket": "fail"},
+            ]
+        )
         with self.assertRaises(ws.RefusedError) as c:
             s.pr_ready("p4")
         self.assertEqual(json.loads(str(c.exception))["failing"], ["lint", "unit"])
@@ -1975,7 +2076,12 @@ class TestContainerMode(unittest.TestCase):
     def test_24_pr_ready_marks_a_draft_ready_when_green_and_reads_it_back(self):
         s = self.sup
         s.create("p5", "lab", "card/p5")
-        self.gh(checks=[{"name": "unit", "bucket": "pass"}, {"name": "docs", "bucket": "skipping"}])
+        self.gh(
+            checks=[
+                {"name": "unit", "bucket": "pass"},
+                {"name": "docs", "bucket": "skipping"},
+            ]
+        )
         out = s.pr_ready("p5")
         self.assertEqual((out["ready"], out["already"]), (True, False))
         self.assertTrue(
@@ -2018,7 +2124,9 @@ class TestContainerMode(unittest.TestCase):
         self.assertEqual((host / ".git/config").read_text(), before)
         self.assertEqual(
             subprocess.run(
-                ["git", "-C", str(wt), "branch", "--show-current"], capture_output=True, text=True
+                ["git", "-C", str(wt), "branch", "--show-current"],
+                capture_output=True,
+                text=True,
             ).stdout.strip(),
             "card/s1",
         )
@@ -2104,7 +2212,12 @@ class TestContainerMode(unittest.TestCase):
 
     def test_34_only_trusted_reviewers_reach_the_agent(self):
         def c(i, login, assoc, body="please change X"):
-            d = {"id": i, "body": body, "user": {"login": login}, "created_at": f"2026-01-0{i}"}
+            d = {
+                "id": i,
+                "body": body,
+                "user": {"login": login},
+                "created_at": f"2026-01-0{i}",
+            }
             if assoc:
                 d["author_association"] = assoc
             return d
@@ -2160,7 +2273,9 @@ class TestContainerMode(unittest.TestCase):
         s.poll_pr("s5")
         time.sleep(0.4)
         pane = subprocess.run(
-            ["tmux", "capture-pane", "-J", "-p", "-t", "card-s5"], capture_output=True, text=True
+            ["tmux", "capture-pane", "-J", "-p", "-t", "card-s5"],
+            capture_output=True,
+            text=True,
         ).stdout
         self.assertIn("from the repo owner login", pane)
         self.assertNotIn("from a stranger", pane)
@@ -2180,7 +2295,10 @@ class TestContainerMode(unittest.TestCase):
                     "POST",
                     path,
                     json.dumps(body or {}),
-                    {"Authorization": "Bearer " + "t" * 24, "Content-Type": "application/json"},
+                    {
+                        "Authorization": "Bearer " + "t" * 24,
+                        "Content-Type": "application/json",
+                    },
                 )
                 r = c.getresponse()
                 return r.status, json.loads(r.read().decode())
@@ -2206,7 +2324,12 @@ class TestContainerMode(unittest.TestCase):
 
     @staticmethod
     def comment(cid, body, login, assoc):
-        return {"id": cid, "body": body, "user": {"login": login}, "author_association": assoc}
+        return {
+            "id": cid,
+            "body": body,
+            "user": {"login": login},
+            "author_association": assoc,
+        }
 
     def test_40_a_trusted_review_wakes_a_paused_card_and_reaches_the_same_process(self):
         s = self.sup
@@ -2283,7 +2406,9 @@ class TestContainerMode(unittest.TestCase):
         self.assertIsNone(s.container_status("card-w3"))
         self.assertNotIn("w3", s.poll_all(wake=True)["polled"])  # the poller skips it too
 
-    def test_43_a_paused_card_with_no_pane_is_resumed_with_the_feedback_as_its_prompt(self):
+    def test_43_a_paused_card_with_no_pane_is_resumed_with_the_feedback_as_its_prompt(
+        self,
+    ):
         s = self.sup
         s.create("w4", "lab", "card/w4")
         sid = s.launch("w4", "claude", "x")["agent_session_id"]
@@ -2305,7 +2430,9 @@ class TestContainerMode(unittest.TestCase):
         self.assertNotIn("--session-id", argv)
         self.assertEqual(s.get("w4")["pr_seen"], ["c5"])
 
-    def test_44_resume_without_a_prompt_reopens_the_session_with_no_extra_argument(self):
+    def test_44_resume_without_a_prompt_reopens_the_session_with_no_extra_argument(
+        self,
+    ):
         s = self.sup
         s.create("w5", "lab", "card/w5")
         sid = s.launch("w5", "claude", "x")["agent_session_id"]
@@ -2316,7 +2443,9 @@ class TestContainerMode(unittest.TestCase):
         argv = self.wait_agent()["argv"]
         self.assertEqual(argv[-2:], ["--resume", sid])  # no stray "resume" prompt typed into it
 
-    def test_45_poll_all_delivers_skips_cards_without_a_pr_and_reports_real_errors(self):
+    def test_45_poll_all_delivers_skips_cards_without_a_pr_and_reports_real_errors(
+        self,
+    ):
         s = self.sup
         s.create("w6", "lab", "card/w6")
         s.launch("w6", "claude", "x")
@@ -2409,7 +2538,14 @@ class TestReviewLoopPure(unittest.TestCase):
 
     def test_untrusted_items_are_dropped_before_formatting(self):
         items = ws.review_items(
-            [{"id": 1, "body": "SECRET-ASK", "user": {"login": "x"}, "author_association": "NONE"}],
+            [
+                {
+                    "id": 1,
+                    "body": "SECRET-ASK",
+                    "user": {"login": "x"},
+                    "author_association": "NONE",
+                }
+            ],
             [
                 {
                     "id": 2,
@@ -2425,7 +2561,14 @@ class TestReviewLoopPure(unittest.TestCase):
         self.assertEqual(items, [])
         # near-miss: a login named in trusted_logins passes whatever its association
         ok = ws.review_items(
-            [{"id": 1, "body": "go", "user": {"login": "Reviewer"}, "author_association": "NONE"}],
+            [
+                {
+                    "id": 1,
+                    "body": "go",
+                    "user": {"login": "Reviewer"},
+                    "author_association": "NONE",
+                }
+            ],
             [],
             [],
             set(),
@@ -2502,8 +2645,8 @@ class TestBrokerClientIntegration(unittest.TestCase):
         self.assertEqual(len(self.calls), 1)
         sup.token_cache["example/repo"] = ("old", time.time() + 900)
         calls = []
-        sup.run = lambda cmd, **kw: calls.append((cmd, kw)) or subprocess.CompletedProcess(
-            cmd, 0, "", ""
+        sup.run = lambda cmd, **kw: (
+            calls.append((cmd, kw)) or subprocess.CompletedProcess(cmd, 0, "", "")
         )
         sup._gh(["pr", "list"], "Example/repo")
         self.assertEqual(len(self.calls), 2)
@@ -2590,7 +2733,9 @@ class TestBrokerClientIntegration(unittest.TestCase):
         envfile.write_text("GH_TOKEN=legacy\nGITHUB_TOKEN=legacy\nOTHER=yes\n")
         sup.cfg["agent_env_file"] = str(envfile)
         calls = []
-        sup.run = lambda cmd, **kw: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", "")
+        sup.run = lambda cmd, **kw: (
+            calls.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", "")
+        )
         sup._acp_exec({"path": str(self.root), "container": "card-c"}, "c", ["true"])
         self.assertNotIn("GH_TOKEN", calls[0])
         self.assertNotIn("GITHUB_TOKEN", calls[0])
@@ -2678,7 +2823,11 @@ class TestReviewRegressions(unittest.TestCase):
                 dict(base, number=2),
             ]
             sup._gh_pages = lambda *args, **kwargs: []
-            sup._checks = lambda *args: {"verdict": "green", "head": "a" * 40, "failing": []}
+            sup._checks = lambda *args: {
+                "verdict": "green",
+                "head": "a" * 40,
+                "failing": [],
+            }
             self.assertEqual(sup.poll_pr("c1", deliver=False)["pr"], 2)
             self.assertFalse(marker.exists())
             self.assertFalse(
@@ -2733,7 +2882,11 @@ class TestReviewRegressions(unittest.TestCase):
 
                 def git(*args):
                     return subprocess.run(
-                        ["git", *args], check=True, capture_output=True, text=True, env=env
+                        ["git", *args],
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                        env=env,
                     ).stdout.strip()
 
                 git("init", "-q", "-b", "main", str(origin))
@@ -2909,7 +3062,7 @@ class TestExecutionIsolation(unittest.TestCase):
                     return subprocess.CompletedProcess(cmd, 1, "", "")
                 out = state["container"]
             elif cmd[:2] == ["docker", "ps"]:
-                out = f'card-c1\t{state["container"]}\n' if state["container"] else ""
+                out = f"card-c1\t{state['container']}\n" if state["container"] else ""
             elif cmd[:2] == ["tmux", "list-panes"] and state["tmux"]:
                 out = "card-c1\t0\t123\t1\n"
             elif cmd[:2] == ["tmux", "kill-session"]:
@@ -2943,7 +3096,9 @@ class TestExecutionIsolation(unittest.TestCase):
         self.enterContext(patch.object(sup, "_gh_pages", lambda *args, **kwargs: []))
         self.enterContext(
             patch.object(
-                sup, "_checks", lambda *args: {"verdict": "green", "head": "a", "failing": []}
+                sup,
+                "_checks",
+                lambda *args: {"verdict": "green", "head": "a", "failing": []},
             )
         )
         sup.poll_pr("c1", deliver=False)

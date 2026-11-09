@@ -141,6 +141,16 @@ argument_specs:
           - read-only
           - workspace-write
           - danger-full-access
+      worker_codex_trust_card_worktree:
+        description:
+          - Mark each card's clone as a trusted Codex project in that card's
+          - config.toml. Codex matches trust on the exact path, and an untrusted
+          - project runs read-only whatever the sandbox and approval options say
+          - (the ACP adapter falls back to read-only, the interactive client asks
+          - first). Trust also loads the repository's own .codex/config.toml.
+        type: bool
+        required: false
+        default: false
       worker_codex_reasoning_effort:
         description:
           - Codex model_reasoning_effort. Empty leaves the line out, so the

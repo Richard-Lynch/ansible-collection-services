@@ -9,6 +9,12 @@ All notable changes to this collection are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the collection
 uses [Semantic Versioning](https://semver.org/).
 
+## [2.2.1] — 2026-11-09
+
+### Added
+
+- `service_coding_worker`: `worker_codex_trust_card_worktree` (default off) makes the session daemon mark each card's clone as a trusted Codex project in that card's `config.toml`. Codex matches trust on the exact path, and runs an untrusted project read-only whatever the approval and sandbox options say, so without it an unattended Codex card in protocol mode cannot write its clone.
+
 ## [2.2.0] — 2026-11-09
 
 ### Added
