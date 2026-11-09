@@ -4,11 +4,18 @@
 # (OPENAI_API_KEY is read from the environment, never written here).
 model = "{{ worker_codex_model }}"
 model_provider = "litellm"
-approval_policy = "on-request"
-sandbox_mode = "workspace-write"
+approval_policy = "{{ worker_codex_approval_policy }}"
+sandbox_mode = "{{ worker_codex_sandbox_mode }}"
+{% if worker_codex_reasoning_effort | length > 0 %}
+model_reasoning_effort = "{{ worker_codex_reasoning_effort }}"
+{% endif %}
 
 [model_providers.litellm]
 name = "LiteLLM"
 base_url = "{{ worker_litellm_url }}/v1"
 env_key = "OPENAI_API_KEY"
 wire_api = "responses"
+# A long agent turn can sit silent for minutes behind the gateway.
+stream_idle_timeout_ms = {{ worker_codex_stream_idle_timeout_ms | int }}
+stream_max_retries = {{ worker_codex_stream_max_retries | int }}
+request_max_retries = {{ worker_codex_request_max_retries | int }}

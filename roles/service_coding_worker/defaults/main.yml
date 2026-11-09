@@ -18,6 +18,34 @@ worker_github_host__default: github.com
 # Repos live at work_root/repos/name; worktrees at work_root/worktrees/card.
 worker_work_root__default: /srv/work
 
+# Codex approval_policy for card sessions. A card has no person at its
+# terminal, so anything but never can stop a turn on a prompt nobody
+# answers; never returns a refused action to the agent instead.
+worker_codex_approval_policy__default: on-request
+
+# Codex sandbox_mode inside the card container. workspace-write keeps
+# the clone's .git read-only and turns network off, so a card that must
+# commit and push its own branch under approval_policy never cannot do
+# either. danger-full-access drops Codex's own sandbox and leaves the
+# card container (and the card's scoped GitHub token) as the boundary,
+# which is the boundary Claude Code runs under here too.
+worker_codex_sandbox_mode__default: workspace-write
+
+# Codex model_reasoning_effort. Empty leaves the line out, so the
+# model's own default applies.
+worker_codex_reasoning_effort__default: ''
+
+# How long Codex waits on a silent response stream from the gateway. A
+# long agent turn can idle for minutes behind a proxy, and Codex's own
+# default ends it early.
+worker_codex_stream_idle_timeout_ms__default: 7200000
+
+# Codex stream_max_retries for the gateway provider.
+worker_codex_stream_max_retries__default: 5
+
+# Codex request_max_retries for the gateway provider.
+worker_codex_request_max_retries__default: 4
+
 # Claude Code permission mode for card sessions. dontAsk DENIES anything
 # worker_claude_settings does not allow, where the other two PROMPT, and
 # a prompt in an unattended card waits for nobody. Bypass modes are not

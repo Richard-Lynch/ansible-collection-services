@@ -113,6 +113,68 @@ argument_specs:
           - Model alias Codex asks LiteLLM for.
         type: str
         required: true
+      worker_codex_approval_policy:
+        description:
+          - Codex approval_policy for card sessions. A card has no person at its
+          - terminal, so anything but never can stop a turn on a prompt nobody
+          - answers; never returns a refused action to the agent instead.
+        type: str
+        required: false
+        default: on-request
+        choices:
+          - untrusted
+          - on-failure
+          - on-request
+          - never
+      worker_codex_sandbox_mode:
+        description:
+          - Codex sandbox_mode inside the card container. workspace-write keeps
+          - the clone's .git read-only and turns network off, so a card that must
+          - commit and push its own branch under approval_policy never cannot do
+          - either. danger-full-access drops Codex's own sandbox and leaves the
+          - card container (and the card's scoped GitHub token) as the boundary,
+          - which is the boundary Claude Code runs under here too.
+        type: str
+        required: false
+        default: workspace-write
+        choices:
+          - read-only
+          - workspace-write
+          - danger-full-access
+      worker_codex_reasoning_effort:
+        description:
+          - Codex model_reasoning_effort. Empty leaves the line out, so the
+          - model's own default applies.
+        type: str
+        required: false
+        default: ''
+        choices:
+          - ''
+          - minimal
+          - low
+          - medium
+          - high
+          - xhigh
+      worker_codex_stream_idle_timeout_ms:
+        description:
+          - How long Codex waits on a silent response stream from the gateway. A
+          - long agent turn can idle for minutes behind a proxy, and Codex's own
+          - default ends it early.
+        type: int
+        required: false
+        default: 7200000
+      worker_codex_stream_max_retries:
+        description:
+          - Codex stream_max_retries for the gateway provider.
+        type: int
+        required: false
+        default: 5
+      worker_codex_request_max_retries:
+        description:
+          - Codex request_max_retries for the gateway provider.
+        type: int
+        required: false
+        default: 4
       worker_claude_permission_mode:
         description:
           - Claude Code permission mode for card sessions. dontAsk DENIES anything

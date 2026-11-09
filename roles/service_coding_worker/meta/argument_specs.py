@@ -128,6 +128,57 @@ argument_specs = ArgumentSpecs(
                     required=True,
                     description=["Model alias Codex asks LiteLLM for."],
                 ),
+                "worker_codex_approval_policy": OptionSpec(
+                    type="str",
+                    default="on-request",
+                    choices=["untrusted", "on-failure", "on-request", "never"],
+                    description=[
+                        "Codex approval_policy for card sessions. A card has no person at its",
+                        "terminal, so anything but never can stop a turn on a prompt nobody",
+                        "answers; never returns a refused action to the agent instead.",
+                    ],
+                ),
+                "worker_codex_sandbox_mode": OptionSpec(
+                    type="str",
+                    default="workspace-write",
+                    choices=["read-only", "workspace-write", "danger-full-access"],
+                    description=[
+                        "Codex sandbox_mode inside the card container. workspace-write keeps",
+                        "the clone's .git read-only and turns network off, so a card that must",
+                        "commit and push its own branch under approval_policy never cannot do",
+                        "either. danger-full-access drops Codex's own sandbox and leaves the",
+                        "card container (and the card's scoped GitHub token) as the boundary,",
+                        "which is the boundary Claude Code runs under here too.",
+                    ],
+                ),
+                "worker_codex_reasoning_effort": OptionSpec(
+                    type="str",
+                    default="",
+                    choices=["", "minimal", "low", "medium", "high", "xhigh"],
+                    description=[
+                        "Codex model_reasoning_effort. Empty leaves the line out, so the",
+                        "model's own default applies.",
+                    ],
+                ),
+                "worker_codex_stream_idle_timeout_ms": OptionSpec(
+                    type="int",
+                    default=7200000,
+                    description=[
+                        "How long Codex waits on a silent response stream from the gateway. A",
+                        "long agent turn can idle for minutes behind a proxy, and Codex's own",
+                        "default ends it early.",
+                    ],
+                ),
+                "worker_codex_stream_max_retries": OptionSpec(
+                    type="int",
+                    default=5,
+                    description=["Codex stream_max_retries for the gateway provider."],
+                ),
+                "worker_codex_request_max_retries": OptionSpec(
+                    type="int",
+                    default=4,
+                    description=["Codex request_max_retries for the gateway provider."],
+                ),
                 "worker_claude_permission_mode": OptionSpec(
                     type="str",
                     default="acceptEdits",

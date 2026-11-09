@@ -213,6 +213,20 @@
           - art['lan/codex_base.toml'] is search('wire_api = "responses"')
           - art['lan/codex_base.toml'] is search('env_key = "OPENAI_API_KEY"')
           - "'sk-molecule' not in art['lan/codex_base.toml']"
+          - art['lan/codex_base.toml'] is search('(?m)^stream_idle_timeout_ms = 7200000$')
+          - art['lan/codex_base.toml'] is search('(?m)^stream_max_retries = 5$')
+          - art['lan/codex_base.toml'] is search('(?m)^request_max_retries = 4$')
+        quiet: true
+
+    - name: ASSERT — Codex's approval, sandbox and reasoning follow the options, defaults unchanged
+      ansible.builtin.assert:
+        that:
+          - art['lan/codex_base.toml'] is search('(?m)^approval_policy = "never"$')
+          - art['lan/codex_base.toml'] is search('(?m)^sandbox_mode = "danger-full-access"$')
+          - art['lan/codex_base.toml'] is search('(?m)^model_reasoning_effort = "high"$')
+          - art['loopback/codex_base.toml'] is search('(?m)^approval_policy = "on-request"$')
+          - art['loopback/codex_base.toml'] is search('(?m)^sandbox_mode = "workspace-write"$')
+          - "'model_reasoning_effort' not in art['loopback/codex_base.toml']"
         quiet: true
 
     - name: ASSERT — the units keep live cards alive across a sessiond restart and bind as configured
