@@ -263,7 +263,7 @@
   ansible.builtin.command: docker rm -f worker-sysbox-selftest
   register: _worker_selftest_rm
   changed_when: "'worker-sysbox-selftest' in _worker_selftest_rm.stdout"
-  check_mode: false
+  check_mode: false  # guard-check: ignore CHECKMODEGATE-01 — removes only the role's own throwaway self-test container, so the self-test below can run under --check
 
 - name: Start a throwaway sysbox container, bring up its inner dockerd and read its uid map
   # No label, so sessiond never lists it; --rm, so it leaves nothing. 512m: the inner dockerd is
@@ -297,7 +297,7 @@
         uv --version
   register: _worker_selftest
   changed_when: false
-  check_mode: false
+  check_mode: false  # guard-check: ignore CHECKMODEGATE-01 — a throwaway --rm self-test container that leaves nothing behind; the read-back below needs its output under --check too
 
 - name: ASSERT — the container has its own user namespace and a working inner dockerd
   # uid_map's first line is "<inside> <outside> <count>". Under runc it is "0 0 4294967295"

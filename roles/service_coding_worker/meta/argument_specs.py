@@ -151,6 +151,17 @@ argument_specs = ArgumentSpecs(
                         "which is the boundary Claude Code runs under here too.",
                     ],
                 ),
+                "worker_codex_trust_card_worktree": OptionSpec(
+                    type="bool",
+                    default=False,
+                    description=[
+                        "Mark each card's clone as a trusted Codex project in that card's",
+                        "config.toml. Codex matches trust on the exact path, and an untrusted",
+                        "project runs read-only whatever the sandbox and approval options say",
+                        "(the ACP adapter falls back to read-only, the interactive client asks",
+                        "first). Trust also loads the repository's own .codex/config.toml.",
+                    ],
+                ),
                 "worker_codex_reasoning_effort": OptionSpec(
                     type="str",
                     default="",

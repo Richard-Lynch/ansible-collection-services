@@ -143,6 +143,15 @@ container, its scoped GitHub token and the repository's ruleset. The per-card
 not a control. `worker_codex_reasoning_effort` and the three gateway timeout
 options also go into the base file.
 
+Codex runs an UNTRUSTED project read-only whatever those two options say: the
+ACP adapter's session mode falls back to `read-only`, and the interactive
+client asks the trust question first. Trust is matched on the exact path, and
+every card's clone has its own, so `worker_codex_trust_card_worktree: true`
+makes sessiond write `[projects."<clone>"] trust_level = "trusted"` into each
+card's `config.toml`. A trusted project also has its own `.codex/config.toml`
+loaded, which gives the repository no more than the agent already has under
+`danger-full-access`.
+
 ### What a converge manages, and what it does not
 
 What sessiond does at run time — make a worktree, start a card's container,

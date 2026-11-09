@@ -31,6 +31,13 @@ worker_codex_approval_policy__default: on-request
 # which is the boundary Claude Code runs under here too.
 worker_codex_sandbox_mode__default: workspace-write
 
+# Mark each card's clone as a trusted Codex project in that card's
+# config.toml. Codex matches trust on the exact path, and an untrusted
+# project runs read-only whatever the sandbox and approval options say
+# (the ACP adapter falls back to read-only, the interactive client asks
+# first). Trust also loads the repository's own .codex/config.toml.
+worker_codex_trust_card_worktree__default: false
+
 # Codex model_reasoning_effort. Empty leaves the line out, so the
 # model's own default applies.
 worker_codex_reasoning_effort__default: ''

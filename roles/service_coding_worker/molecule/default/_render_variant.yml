@@ -53,6 +53,7 @@
     worker_codex_approval_policy: "{{ 'never' if item.custom else worker_codex_approval_policy__default }}"
     worker_codex_sandbox_mode: "{{ 'danger-full-access' if item.custom else worker_codex_sandbox_mode__default }}"
     worker_codex_reasoning_effort: "{{ 'high' if item.custom else worker_codex_reasoning_effort__default }}"
+    worker_codex_trust_card_worktree: "{{ true if item.custom else worker_codex_trust_card_worktree__default }}"
   loop: [_resolve_defaults, _derive, _card_image]
   loop_control:
     loop_var: _t
@@ -79,6 +80,7 @@
     worker_codex_approval_policy: "{{ 'never' if item.custom else worker_codex_approval_policy__default }}"
     worker_codex_sandbox_mode: "{{ 'danger-full-access' if item.custom else worker_codex_sandbox_mode__default }}"
     worker_codex_reasoning_effort: "{{ 'high' if item.custom else worker_codex_reasoning_effort__default }}"
+    worker_codex_trust_card_worktree: "{{ true if item.custom else worker_codex_trust_card_worktree__default }}"
 
 - name: "Variant {{ item.name }}: render the artifacts"
   ansible.builtin.template:

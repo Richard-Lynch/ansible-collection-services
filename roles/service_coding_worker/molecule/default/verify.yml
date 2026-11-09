@@ -227,6 +227,9 @@
           - art['loopback/codex_base.toml'] is search('(?m)^approval_policy = "on-request"$')
           - art['loopback/codex_base.toml'] is search('(?m)^sandbox_mode = "workspace-write"$')
           - "'model_reasoning_effort' not in art['loopback/codex_base.toml']"
+          # per-card project trust is sessiond's (the path differs per card); off unless asked
+          - cfg_lan.codex_trust_card_worktree is sameas true
+          - cfg_lo.codex_trust_card_worktree is sameas false
         quiet: true
 
     - name: ASSERT — the units keep live cards alive across a sessiond restart and bind as configured
