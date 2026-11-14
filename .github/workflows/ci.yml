@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   ci:
-    uses: Richard-Lynch/ansible-devkit/.github/workflows/reusable-ci.yml@v0.4.1
+    uses: Richard-Lynch/ansible-devkit/.github/workflows/reusable-ci.yml@v0.7.0
     with:
       kind: collection
       # Every ansible-core this collection supports: meta/runtime.yml requires_ansible >=2.19.0.
