@@ -103,6 +103,7 @@
     - inner_recall.py
     - confined_io.py # hermes_learning.py imports it (the confined-write module, vendored)
 
+# guard-check: ignore DIFFLEAK-01 — config.json.j2 renders only the NAMES of environment variables (hermes_learning_*_env), never a value, and the file is world-readable (0644) by design, so its diff discloses nothing the file does not
 - name: Render the config (names of env vars, never their values)
   ansible.builtin.template:
     src: config.json.j2

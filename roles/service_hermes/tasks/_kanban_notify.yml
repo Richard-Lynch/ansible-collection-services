@@ -39,6 +39,7 @@
     - {path: /etc/hermes-kanban-notify, mode: "0755"}
     - {path: /var/lib/hermes-kanban-notify, mode: "0700"}
 
+# guard-check: ignore DIFFLEAK-01 — the content is a static script read verbatim from the role (lookup file, never templated), so the rendered text carries no credential and its diff discloses nothing the shipped file does not
 - name: Install the notifier
   ansible.builtin.copy:
     dest: /usr/local/lib/hermes-kanban-notify/hermes_kanban_notify.py

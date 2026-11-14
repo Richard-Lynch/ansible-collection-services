@@ -21,6 +21,7 @@
     quiet: true
   when: hermes_policy_hook_enabled | bool
 
+# guard-check: ignore DIFFLEAK-01 — the content is a static script read verbatim from the role (lookup file, never templated), so the rendered text carries no credential and its diff discloses nothing the shipped file does not
 - name: Stage the policy hook (executable; Hermes runs it by path, shell=False)
   ansible.builtin.copy:
     dest: "{{ hermes_config_dir }}/policy/hermes_policy_hook.py"
@@ -56,6 +57,7 @@
     quiet: true
   when: hermes_audit_hook_enabled | bool
 
+# guard-check: ignore DIFFLEAK-01 — the content is a static script read verbatim from the role (lookup file, never templated), so the rendered text carries no credential and its diff discloses nothing the shipped file does not
 - name: Stage the audit hook (executable; Hermes runs it by path, shell=False)
   ansible.builtin.copy:
     dest: "{{ hermes_config_dir }}/policy/hermes_audit_hook.py"
