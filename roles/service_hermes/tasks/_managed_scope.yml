@@ -50,6 +50,7 @@
     content: "{{ hermes__managed_doc | to_nice_yaml(indent=2, sort_keys=true) | hash('sha256') }}  managed/config.yaml\n"
   register: hermes__managed_sha
 
+# guard-check: ignore DIFFLEAK-01 — the content is a static script read verbatim from the role (lookup file, never templated), so the rendered text carries no credential and its diff discloses nothing the shipped file does not
 - name: Stage the preflight script
   ansible.builtin.copy:
     dest: "{{ hermes_config_dir }}/policy/policy_preflight.py"
@@ -59,6 +60,7 @@
 
 # The container's entrypoint when hermes_managed_enforce is on: it runs the preflight before
 # main-wrapper.sh may start the gateway. 0755 because the read-only mount keeps the mode.
+# guard-check: ignore DIFFLEAK-01 — the content is a static script read verbatim from the role (lookup file, never templated), so the rendered text carries no credential and its diff discloses nothing the shipped file does not
 - name: Stage the preflight entry wrapper
   ansible.builtin.copy:
     dest: "{{ hermes_config_dir }}/policy/preflight-entry.sh"
