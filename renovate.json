@@ -2,7 +2,7 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "description": "The shared devkit policy, PINNED to a release tag (it moves only through a reviewed PR here), then THIS repository's automerge decisions, which come after the preset so the preset cannot widen them.",
   "extends": [
-    "github>Richard-Lynch/ansible-devkit//renovate/default#v0.7.0"
+    "github>Richard-Lynch/ansible-devkit//renovate/default#v0.7.1"
   ],
   "packageRules": [
     {
